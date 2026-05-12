@@ -141,7 +141,8 @@ impl UpdateChecker {
         let arch = match std::env::consts::ARCH {
             "arm" => "android-armv7",
             "aarch64" => "android-arm64",
-            _ => return Err("Unsupported architecture".into()),
+            "x86_64" => "android-x86_64",
+            _ => return Err(format!("Unsupported architecture: {}", std::env::consts::ARCH).into()),
         };
 
         let asset = release
@@ -177,6 +178,11 @@ impl UpdateChecker {
 
         // Replace old binary with new one
         fs::rename(temp_path, current_exe).await?;
+
+        // Clear update cache so next check uses new version
+        if let Some(cache_path) = Self::get_cache_path() {
+            let _ = fs::remove_file(cache_path).await;
+        }
 
         Ok(())
     }

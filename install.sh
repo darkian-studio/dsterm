@@ -19,25 +19,6 @@ detect_arch() {
     esac
 }
 
-# progress bar function
-show_progress() {
-    local current=$1
-    local total=$2
-    local width=40
-    
-    if [ "$total" -le 0 ]; then
-        return
-    fi
-    
-    local percent=$((current * 100 / total))
-    local filled=$((percent * width / 100))
-    
-    printf "\r["
-    printf "%${filled}s" | tr ' ' '='
-    printf "%$((width - filled))s" | tr ' ' '-'
-    printf "] %d%%" "$percent"
-}
-
 # download the appropriate binary
 download_binary() {
     ARCH=$(detect_arch)
@@ -46,19 +27,12 @@ download_binary() {
     FILE_NAME="dsterm-$ARCH"
     DOWNLOAD_URL="$BASE_URL/$FILE_NAME"
 
-    # Download the binary with progress bar
+    # Download the binary
     echo "Downloading $FILE_NAME for $ARCH architecture..."
-    if ! curl -L "$DOWNLOAD_URL" -o "$FILE_NAME" -w "\n" --progress-bar 2>&1 | while IFS= read -r line; do
-        if [[ $line =~ ([0-9]+\.[0-9]|[0-9]+)% ]]; then
-            percent="${BASH_REMATCH[1]%\.*}"
-            show_progress "$percent" "100"
-        fi
-    done; then
-        printf "\n"
+    if ! curl --fail -L "$DOWNLOAD_URL" -o "$FILE_NAME"; then
         echo "Failed to download the binary! Please check the URL and your connection: $DOWNLOAD_URL"
         exit 1
     fi
-    printf "\n"
 
     # Move the binary to the PREFIX directory and rename it to 'dsterm'
     echo "Installing dsterm binary to $PREFIX..."
