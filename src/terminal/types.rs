@@ -39,6 +39,7 @@ pub struct ProcessExitMessage {
 #[derive(Deserialize)]
 pub struct SilentExecRequest {
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     pub msg_type: String,
     pub id: String,
     pub command: String,
@@ -65,6 +66,7 @@ pub struct SilentExecResponse {
 #[derive(Deserialize)]
 pub struct SilentExecStreamRequest {
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     pub msg_type: String,
     pub id: String,
     pub command: String,
