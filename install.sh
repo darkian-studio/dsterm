@@ -22,9 +22,9 @@ detect_arch() {
 # download the appropriate binary
 download_binary() {
     ARCH=$(detect_arch)
-    BASE_URL="https://github.com/bajrangCoder/acodex_server/releases/latest/download"
+    BASE_URL="https://github.com/darkian-studio/dsterm/releases/latest/download"
 
-    FILE_NAME="axs-$ARCH"
+    FILE_NAME="dsterm-$ARCH"
     DOWNLOAD_URL="$BASE_URL/$FILE_NAME"
 
     # Download the binary
@@ -34,15 +34,15 @@ download_binary() {
         exit 1
     fi
 
-    # Move the binary to the PREFIX directory and rename it to 'axs'
-    echo "Installing axs binary to $PREFIX..."
-    mv "$FILE_NAME" "$PREFIX/bin/axs"
-    chmod +x "$PREFIX/bin/axs"
+    # Move the binary to the PREFIX directory and rename it to 'dsterm'
+    echo "Installing dsterm binary to $PREFIX..."
+    mv "$FILE_NAME" "$PREFIX/bin/dsterm"
+    chmod +x "$PREFIX/bin/dsterm"
 
-    # Create a symlink acodeX-server pointing to axs
-    ln -sf "$PREFIX/bin/axs" "$PREFIX/bin/acodeX-server"
+    # Create a symlink acodeX-server pointing to dsterm
+    ln -sf "$PREFIX/bin/dsterm" "$PREFIX/bin/acodeX-server"
 
-    echo "Binary downloaded and installed as 'axs'. You can now use the 'axs' command!"
+    echo "Binary downloaded and installed as 'dsterm'. You can now use the 'dsterm' command!"
     echo "Make sure '$PREFIX/bin' is in your PATH."
 }
 

@@ -19,22 +19,22 @@ jobs:
         platform:
           - os_name: Android-aarch64
             target: aarch64-linux-android
-            binary_name: axs-android-arm64
+            binary_name: dsterm-android-arm64
           - os_name: Android-armv7
             target: armv7-linux-androideabi
-            binary_name: axs-android-armv7
+            binary_name: dsterm-android-armv7
           - os_name: Android-x86_64
             target: x86_64-linux-android
-            binary_name: axs-android-x86_64
+            binary_name: dsterm-android-x86_64
           - os_name: MuslAndroid-aarch64
             target: aarch64-unknown-linux-musl
-            binary_name: axs-musl-android-arm64
+            binary_name: dsterm-musl-android-arm64
           - os_name: MuslAndroid-armv7
             target: armv7-unknown-linux-musleabihf
-            binary_name: axs-musl-android-armv7
+            binary_name: dsterm-musl-android-armv7
           - os_name: MuslAndroid-x86_64
             target: x86_64-unknown-linux-musl
-            binary_name: axs-musl-android-x86_64
+            binary_name: dsterm-musl-android-x86_64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -49,7 +49,7 @@ jobs:
         run: cross build --release --target ${{ matrix.platform.target }}
 
       - name: Rename binary
-        run: mv target/${{ matrix.platform.target }}/release/axs target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+        run: mv target/${{ matrix.platform.target }}/release/dsterm target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
 
       - name: Generate SHA-256
         run: |

@@ -732,16 +732,42 @@ async fn execute_silent_command(
         Err(e) => return Err(format!("Failed to spawn command: {}", e)),
     };
 
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
     let timeout_duration = Duration::from_millis(timeout_ms);
 
-    let output = tokio::time::timeout(timeout_duration, child.wait_with_output()).await;
+    let read_stdout = async {
+        if let Some(mut stdout) = stdout {
+            let mut buf = String::new();
+            use tokio::io::AsyncReadExt;
+            let _ = stdout.read_to_string(&mut buf).await;
+            buf
+        } else {
+            String::new()
+        }
+    };
 
-    match output {
-        Ok(Ok(output)) => {
-            let exit_code = output.status.code().unwrap_or(-1);
-            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            Ok((exit_code, stdout, stderr, false))
+    let read_stderr = async {
+        if let Some(mut stderr) = stderr {
+            let mut buf = String::new();
+            use tokio::io::AsyncReadExt;
+            let _ = stderr.read_to_string(&mut buf).await;
+            buf
+        } else {
+            String::new()
+        }
+    };
+
+    let wait_child = async { tokio::time::timeout(timeout_duration, child.wait()).await };
+
+    let ((stdout_result, stderr_result), wait_result) =
+        tokio::join!(read_stdout, read_stderr, wait_child);
+
+    match wait_result {
+        Ok(Ok(status)) => {
+            let exit_code = status.code().unwrap_or(-1);
+            Ok((exit_code, stdout_result, stderr_result, false))
         }
         Ok(Err(e)) => Err(format!("Failed to wait for command: {}", e)),
         Err(_) => {

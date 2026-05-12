@@ -74,34 +74,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "axs"
-version = "0.2.15"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "clap",
- "colored",
- "dashmap",
- "futures",
- "libc",
- "nom",
- "pnet",
- "portable-pty",
- "regex",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "sysinfo",
- "tokio",
- "tokio-util",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "axum"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -349,6 +321,34 @@ name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
+
+[[package]]
+name = "dsterm"
+version = "0.2.15"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clap",
+ "colored",
+ "dashmap",
+ "futures",
+ "libc",
+ "nom",
+ "pnet",
+ "portable-pty",
+ "regex",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+ "tokio-util",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "errno"
