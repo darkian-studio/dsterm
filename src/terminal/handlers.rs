@@ -761,7 +761,7 @@ async fn execute_silent_command(
 
     let wait_child = async { tokio::time::timeout(timeout_duration, child.wait()).await };
 
-    let ((stdout_result, stderr_result), wait_result) =
+    let (stdout_result, stderr_result, wait_result) =
         tokio::join!(read_stdout, read_stderr, wait_child);
 
     match wait_result {
