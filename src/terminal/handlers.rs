@@ -727,16 +727,14 @@ async fn execute_silent_command(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return Err(format!("Failed to spawn command: {}", e)),
     };
 
     let timeout_duration = Duration::from_millis(timeout_ms);
 
-    let output = tokio::time::timeout(timeout_duration, child.wait_with_output())
-        .await
-        .map_err(|_| "Command timed out".to_string());
+    let output = tokio::time::timeout(timeout_duration, child.wait_with_output()).await;
 
     match output {
         Ok(Ok(output)) => {
@@ -755,14 +753,16 @@ async fn execute_silent_command(
 }
 
 pub async fn silent_exec_stream(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_silent_exec_stream)
+    ws.on_upgrade(|socket| async move {
+        handle_silent_exec_stream(socket).await;
+    })
 }
 
-async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
+async fn handle_silent_exec_stream(socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
 
     let msg = match receiver.next().await {
-        Some(Ok(Message::Text(text))) => text,
+        Some(Ok(Message::Text(text))) => text.to_string(),
         Some(Ok(Message::Binary(data))) => String::from_utf8_lossy(&data).to_string(),
         _ => {
             tracing::warn!("Silent exec stream: expected initial message");
@@ -784,7 +784,8 @@ async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
                         stderr: format!("Invalid request: {}", e),
                         timed_out: false,
                     })
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                 ))
                 .await;
             return;
@@ -811,7 +812,8 @@ async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
                     stderr: "Empty command string".to_string(),
                     timed_out: false,
                 })
-                .unwrap(),
+                .unwrap()
+                .into(),
             ))
             .await;
         return;
@@ -837,7 +839,8 @@ async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
                     stderr: "Working directory does not exist".to_string(),
                     timed_out: false,
                 })
-                .unwrap(),
+                .unwrap()
+                .into(),
             ))
             .await;
         return;
@@ -870,7 +873,8 @@ async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
                         stderr: format!("Failed to spawn command: {}", e),
                         timed_out: false,
                     })
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                 ))
                 .await;
             return;
@@ -883,10 +887,11 @@ async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
     let mut stdout_reader = tokio::io::BufReader::new(stdout);
     let mut stderr_reader = tokio::io::BufReader::new(stderr);
 
+    let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel::<String>(100);
+    let (stderr_tx, mut stderr_rx) = tokio::sync::mpsc::channel::<String>(100);
+
     let id_stdout = id.clone();
     let id_stderr = id.clone();
-    let mut sender_stdout = sender.clone();
-    let mut sender_stderr = sender.clone();
 
     let stdout_task = tokio::spawn(async move {
         let mut buf = String::new();
@@ -900,8 +905,8 @@ async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
                 stream: "stdout".to_string(),
                 data: buf.clone(),
             };
-            if sender_stdout
-                .send(Message::Text(serde_json::to_string(&chunk).unwrap()))
+            if stdout_tx
+                .send(serde_json::to_string(&chunk).unwrap())
                 .await
                 .is_err()
             {
@@ -923,8 +928,8 @@ async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
                 stream: "stderr".to_string(),
                 data: buf.clone(),
             };
-            if sender_stderr
-                .send(Message::Text(serde_json::to_string(&chunk).unwrap()))
+            if stderr_tx
+                .send(serde_json::to_string(&chunk).unwrap())
                 .await
                 .is_err()
             {
@@ -934,46 +939,50 @@ async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
         }
     });
 
-    let timeout_duration = Duration::from_millis(timeout_ms);
-    let timed_out = match tokio::time::timeout(timeout_duration, child.wait()).await {
-        Ok(Ok(status)) => {
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            let exit_code = status.code().unwrap_or(-1);
-            let done = SilentExecDone {
-                msg_type: "silent_exec_done".to_string(),
-                id,
-                exit_code,
-                timed_out: false,
-            };
-            let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap()));
+    loop {
+        tokio::select! {
+            msg = stdout_rx.recv() => {
+                if let Some(msg) = msg {
+                    let _ = sender.send(Message::Text(msg.into())).await;
+                }
+            }
+            msg = stderr_rx.recv() => {
+                if let Some(msg) = msg {
+                    let _ = sender.send(Message::Text(msg.into())).await;
+                }
+            }
+            status = child.wait() => {
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                let (exit_code, timed_out) = match status {
+                    Ok(s) => (s.code().unwrap_or(-1), false),
+                    Err(_) => (-1, true),
+                };
+                let done = SilentExecDone {
+                    msg_type: "silent_exec_done".to_string(),
+                    id,
+                    exit_code,
+                    timed_out,
+                };
+                let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap().into())).await;
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                let done = SilentExecDone {
+                    msg_type: "silent_exec_done".to_string(),
+                    id,
+                    exit_code: -1,
+                    timed_out: true,
+                };
+                let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap().into())).await;
+                break;
+            }
         }
-        Ok(Err(e)) => {
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            let done = SilentExecDone {
-                msg_type: "silent_exec_done".to_string(),
-                id,
-                exit_code: -1,
-                timed_out: false,
-            };
-            let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap()));
-            tracing::error!("Process wait error: {}", e);
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            let done = SilentExecDone {
-                msg_type: "silent_exec_done".to_string(),
-                id,
-                exit_code: -1,
-                timed_out: true,
-            };
-            let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap()));
-        }
-    };
+    }
 }
 
 #[cfg(test)]
@@ -1007,7 +1016,7 @@ mod tests {
         )
         .await;
         assert!(result.is_ok());
-        let (exit_code, stdout, stderr, timed_out) = result.unwrap();
+        let (exit_code, stdout, _stderr, timed_out) = result.unwrap();
         assert_eq!(exit_code, 1);
         assert!(stdout.is_empty());
         assert!(!timed_out);
