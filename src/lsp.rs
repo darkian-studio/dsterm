@@ -82,7 +82,7 @@ impl Drop for PortFileGuard {
 fn get_port_file_path(program: &str, session: Option<&str>) -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let dir = std::path::PathBuf::from(home)
-        .join(".axs")
+        .join(".dsterm")
         .join("lsp_ports");
 
     // Use just the binary name (not full path)

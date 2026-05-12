@@ -15,6 +15,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use regex::Regex;
+use std::collections::HashMap;
 use std::io::Write;
 use std::time::SystemTime;
 use std::{
@@ -23,6 +24,8 @@ use std::{
     sync::{mpsc, Arc},
     time::Duration,
 };
+use tokio::io::AsyncBufReadExt;
+use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
@@ -615,5 +618,450 @@ pub async fn execute_command(Json(options): Json<ExecuteCommandOption>) -> impl 
             )
                 .into_response()
         }
+    }
+}
+
+pub async fn silent_exec(Json(options): Json<SilentExecRequest>) -> impl IntoResponse {
+    let id = options.id.clone();
+    let command = options.command.clone();
+    let cwd = options.cwd.clone();
+    let env = options.env.clone();
+    let timeout_ms = options.timeout_ms.unwrap_or(30000);
+
+    tracing::info!(id = %id, command = %command, cwd = ?cwd, "Executing silent command");
+
+    if command.trim().is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(SilentExecResponse {
+                msg_type: "silent_exec_result".to_string(),
+                id,
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: "Empty command string".to_string(),
+                timed_out: false,
+            }),
+        )
+            .into_response();
+    }
+
+    let cwd_path = if let Some(c) = cwd {
+        PathBuf::from(c)
+    } else {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    };
+
+    if !cwd_path.exists() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(SilentExecResponse {
+                msg_type: "silent_exec_result".to_string(),
+                id,
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: "Working directory does not exist".to_string(),
+                timed_out: false,
+            }),
+        )
+            .into_response();
+    }
+
+    let result = execute_silent_command(command, cwd_path, env, timeout_ms).await;
+
+    match result {
+        Ok((exit_code, stdout, stderr, timed_out)) => {
+            let success = exit_code == 0;
+            (
+                axum::http::StatusCode::OK,
+                Json(SilentExecResponse {
+                    msg_type: "silent_exec_result".to_string(),
+                    id,
+                    success,
+                    exit_code,
+                    stdout,
+                    stderr,
+                    timed_out,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("Silent command execution failed: {}", e);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(SilentExecResponse {
+                    msg_type: "silent_exec_result".to_string(),
+                    id,
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: e,
+                    timed_out: false,
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn execute_silent_command(
+    command: String,
+    cwd: PathBuf,
+    env: Option<HashMap<String, String>>,
+    timeout_ms: u64,
+) -> Result<(i32, String, String, bool), String> {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(&command);
+    cmd.current_dir(&cwd);
+
+    if let Some(env_vars) = env {
+        for (key, value) in env_vars {
+            cmd.env(key, value);
+        }
+    }
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Err(format!("Failed to spawn command: {}", e)),
+    };
+
+    let timeout_duration = Duration::from_millis(timeout_ms);
+
+    let output = tokio::time::timeout(timeout_duration, child.wait_with_output())
+        .await
+        .map_err(|_| "Command timed out".to_string());
+
+    match output {
+        Ok(Ok(output)) => {
+            let exit_code = output.status.code().unwrap_or(-1);
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            Ok((exit_code, stdout, stderr, false))
+        }
+        Ok(Err(e)) => Err(format!("Failed to wait for command: {}", e)),
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Ok((-1, String::new(), "Command timed out".to_string(), true))
+        }
+    }
+}
+
+pub async fn silent_exec_stream(ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(handle_silent_exec_stream)
+}
+
+async fn handle_silent_exec_stream(socket: WebSocket, _: ()) {
+    let (mut sender, mut receiver) = socket.split();
+
+    let msg = match receiver.next().await {
+        Some(Ok(Message::Text(text))) => text,
+        Some(Ok(Message::Binary(data))) => String::from_utf8_lossy(&data).to_string(),
+        _ => {
+            tracing::warn!("Silent exec stream: expected initial message");
+            return;
+        }
+    };
+
+    let options: SilentExecStreamRequest = match serde_json::from_str(&msg) {
+        Ok(opt) => opt,
+        Err(e) => {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(&SilentExecResponse {
+                        msg_type: "silent_exec_result".to_string(),
+                        id: String::new(),
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: format!("Invalid request: {}", e),
+                        timed_out: false,
+                    })
+                    .unwrap(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    let id = options.id.clone();
+    let command = options.command.clone();
+    let cwd = options.cwd.clone();
+    let env = options.env.clone();
+    let timeout_ms = options.timeout_ms.unwrap_or(60000);
+
+    tracing::info!(id = %id, command = %command, cwd = ?cwd, "Starting silent stream command");
+
+    if command.trim().is_empty() {
+        let _ = sender
+            .send(Message::Text(
+                serde_json::to_string(&SilentExecResponse {
+                    msg_type: "silent_exec_result".to_string(),
+                    id,
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: "Empty command string".to_string(),
+                    timed_out: false,
+                })
+                .unwrap(),
+            ))
+            .await;
+        return;
+    }
+
+    let cwd_path = if let Some(c) = cwd {
+        PathBuf::from(c)
+    } else {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    };
+
+    if !cwd_path.exists() {
+        let _ = sender
+            .send(Message::Text(
+                serde_json::to_string(&SilentExecResponse {
+                    msg_type: "silent_exec_result".to_string(),
+                    id,
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: "Working directory does not exist".to_string(),
+                    timed_out: false,
+                })
+                .unwrap(),
+            ))
+            .await;
+        return;
+    }
+
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(&command);
+    cmd.current_dir(&cwd_path);
+
+    if let Some(env_vars) = env {
+        for (key, value) in env_vars {
+            cmd.env(key, value);
+        }
+    }
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(&SilentExecResponse {
+                        msg_type: "silent_exec_result".to_string(),
+                        id,
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: format!("Failed to spawn command: {}", e),
+                        timed_out: false,
+                    })
+                    .unwrap(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+
+    let mut stdout_reader = tokio::io::BufReader::new(stdout);
+    let mut stderr_reader = tokio::io::BufReader::new(stderr);
+
+    let id_stdout = id.clone();
+    let id_stderr = id.clone();
+    let mut sender_stdout = sender.clone();
+    let mut sender_stderr = sender.clone();
+
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        while let Ok(n) = stdout_reader.read_line(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let chunk = SilentExecChunk {
+                msg_type: "silent_exec_chunk".to_string(),
+                id: id_stdout.clone(),
+                stream: "stdout".to_string(),
+                data: buf.clone(),
+            };
+            if sender_stdout
+                .send(Message::Text(serde_json::to_string(&chunk).unwrap()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            buf.clear();
+        }
+    });
+
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        while let Ok(n) = stderr_reader.read_line(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let chunk = SilentExecChunk {
+                msg_type: "silent_exec_chunk".to_string(),
+                id: id_stderr.clone(),
+                stream: "stderr".to_string(),
+                data: buf.clone(),
+            };
+            if sender_stderr
+                .send(Message::Text(serde_json::to_string(&chunk).unwrap()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            buf.clear();
+        }
+    });
+
+    let timeout_duration = Duration::from_millis(timeout_ms);
+    let timed_out = match tokio::time::timeout(timeout_duration, child.wait()).await {
+        Ok(Ok(status)) => {
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            let exit_code = status.code().unwrap_or(-1);
+            let done = SilentExecDone {
+                msg_type: "silent_exec_done".to_string(),
+                id,
+                exit_code,
+                timed_out: false,
+            };
+            let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap()));
+        }
+        Ok(Err(e)) => {
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            let done = SilentExecDone {
+                msg_type: "silent_exec_done".to_string(),
+                id,
+                exit_code: -1,
+                timed_out: false,
+            };
+            let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap()));
+            tracing::error!("Process wait error: {}", e);
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            let done = SilentExecDone {
+                msg_type: "silent_exec_done".to_string(),
+                id,
+                exit_code: -1,
+                timed_out: true,
+            };
+            let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap()));
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_execute_silent_command_success() {
+        let result = execute_silent_command(
+            "echo hello".to_string(),
+            std::env::current_dir().unwrap(),
+            None,
+            5000,
+        )
+        .await;
+        assert!(result.is_ok());
+        let (exit_code, stdout, stderr, timed_out) = result.unwrap();
+        assert_eq!(exit_code, 0);
+        assert!(stdout.contains("hello"));
+        assert!(stderr.is_empty());
+        assert!(!timed_out);
+    }
+
+    #[tokio::test]
+    async fn test_execute_silent_command_failure() {
+        let result = execute_silent_command(
+            "exit 1".to_string(),
+            std::env::current_dir().unwrap(),
+            None,
+            5000,
+        )
+        .await;
+        assert!(result.is_ok());
+        let (exit_code, stdout, stderr, timed_out) = result.unwrap();
+        assert_eq!(exit_code, 1);
+        assert!(stdout.is_empty());
+        assert!(!timed_out);
+    }
+
+    #[tokio::test]
+    async fn test_execute_silent_command_with_env() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("TEST_VAR".to_string(), "test_value".to_string());
+        let result = execute_silent_command(
+            "echo $TEST_VAR".to_string(),
+            std::env::current_dir().unwrap(),
+            Some(env),
+            5000,
+        )
+        .await;
+        assert!(result.is_ok());
+        let (exit_code, stdout, _, timed_out) = result.unwrap();
+        assert_eq!(exit_code, 0);
+        assert!(stdout.contains("test_value"));
+        assert!(!timed_out);
+    }
+
+    #[tokio::test]
+    async fn test_execute_silent_command_timeout() {
+        let result = execute_silent_command(
+            "sleep 10".to_string(),
+            std::env::current_dir().unwrap(),
+            None,
+            100,
+        )
+        .await;
+        assert!(result.is_ok());
+        let (exit_code, stdout, stderr, timed_out) = result.unwrap();
+        assert_eq!(exit_code, -1);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("timed out"));
+        assert!(timed_out);
+    }
+
+    #[tokio::test]
+    async fn test_execute_silent_command_stderr() {
+        let result = execute_silent_command(
+            "echo error >&2".to_string(),
+            std::env::current_dir().unwrap(),
+            None,
+            5000,
+        )
+        .await;
+        assert!(result.is_ok());
+        let (exit_code, stdout, stderr, timed_out) = result.unwrap();
+        assert_eq!(exit_code, 0);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("error"));
+        assert!(!timed_out);
     }
 }

@@ -10,7 +10,7 @@ pub struct Scrollback {
 
 impl Scrollback {
     pub fn new(pid: u32) -> Self {
-        let path = std::env::temp_dir().join(format!("axs_scrollback_{pid}.bin"));
+        let path = std::env::temp_dir().join(format!("dsterm_scrollback_{pid}.bin"));
         Self {
             path,
             file: Mutex::new(None),

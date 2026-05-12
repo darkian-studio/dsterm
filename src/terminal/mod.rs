@@ -65,6 +65,8 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .route("/terminals/{pid}", get(terminal_websocket))
         .route("/terminals/{pid}/terminate", post(terminate_terminal))
         .route("/execute-command", post(execute_command))
+        .route("/silent-exec", post(silent_exec))
+        .route("/silent-exec-stream", get(silent_exec_stream))
         .route("/status", get(|| async { "OK" }))
         .with_state(sessions)
         .layer(cors)
@@ -85,7 +87,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         }
         Err(e) => {
             if e.kind() == ErrorKind::AddrInUse {
-                tracing::error!("Port is already in use please kill all other instances of axs server or stop any other process or app that maybe be using port {}", port);
+                tracing::error!("Port is already in use please kill all other instances of dsterm server or stop any other process or app that maybe be using port {}", port);
             } else {
                 tracing::error!("Failed to bind: {}", e);
             }

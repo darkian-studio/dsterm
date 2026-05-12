@@ -36,4 +36,62 @@ pub struct ProcessExitMessage {
     pub message: String,
 }
 
+#[derive(Deserialize)]
+pub struct SilentExecRequest {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub env: Option<std::collections::HashMap<String, String>>,
+    #[serde(rename = "timeout_ms")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct SilentExecResponse {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub id: String,
+    pub success: bool,
+    #[serde(rename = "exit_code")]
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    #[serde(rename = "timed_out")]
+    pub timed_out: bool,
+}
+
+#[derive(Deserialize)]
+pub struct SilentExecStreamRequest {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub env: Option<std::collections::HashMap<String, String>>,
+    #[serde(rename = "timeout_ms")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct SilentExecChunk {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub id: String,
+    pub stream: String,
+    pub data: String,
+}
+
+#[derive(Serialize)]
+pub struct SilentExecDone {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub id: String,
+    #[serde(rename = "exit_code")]
+    pub exit_code: i32,
+    #[serde(rename = "timed_out")]
+    pub timed_out: bool,
+}
+
 pub type Sessions = Arc<DashMap<u32, TerminalSession>>;
