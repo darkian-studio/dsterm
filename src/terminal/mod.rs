@@ -20,6 +20,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use handlers::*;
 use types::Sessions;
+use crate::{lsp_bridge, dap_bridge, mcp_bridge};
+use std::collections::HashMap;
+use tokio::sync::RwLock;
 
 static DEFAULT_COMMAND: OnceLock<String> = OnceLock::new();
 
@@ -42,6 +45,12 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .init();
 
     let sessions: Sessions = Arc::new(DashMap::new());
+    let lsp_registry: lsp_bridge::LspRegistry =
+        Arc::new(RwLock::new(HashMap::new()));
+    let dap_registry: dap_bridge::DapRegistry =
+        Arc::new(RwLock::new(HashMap::new()));
+    let mcp_registry: mcp_bridge::McpRegistry =
+        Arc::new(RwLock::new(HashMap::new()));
 
     let cors = if allow_any_origin {
         CorsLayer::new()
@@ -58,7 +67,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
             .allow_headers(Any)
     };
 
-    let app = Router::new()
+    let terminal_router = Router::new()
         .route("/", get(|| async { "Rust based DSTerm server" }))
         .route("/terminals", post(create_terminal))
         .route("/terminals/{pid}/resize", post(resize_terminal))
@@ -68,7 +77,13 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .route("/silent-exec", post(silent_exec))
         .route("/silent-exec-stream", get(silent_exec_stream))
         .route("/status", get(|| async { "OK" }))
-        .with_state(sessions)
+        .with_state(sessions);
+
+    let app = Router::new()
+        .merge(terminal_router)
+        .merge(lsp_bridge::lsp_routes().with_state(lsp_registry))
+        .merge(dap_bridge::dap_routes().with_state(dap_registry))
+        .merge(mcp_bridge::mcp_routes().with_state(mcp_registry))
         .layer(cors)
         .layer(
             TraceLayer::new_for_http()
