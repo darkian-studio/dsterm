@@ -18,11 +18,11 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::{dap_bridge, lsp_bridge, mcp_bridge};
 use handlers::*;
-use types::Sessions;
-use crate::{lsp_bridge, dap_bridge, mcp_bridge};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
+use types::Sessions;
 
 static DEFAULT_COMMAND: OnceLock<String> = OnceLock::new();
 
@@ -45,12 +45,9 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .init();
 
     let sessions: Sessions = Arc::new(DashMap::new());
-    let lsp_registry: lsp_bridge::LspRegistry =
-        Arc::new(RwLock::new(HashMap::new()));
-    let dap_registry: dap_bridge::DapRegistry =
-        Arc::new(RwLock::new(HashMap::new()));
-    let mcp_registry: mcp_bridge::McpRegistry =
-        Arc::new(RwLock::new(HashMap::new()));
+    let lsp_registry: lsp_bridge::LspRegistry = Arc::new(RwLock::new(HashMap::new()));
+    let dap_registry: dap_bridge::DapRegistry = Arc::new(RwLock::new(HashMap::new()));
+    let mcp_registry: mcp_bridge::McpRegistry = Arc::new(RwLock::new(HashMap::new()));
 
     let cors = if allow_any_origin {
         CorsLayer::new()

@@ -1,21 +1,24 @@
 //! LSP HTTP+WebSocket bridge — process lifecycle owned by dsterm.
+use crate::proto_frame::{encode_frame, FrameDecoder};
+use axum::extract::{
+    ws::{Message, WebSocket, WebSocketUpgrade},
+    Path,
+};
+use axum::routing::{get, post};
+use axum::Router;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::{Mutex, RwLock};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use serde::{Deserialize, Serialize};
-use axum::{extract::State, response::IntoResponse, http::StatusCode, Json};
+use tokio::sync::{Mutex, RwLock};
 use tokio::task;
 use tokio::time::timeout;
-use axum::extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path};
-use axum::routing::{get, post};
-use axum::Router;
-use futures::{SinkExt, StreamExt};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::proto_frame::{FrameDecoder, encode_frame};
 
 #[allow(dead_code)]
 pub struct LspSession {
@@ -115,7 +118,10 @@ pub async fn lsp_start(
         pid,
     };
 
-    registry.write().await.insert(req.id.clone(), Arc::new(session));
+    registry
+        .write()
+        .await
+        .insert(req.id.clone(), Arc::new(session));
 
     (
         StatusCode::OK,

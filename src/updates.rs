@@ -142,7 +142,9 @@ impl UpdateChecker {
             "arm" => "android-armv7",
             "aarch64" => "android-arm64",
             "x86_64" => "android-x86_64",
-            _ => return Err(format!("Unsupported architecture: {}", std::env::consts::ARCH).into()),
+            _ => {
+                return Err(format!("Unsupported architecture: {}", std::env::consts::ARCH).into())
+            }
         };
 
         let asset = release
