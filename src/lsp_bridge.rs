@@ -2,12 +2,14 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{Mutex, RwLock};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use serde::{Deserialize, Serialize};
 use axum::{extract::State, response::IntoResponse, http::StatusCode, Json};
 use tokio::task;
+use tokio::time::timeout;
 
 pub struct LspSession {
     pub child: Arc<Mutex<Child>>,
@@ -112,5 +114,45 @@ pub async fn lsp_start(
             "id": req.id,
             "ws_path": format!("/lsp/{}", req.id)
         })),
+    )
+}
+
+pub async fn lsp_kill(
+    State(registry): State<LspRegistry>,
+    body: Option<Json<LspKillRequest>>,
+) -> impl IntoResponse {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+
+    let target_ids = if let Some(id) = &req.id {
+        vec![id.clone()]
+    } else {
+        registry.read().await.keys().cloned().collect()
+    };
+
+    let mut killed = Vec::new();
+
+    for id in target_ids {
+        let session = registry.write().await.remove(&id);
+        if let Some(session) = session {
+            let mut child = session.child.lock().await;
+            if child.start_kill().is_ok() {
+                match timeout(Duration::from_secs(2), child.wait()).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(_)) => {
+                        let _ = child.kill().await;
+                    }
+                    Err(_) => {
+                        let _ = child.kill().await;
+                    }
+                }
+            }
+            drop(child);
+        }
+        killed.push(id);
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "killed": killed })),
     )
 }
