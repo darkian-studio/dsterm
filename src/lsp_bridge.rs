@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 use axum::{extract::State, response::IntoResponse, http::StatusCode, Json};
 use tokio::task;
 use tokio::time::timeout;
+use axum::extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Path};
+use axum::routing::{get, post};
+use axum::Router;
+use futures::{SinkExt, StreamExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::proto_frame::{FrameDecoder, encode_frame};
 
 pub struct LspSession {
     pub child: Arc<Mutex<Child>>,
@@ -155,4 +161,91 @@ pub async fn lsp_kill(
         StatusCode::OK,
         Json(serde_json::json!({ "killed": killed })),
     )
+}
+
+pub async fn lsp_websocket(
+    ws: WebSocketUpgrade,
+    Path(id): Path<String>,
+    State(registry): State<LspRegistry>,
+) -> impl IntoResponse {
+    let session = registry.read().await.get(&id).cloned();
+    if session.is_none() {
+        return (StatusCode::NOT_FOUND, "session not found").into_response();
+    }
+    let session = session.unwrap();
+    let stdout = session.stdout.lock().await.take();
+    if stdout.is_none() {
+        return (StatusCode::CONFLICT, "stdout already claimed").into_response();
+    }
+    let stdout = stdout.unwrap();
+
+    ws.on_upgrade(move |socket| lsp_pump(socket, id, registry, session, stdout))
+}
+
+async fn lsp_pump(
+    socket: WebSocket,
+    id: String,
+    registry: LspRegistry,
+    session: Arc<LspSession>,
+    mut stdout: ChildStdout,
+) {
+    let (mut ws_send, mut ws_recv) = socket.split();
+    let mut decoder = FrameDecoder::new();
+    let mut buf = [0u8; 8192];
+
+    loop {
+        tokio::select! {
+            msg = ws_recv.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        let frame = encode_frame(&text);
+                        let mut stdin = session.stdin.lock().await;
+                        let _ = stdin.write_all(&frame).await;
+                        let _ = stdin.flush().await;
+                    }
+                    Some(Ok(Message::Binary(b))) => {
+                        if let Ok(text) = std::str::from_utf8(&b) {
+                            let frame = encode_frame(text);
+                            let mut stdin = session.stdin.lock().await;
+                            let _ = stdin.write_all(&frame).await;
+                            let _ = stdin.flush().await;
+                        }
+                    }
+                    Some(Ok(Message::Ping(p))) => {
+                        let _ = ws_send.send(Message::Pong(p)).await;
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                        break;
+                    }
+                }
+            }
+            result = stdout.read(&mut buf) => {
+                match result {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(payloads) = decoder.feed(&buf[..n]) {
+                            for payload in payloads {
+                                let _ = ws_send.send(Message::Text(payload.into())).await;
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    registry.write().await.remove(&id);
+    if let Ok(mut child) = session.child.try_lock() {
+        let _ = child.start_kill();
+    }
+    let _ = ws_send.send(Message::Close(None)).await;
+}
+
+pub fn lsp_routes() -> Router<LspRegistry> {
+    Router::new()
+        .route("/lsp/start", post(lsp_start))
+        .route("/lsp/kill", post(lsp_kill))
+        .route("/lsp/{id}", get(lsp_websocket))
 }
