@@ -1,4 +1,8 @@
 mod lsp;
+mod proto_frame;
+mod lsp_bridge;
+mod dap_bridge;
+mod mcp_bridge;
 mod terminal;
 mod updates;
 mod utils;
