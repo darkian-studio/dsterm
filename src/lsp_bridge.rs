@@ -108,9 +108,9 @@ pub async fn lsp_start(
 
     (
         StatusCode::OK,
-        Json(LspStartResponse {
-            id: req.id.clone(),
-            ws_path: format!("/lsp/{}", req.id),
-        }),
+        Json(serde_json::json!({
+            "id": req.id,
+            "ws_path": format!("/lsp/{}", req.id)
+        })),
     )
 }
