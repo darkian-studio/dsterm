@@ -69,7 +69,7 @@ pub async fn lsp_start(
         command.current_dir(cwd);
     }
 
-    let child = match command.spawn() {
+    let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => {
             return (
