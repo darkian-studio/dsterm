@@ -12,6 +12,7 @@ use std::io::Write;
 use std::str;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum FrameError {
     MissingHeader,
     InvalidLength,

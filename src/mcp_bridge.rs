@@ -17,6 +17,7 @@ use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::proto_frame::{FrameDecoder, encode_frame};
 
+#[allow(dead_code)]
 pub struct McpSession {
     pub child: Arc<Mutex<Child>>,
     pub stdin: Arc<Mutex<ChildStdin>>,
@@ -35,6 +36,7 @@ pub struct McpStartRequest {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 pub struct McpStartResponse {
     pub id: String,
     #[serde(rename = "ws_path")]
@@ -47,6 +49,7 @@ pub struct McpKillRequest {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 pub struct McpKillResponse {
     pub killed: Vec<String>,
 }
