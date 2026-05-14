@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use nom::{
     branch::alt,
     bytes::streaming::{is_not, tag, take_until},
