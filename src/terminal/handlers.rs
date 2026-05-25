@@ -120,9 +120,9 @@ pub async fn create_terminal(
             (prog, rest)
         }
     } else {
-        match shell_integration::write_integration_files(&session_uuid) {
+        match super::shell_integration::write_integration_files(&session_uuid) {
             Ok(paths) => {
-                let (prog, prog_args) = shell_integration::integration_command(&paths);
+                let (prog, prog_args) = super::shell_integration::integration_command(&paths);
                 let base = prog.rsplit('/').next().unwrap_or("").to_string();
                 if base == "zsh" {
                     env_overrides.push((
@@ -366,7 +366,7 @@ pub async fn terminal_websocket(
 async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let (mut sender, mut receiver) = socket.split();
 
-    let (writer, scrollback, output_tx_arc, command_exit_tx_arc, osc_leftover_arc, exit_status_arc, exit_notify) = {
+    let (writer, scrollback, output_tx_arc, command_exit_tx_arc, _osc_leftover_arc, exit_status_arc, exit_notify) = {
         let Some(session) = sessions.get(&pid) else {
             tracing::error!("Session {} not found", pid);
             return;
