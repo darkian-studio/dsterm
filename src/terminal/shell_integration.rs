@@ -34,33 +34,26 @@ pub fn write_integration_files(session_uuid: &str) -> std::io::Result<Integratio
 }
 
 pub fn integration_command(paths: &IntegrationPaths) -> (String, Vec<String>) {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-        String::from("/data/data/com.termux/files/usr/bin/bash")
-    });
+    let shell = std::env::var("SHELL")
+        .unwrap_or_else(|_| String::from("/data/data/com.termux/files/usr/bin/bash"));
     let base = shell.rsplit('/').next().unwrap_or("bash");
     match base {
-        "zsh" => {
-            (shell.clone(), vec!["-i".to_string()])
-        }
-        "fish" => {
-            (
-                shell.clone(),
-                vec![
-                    "-C".to_string(),
-                    format!("source {}", paths.fish_config.display()),
-                    "-i".to_string(),
-                ],
-            )
-        }
-        _ => {
-            (
-                shell.clone(),
-                vec![
-                    "--rcfile".to_string(),
-                    paths.bashrc.display().to_string(),
-                    "-i".to_string(),
-                ],
-            )
-        }
+        "zsh" => (shell.clone(), vec!["-i".to_string()]),
+        "fish" => (
+            shell.clone(),
+            vec![
+                "-C".to_string(),
+                format!("source {}", paths.fish_config.display()),
+                "-i".to_string(),
+            ],
+        ),
+        _ => (
+            shell.clone(),
+            vec![
+                "--rcfile".to_string(),
+                paths.bashrc.display().to_string(),
+                "-i".to_string(),
+            ],
+        ),
     }
 }

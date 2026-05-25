@@ -116,7 +116,11 @@ pub async fn create_terminal(
             (String::from("login"), Vec::<String>::new())
         } else {
             let prog = parts[0].clone();
-            let rest: Vec<String> = if parts.len() > 1 { parts[1..].to_vec() } else { vec![] };
+            let rest: Vec<String> = if parts.len() > 1 {
+                parts[1..].to_vec()
+            } else {
+                vec![]
+            };
             (prog, rest)
         }
     } else {
@@ -125,15 +129,15 @@ pub async fn create_terminal(
                 let (prog, prog_args) = super::shell_integration::integration_command(&paths);
                 let base = prog.rsplit('/').next().unwrap_or("").to_string();
                 if base == "zsh" {
-                    env_overrides.push((
-                        "ZDOTDIR".to_string(),
-                        paths.zshrc_dir.display().to_string(),
-                    ));
+                    env_overrides
+                        .push(("ZDOTDIR".to_string(), paths.zshrc_dir.display().to_string()));
                 }
                 (prog, prog_args)
             }
             Err(e) => {
-                tracing::warn!("Failed to write dsterm integration files: {e}; falling back to login");
+                tracing::warn!(
+                    "Failed to write dsterm integration files: {e}; falling back to login"
+                );
                 (String::from("login"), Vec::<String>::new())
             }
         }
@@ -234,8 +238,7 @@ pub async fn create_terminal(
         Arc::new(std::sync::Mutex::new(None));
     let command_exit_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<String>>>> =
         Arc::new(std::sync::Mutex::new(None));
-    let osc_leftover: Arc<std::sync::Mutex<Vec<u8>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let osc_leftover: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let exit_status: Arc<std::sync::Mutex<Option<bool>>> = Arc::new(std::sync::Mutex::new(None));
     let exit_notify = Arc::new(tokio::sync::Notify::new());
 
@@ -273,7 +276,8 @@ pub async fn create_terminal(
                                 let msg = serde_json::to_string(&CommandExitMessage {
                                     msg_type: "command_exit".to_string(),
                                     exit_code: code,
-                                }).unwrap_or_default();
+                                })
+                                .unwrap_or_default();
                                 let _ = tx.try_send(msg);
                             }
                         }
@@ -366,7 +370,15 @@ pub async fn terminal_websocket(
 async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let (mut sender, mut receiver) = socket.split();
 
-    let (writer, scrollback, output_tx_arc, command_exit_tx_arc, _osc_leftover_arc, exit_status_arc, exit_notify) = {
+    let (
+        writer,
+        scrollback,
+        output_tx_arc,
+        command_exit_tx_arc,
+        _osc_leftover_arc,
+        exit_status_arc,
+        exit_notify,
+    ) = {
         let Some(session) = sessions.get(&pid) else {
             tracing::error!("Session {} not found", pid);
             return;
