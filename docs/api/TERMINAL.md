@@ -84,6 +84,20 @@ When a new WebSocket connects to an existing terminal session, the server:
 
 After replay, live PTY output streaming begins.
 
+#### Command Exit (Shell Integration)
+
+For sessions started with default settings, dsterm injects a shell‑integration
+script (bash/zsh/fish) that emits `OSC 633 ; D ; <exit_code> ST` at every
+prompt. dsterm strips these escapes from the binary stream and emits one
+text frame per command:
+
+```json
+{"type":"command_exit","exit_code":0}
+```
+
+The IDE pairs this with whatever command it most recently sent. Integration
+is disabled when dsterm is started with `-c <custom-command>`.
+
 #### Process Exit
 
 When the spawned process exits, the server sends:

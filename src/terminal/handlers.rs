@@ -35,9 +35,68 @@ pub struct TerminalSession {
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub scrollback: Arc<Scrollback>,
     pub output_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>>,
+    pub command_exit_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<String>>>>,
+    pub osc_leftover: Arc<std::sync::Mutex<Vec<u8>>>,
     pub exit_status: Arc<std::sync::Mutex<Option<bool>>>,
     pub exit_notify: Arc<tokio::sync::Notify>,
     pub last_accessed: Arc<Mutex<SystemTime>>,
+}
+
+/// Strip OSC 633 sequences in-place from a byte buffer, returning cleaned
+/// bytes and a vector of exit codes for D-class events. Sequences that straddle
+/// the end of `chunk` are kept in `leftover` for reassembly with the next chunk.
+pub fn strip_osc_633(chunk: &[u8], leftover: &mut Vec<u8>) -> (Vec<u8>, Vec<i32>) {
+    let mut input: Vec<u8> = std::mem::take(leftover);
+    input.extend_from_slice(chunk);
+
+    let mut out = Vec::with_capacity(input.len());
+    let mut exits = Vec::new();
+    let mut i = 0usize;
+    while i < input.len() {
+        if input[i] == 0x1b
+            && i + 5 < input.len()
+            && input[i + 1] == b']'
+            && input[i + 2] == b'6'
+            && input[i + 3] == b'3'
+            && input[i + 4] == b'3'
+            && input[i + 5] == b';'
+        {
+            let mut j = i + 6;
+            let mut found_st: Option<usize> = None;
+            while j < input.len() && j - i < 256 {
+                if input[j] == 0x07 {
+                    found_st = Some(j + 1);
+                    break;
+                }
+                if j + 1 < input.len() && input[j] == 0x1b && input[j + 1] == 0x5c {
+                    found_st = Some(j + 2);
+                    break;
+                }
+                j += 1;
+            }
+            match found_st {
+                Some(end) => {
+                    let body = &input[i + 6..end - if input[end - 1] == 0x07 { 1 } else { 2 }];
+                    if body.starts_with(b"D;") {
+                        if let Ok(s) = std::str::from_utf8(&body[2..]) {
+                            if let Ok(code) = s.trim().parse::<i32>() {
+                                exits.push(code);
+                            }
+                        }
+                    }
+                    i = end;
+                    continue;
+                }
+                None => {
+                    leftover.extend_from_slice(&input[i..]);
+                    return (out, exits);
+                }
+            }
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    (out, exits)
 }
 
 pub async fn create_terminal(
@@ -48,17 +107,37 @@ pub async fn create_terminal(
     let cols = parse_u16(&options.cols, "cols").expect("failed");
     tracing::info!("Creating new terminal with cols={}, rows={}", cols, rows);
 
-    let mut program = String::from("login");
-    let mut args: Vec<String> = Vec::new();
-    if let Some(cmd) = get_default_command() {
+    let session_uuid = uuid::Uuid::new_v4().to_string();
+    let mut env_overrides: Vec<(String, String)> = Vec::new();
+    let (program, args) = if get_default_command().is_some() {
+        let cmd = get_default_command().unwrap();
         let parts: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
-        if !parts.is_empty() {
-            program = parts[0].clone();
-            if parts.len() > 1 {
-                args = parts[1..].to_vec();
+        if parts.is_empty() {
+            (String::from("login"), Vec::<String>::new())
+        } else {
+            let prog = parts[0].clone();
+            let rest: Vec<String> = if parts.len() > 1 { parts[1..].to_vec() } else { vec![] };
+            (prog, rest)
+        }
+    } else {
+        match shell_integration::write_integration_files(&session_uuid) {
+            Ok(paths) => {
+                let (prog, prog_args) = shell_integration::integration_command(&paths);
+                let base = prog.rsplit('/').next().unwrap_or("").to_string();
+                if base == "zsh" {
+                    env_overrides.push((
+                        "ZDOTDIR".to_string(),
+                        paths.zshrc_dir.display().to_string(),
+                    ));
+                }
+                (prog, prog_args)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to write dsterm integration files: {e}; falling back to login");
+                (String::from("login"), Vec::<String>::new())
             }
         }
-    }
+    };
 
     let size = PtySize {
         rows,
@@ -74,6 +153,9 @@ pub async fn create_terminal(
     let std_result = match openpty_result {
         Ok(pair) => {
             let mut cmd = CommandBuilder::new(&program);
+            for (k, v) in &env_overrides {
+                cmd.env(k, v);
+            }
             if !args.is_empty() {
                 let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                 cmd.args(arg_refs);
@@ -150,6 +232,10 @@ pub async fn create_terminal(
     let scrollback = Arc::new(Scrollback::new(pid));
     let output_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>> =
         Arc::new(std::sync::Mutex::new(None));
+    let command_exit_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<String>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let osc_leftover: Arc<std::sync::Mutex<Vec<u8>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
     let exit_status: Arc<std::sync::Mutex<Option<bool>>> = Arc::new(std::sync::Mutex::new(None));
     let exit_notify = Arc::new(tokio::sync::Notify::new());
 
@@ -157,6 +243,8 @@ pub async fn create_terminal(
     {
         let scrollback = scrollback.clone();
         let output_tx = output_tx.clone();
+        let command_exit_tx = command_exit_tx.clone();
+        let osc_leftover = osc_leftover.clone();
         spawn_blocking(move || {
             let mut reader = reader;
             let mut read_buffer = [0u8; 8192];
@@ -167,11 +255,28 @@ pub async fn create_terminal(
                 };
 
                 let data = &read_buffer[..n];
-                let _ = scrollback.append(data);
+                let mut leftover_guard = osc_leftover.lock().unwrap();
+                let (stripped, exits) = strip_osc_633(data, &mut leftover_guard);
+                drop(leftover_guard);
+                let _ = scrollback.append(&stripped);
 
                 if let Ok(guard) = output_tx.try_lock() {
                     if let Some(ref tx) = *guard {
-                        let _ = tx.try_send(data.to_vec());
+                        let _ = tx.try_send(stripped);
+                    }
+                }
+
+                if !exits.is_empty() {
+                    if let Ok(guard) = command_exit_tx.lock() {
+                        if let Some(ref tx) = *guard {
+                            for code in exits {
+                                let msg = serde_json::to_string(&CommandExitMessage {
+                                    msg_type: "command_exit".to_string(),
+                                    exit_code: code,
+                                }).unwrap_or_default();
+                                let _ = tx.try_send(msg);
+                            }
+                        }
                     }
                 }
             }
@@ -206,6 +311,8 @@ pub async fn create_terminal(
         writer,
         scrollback,
         output_tx,
+        command_exit_tx,
+        osc_leftover,
         exit_status,
         exit_notify,
         last_accessed: Arc::new(Mutex::new(SystemTime::now())),
@@ -259,7 +366,7 @@ pub async fn terminal_websocket(
 async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let (mut sender, mut receiver) = socket.split();
 
-    let (writer, scrollback, output_tx_arc, exit_status_arc, exit_notify) = {
+    let (writer, scrollback, output_tx_arc, command_exit_tx_arc, osc_leftover_arc, exit_status_arc, exit_notify) = {
         let Some(session) = sessions.get(&pid) else {
             tracing::error!("Session {} not found", pid);
             return;
@@ -272,6 +379,8 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
             session.writer.clone(),
             session.scrollback.clone(),
             session.output_tx.clone(),
+            session.command_exit_tx.clone(),
+            session.osc_leftover.clone(),
             session.exit_status.clone(),
             session.exit_notify.clone(),
         )
@@ -310,6 +419,13 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     {
         let mut guard = output_tx_arc.lock().unwrap();
         *guard = Some(ws_output_tx);
+    }
+
+    // Create command_exit channel for this WS connection
+    let (cmd_exit_tx, mut cmd_exit_rx) = tokio::sync::mpsc::channel::<String>(64);
+    {
+        let mut guard = command_exit_tx_arc.lock().unwrap();
+        *guard = Some(cmd_exit_tx);
     }
 
     // Send full scrollback history (client should clear terminal before connecting)
@@ -372,6 +488,13 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                     }
                 }
             }
+            maybe_msg = cmd_exit_rx.recv() => {
+                if let Some(json) = maybe_msg {
+                    if sender.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+            }
             _ = exit_notify.notified() => {
                 // Give the reader a moment to flush remaining output
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -423,9 +546,13 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
         }
     }
 
-    // Disconnect: clear the output sender so background reader stops forwarding
+    // Disconnect: clear the output and command_exit senders so background stops forwarding
     {
         let mut guard = output_tx_arc.lock().unwrap();
+        *guard = None;
+    }
+    {
+        let mut guard = command_exit_tx_arc.lock().unwrap();
         *guard = None;
     }
 

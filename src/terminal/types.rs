@@ -96,4 +96,11 @@ pub struct SilentExecDone {
     pub timed_out: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct CommandExitMessage {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub exit_code: i32,
+}
+
 pub type Sessions = Arc<DashMap<u32, TerminalSession>>;

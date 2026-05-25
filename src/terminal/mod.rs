@@ -3,6 +3,7 @@ mod handlers;
 // Linux/Android and will never be built for other platforms.
 mod pty_fallback;
 mod scrollback;
+mod shell_integration;
 mod types;
 
 use axum::{
