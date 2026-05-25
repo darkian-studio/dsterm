@@ -6,7 +6,6 @@ const ZSH_ZSHRC: &str = include_str!("../../assets/dsterm-integration.zshrc");
 const FISH_CONFIG: &str = include_str!("../../assets/dsterm-integration.fish");
 
 pub struct IntegrationPaths {
-    pub dir: PathBuf,
     pub bashrc: PathBuf,
     pub zshrc_dir: PathBuf,
     pub fish_config: PathBuf,
@@ -28,7 +27,6 @@ pub fn write_integration_files(session_uuid: &str) -> std::io::Result<Integratio
     fs::write(&fish_config, FISH_CONFIG)?;
 
     Ok(IntegrationPaths {
-        dir,
         bashrc,
         zshrc_dir,
         fish_config,
