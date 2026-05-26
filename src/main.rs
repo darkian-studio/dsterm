@@ -1,3 +1,4 @@
+mod ast_bridge;
 mod dap_bridge;
 mod lsp;
 mod lsp_bridge;
