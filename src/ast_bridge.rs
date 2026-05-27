@@ -13,13 +13,7 @@ use crate::ast_bridge::cache::{CachedDocument, DocumentCache};
 use crate::ast_bridge::languages::language_for_id;
 use crate::ast_bridge::types::{AstScopeRequest, AstScopeResponse};
 use crate::ast_bridge::walker::scope_chain_at_line;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use std::sync::Arc;
 use tree_sitter::Parser;
 
@@ -49,12 +43,7 @@ pub async fn ast_scope(
 
     if let Some(cached) = cache.get(&req.document_id) {
         if cached.version == req.version {
-            let scopes = scope_chain_at_line(
-                &cached.tree,
-                &cached.source,
-                &req.language,
-                req.line,
-            );
+            let scopes = scope_chain_at_line(&cached.tree, &cached.source, &req.language, req.line);
             return Json(AstScopeResponse { scopes }).into_response();
         }
     }
