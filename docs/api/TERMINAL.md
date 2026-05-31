@@ -4,7 +4,7 @@ Create, connect to, resize, and terminate PTY-based interactive terminal session
 
 ## Create Terminal
 
-```
+```text
 POST /terminals
 ```
 
@@ -20,13 +20,13 @@ Spawns a shell (`login` by default, or a custom program set via `-c` flag) insid
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `cols` | number or string | Yes | Terminal width in columns |
 | `rows` | number or string | Yes | Terminal height in rows |
 
 ### Response
 
-```
+```text
 200 OK
 12345
 ```
@@ -42,7 +42,8 @@ The response body is a plain text string containing the PID of the spawned child
 ```
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
+| 404 | PID not found (no active session) |
 | 500 | PTY open failed (both `portable-pty` and TIOCGPTPEER fallback exhausted) |
 | 500 | Command spawn failed (e.g. program not found) |
 | 500 | PTY reader/writer cloning failed |
@@ -51,7 +52,7 @@ The response body is a plain text string containing the PID of the spawned child
 
 ## Terminal WebSocket
 
-```
+```text
 GET /terminals/{pid}
 ```
 
@@ -68,6 +69,7 @@ Any binary data sent by the client is written directly to the PTY master. This i
 #### Server → Client (Binary)
 
 The server streams PTY output as raw binary data. Output is **coalesced** to reduce frame overhead:
+
 - A flush is triggered every **8 milliseconds** if data is buffered.
 - A flush is also triggered immediately if the coalesce buffer reaches **8 KB**.
 
@@ -77,10 +79,12 @@ When a new WebSocket connects to an existing terminal session, the server:
 
 1. **Sends the scrollback tail** as a single binary message (up to 256 KB of recent PTY output). The client should clear its display before connecting.
 2. **Sends** a JSON replay-complete signal (at application level):
+
    ```json
    {"type": "replay_complete"}
    ```
-   *Note: the source currently does not emit this JSON — scrollback is sent as raw binary with no delimiter. Check server version for exact behavior.*
+
+> Note: the source currently does not emit this JSON — scrollback is sent as raw binary with no delimiter. Check server version for exact behavior.
 
 After replay, live PTY output streaming begins.
 
@@ -114,24 +118,18 @@ When the spawned process exits, the server sends:
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `exit_code` | number or null | Process exit code |
 | `signal` | string or null | Signal that terminated the process (if any) |
 | `message` | string | Human-readable exit description |
 
 After sending the exit message, the session is removed and the WebSocket is closed.
 
-### Errors
-
-| Status | Condition |
-|--------|-----------|
-| 404 | PID not found (no active session) |
-
 ---
 
 ## Resize Terminal
 
-```
+```text
 POST /terminals/{pid}/resize
 ```
 
@@ -182,7 +180,7 @@ Resizes the PTY dimensions for an active terminal session.
 
 ## Terminate Terminal
 
-```
+```text
 POST /terminals/{pid}/terminate
 ```
 
@@ -211,7 +209,7 @@ Kills the child process of an active terminal session and cleans up the scrollba
 ```
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 200 (with error body) | Session not found or kill failed |
 
 ---

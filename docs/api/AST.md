@@ -16,7 +16,7 @@ no `didOpen` / `didClose`. The server maintains a bounded LRU cache
 
 ## Endpoint
 
-```
+```text
 POST /ast/scope
 ```
 
@@ -32,13 +32,13 @@ POST /ast/scope
 }
 ```
 
-| Field         | Type   | Required | Description |
-|---------------|--------|----------|-------------|
-| `language`    | string | Yes      | Language ID (see Supported Languages below). |
-| `document_id` | string | Yes      | Stable identifier for the document (URI recommended). Used as the cache key. |
-| `version`     | number | Yes      | Monotonic integer that increments on every edit. Identical `version` values for the same `document_id` reuse the cached parse tree. |
-| `content`     | string | Yes      | Full UTF-8 source text. |
-| `line`        | number | Yes      | 1-based cursor line at which to compute the enclosing scope chain. |
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `language` | string | Yes | Language ID (see Supported Languages below). |
+| `document_id` | string | Yes | Stable identifier for the document (URI recommended). Used as the cache key. |
+| `version` | number | Yes | Monotonic integer that increments on every edit. Identical `version` values for the same `document_id` reuse the cached parse tree. |
+| `content` | string | Yes | Full UTF-8 source text. |
+| `line` | number | Yes | 1-based cursor line at which to compute the enclosing scope chain. |
 
 ### Response Body (200 OK)
 
@@ -51,38 +51,39 @@ POST /ast/scope
 }
 ```
 
-| Field                | Type    | Description |
-|----------------------|---------|-------------|
-| `scopes`             | array   | Ordered from outermost scope (index 0) to innermost. |
-| `scopes[].name`      | string  | Identifier text of the declaration's `name` field. |
-| `scopes[].kind`      | string  | One of `function`, `class`, `method`, `interface`, `enum`. |
-| `scopes[].start_line`| number  | 1-based line on which the declaration starts. |
-| `scopes[].end_line`  | number  | 1-based line on which the declaration ends. |
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `scopes` | array | Ordered from outermost scope (index 0) to innermost. |
+| `scopes[].name` | string | Identifier text of the declaration's `name` field. |
+| `scopes[].kind` | string | One of `function`, `class`, `method`, `interface`, `enum`. |
+| `scopes[].start_line` | number | 1-based line on which the declaration starts. |
+| `scopes[].end_line` | number | 1-based line on which the declaration ends. |
 
 Anonymous declarations (arrow functions, function expressions without
 a name) do not appear in the output.
 
 ### Errors
 
-| Status | Body                                                              | Condition |
-|--------|-------------------------------------------------------------------|-----------|
-| 400    | `{"error":"unsupported language","language":"<id>"}`              | `language` is not in the supported list below. |
-| 500    | `{"error":"failed to set language"}`                              | Internal tree-sitter language registration failed. |
-| 500    | `{"error":"parse failed"}`                                        | tree-sitter returned no tree (e.g. cancellation). |
+| Status | Body | Condition |
+| ------ | ---- | --------- |
+| 400 | `{"error":"unsupported language","language":"<id>"}` | `language` is not in the supported list below. |
+| 500 | `{"error":"failed to set language"}` | Internal tree-sitter language registration failed. |
+| 500 | `{"error":"parse failed"}` | tree-sitter returned no tree (e.g. cancellation). |
 
 ---
 
 ## Supported Languages
 
-| `language` field | Underlying grammar                              |
-|------------------|-------------------------------------------------|
-| `python`         | `tree-sitter-python`                            |
-| `javascript`     | `tree-sitter-javascript`                        |
-| `jsx`            | `tree-sitter-javascript` (handles JSX)          |
-| `typescript`     | `tree-sitter-typescript` (TypeScript dialect)   |
-| `tsx`            | `tree-sitter-typescript` (TSX dialect)          |
+| `language` field | Underlying grammar |
+| ---------------- | ------------------ |
+| `python` | `tree-sitter-python` |
+| `javascript` | `tree-sitter-javascript` |
+| `jsx` | `tree-sitter-javascript` (handles JSX) |
+| `typescript` | `tree-sitter-typescript` (TypeScript dialect) |
+| `tsx` | `tree-sitter-typescript` (TSX dialect) |
 
 Adding a new language requires:
+
 1. A new arm in `language_for_id` in `src/ast_bridge/languages.rs`.
 2. New arms in `node_kind_to_scope_kind` for the language's scope-bearing node kinds.
 3. The corresponding `tree-sitter-<lang>` crate in `Cargo.toml`.

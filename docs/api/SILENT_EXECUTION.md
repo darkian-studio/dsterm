@@ -6,7 +6,7 @@ Execute commands without an interactive PTY. Two modes: **REST** (full result at
 
 ## REST: Silent Command Execution
 
-```
+```text
 POST /silent-exec
 ```
 
@@ -28,7 +28,7 @@ Runs `sh -c <command>` with piped stdout/stderr (no PTY) and returns the complet
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `type` | string | No | Message type identifier |
 | `id` | string | Yes | Unique request identifier (echoed in response) |
 | `command` | string | Yes | Command to execute |
@@ -51,7 +51,7 @@ Runs `sh -c <command>` with piped stdout/stderr (no PTY) and returns the complet
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `type` | string | Always `"silent_exec_result"` |
 | `id` | string | Echoed request identifier |
 | `success` | boolean | `true` if exit code is 0 |
@@ -75,7 +75,7 @@ Runs `sh -c <command>` with piped stdout/stderr (no PTY) and returns the complet
 ```
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 400 | Empty command or working directory does not exist |
 | 500 | Spawn failure or internal error |
 
@@ -83,7 +83,7 @@ Runs `sh -c <command>` with piped stdout/stderr (no PTY) and returns the complet
 
 ## WebSocket: Silent Command Execution (Streaming)
 
-```
+```text
 GET /silent-exec-stream
 ```
 
@@ -141,7 +141,7 @@ All fields match the REST request. The default timeout is **60000 ms** (60s) for
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `type` | string | `"silent_exec_chunk"` or `"silent_exec_done"` |
 | `id` | string | Echoed request identifier |
 | `stream` | string | `"stdout"` or `"stderr"` (only on chunks) |

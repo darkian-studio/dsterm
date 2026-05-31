@@ -277,11 +277,14 @@ async fn handle_node_line(session: &ExtensionHostSession, line: &str) {
         None => return,
     };
 
-    session
-        .active_language_servers
-        .write()
-        .await
-        .insert(language, LspEndpoint { transport, host, port });
+    session.active_language_servers.write().await.insert(
+        language,
+        LspEndpoint {
+            transport,
+            host,
+            port,
+        },
+    );
 }
 
 pub fn extension_host_routes() -> Router<ExtensionHostRegistry> {

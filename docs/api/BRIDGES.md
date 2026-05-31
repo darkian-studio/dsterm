@@ -5,7 +5,7 @@ DSTerm provides three protocol bridge modules — **LSP**, **DAP**, and **MCP** 
 All three bridges share an identical pattern:
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| -------- | ---------- | ------------- |
 | `POST` | `/{protocol}/start` | Start a server process |
 | `POST` | `/{protocol}/kill` | Kill one or all server sessions |
 | `GET` | `/{protocol}/{id}` | WebSocket bridge to a running server |
@@ -20,7 +20,7 @@ All three bridges use **Content-Length framing** (the standard LSP transport pro
 
 Messages written to the server's stdin are prefixed with:
 
-```
+```text
 Content-Length: <N>\r\n\r\n<JSON payload of exactly N bytes>
 ```
 
@@ -44,7 +44,7 @@ Routes on the main DSTerm server (port 8767 by default).
 
 #### Start LSP Server
 
-```
+```text
 POST /lsp/start
 ```
 
@@ -60,7 +60,7 @@ POST /lsp/start
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `id` | string | Yes | Unique session identifier |
 | `command` | string | Yes | LSP server binary to spawn |
 | `args` | array of strings | Yes | Arguments to pass to the server |
@@ -76,20 +76,20 @@ POST /lsp/start
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `id` | string | Echoed session identifier |
 | `ws_path` | string | WebSocket endpoint path to connect to |
 
 **Errors:**
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 409 | Session ID already exists |
 | 500 | Spawn failed |
 
 #### Kill LSP Session(s)
 
-```
+```text
 POST /lsp/kill
 ```
 
@@ -102,7 +102,7 @@ POST /lsp/kill
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `id` | string | No | Session ID to kill. Omit to kill all sessions. |
 
 **Response:**
@@ -114,12 +114,12 @@ POST /lsp/kill
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `killed` | array of strings | IDs of sessions that were killed |
 
 #### LSP WebSocket Bridge
 
-```
+```text
 GET /lsp/{id}
 ```
 
@@ -135,7 +135,7 @@ When the WebSocket closes, the LSP process is killed and the session is removed.
 **Errors:**
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 404 | Session ID not found |
 | 409 | Stdout already claimed (only one WS client per session) |
 
@@ -153,7 +153,7 @@ This starts a **separate HTTP server** (port auto-selected by default, or via `-
 
 #### WebSocket Bridge
 
-```
+```text
 GET /
 ```
 
@@ -163,7 +163,7 @@ The same framed protocol applies. Stderr is logged via `tracing::warn!` with tar
 
 #### Status
 
-```
+```text
 GET /status
 ```
 
@@ -183,7 +183,7 @@ Returns information about all LSP processes managed by this proxy:
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `program` | string | LSP server binary name |
 | `processes` | array | List of running process stats |
 | `processes[].pid` | number | Process ID |
@@ -194,7 +194,7 @@ Returns information about all LSP processes managed by this proxy:
 
 In standalone mode, the actual listening port is written to:
 
-```
+```text
 ~/.dsterm/lsp_ports/<server_name>_<pid>
 ```
 
@@ -203,7 +203,7 @@ This file is automatically cleaned up when the server exits.
 #### CLI Flags
 
 | Flag | Description |
-|------|-------------|
+| ------ | ------------- |
 | `-s, --session` | Session identifier for port discovery (allows multiple instances of same server) |
 | `-p, --port` | Specify port explicitly (default: auto-select) |
 | `-i, --ip` | Bind to LAN IP instead of localhost |
@@ -217,7 +217,7 @@ Routes under `/dap/*` on the main DSTerm server.
 
 ### Start DAP Server
 
-```
+```text
 POST /dap/start
 ```
 
@@ -233,7 +233,7 @@ POST /dap/start
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `id` | string | Yes | Unique session identifier |
 | `command` | string | Yes | DAP server binary to spawn |
 | `args` | array of strings | Yes | Arguments to pass to the server |
@@ -251,13 +251,13 @@ POST /dap/start
 **Errors:**
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 409 | Session ID already exists |
 | 500 | Spawn failed |
 
 ### Kill DAP Session(s)
 
-```
+```text
 POST /dap/kill
 ```
 
@@ -279,7 +279,7 @@ POST /dap/kill
 
 ### DAP WebSocket Bridge
 
-```
+```text
 GET /dap/{id}
 ```
 
@@ -290,7 +290,7 @@ Same protocol and behavior as the LSP bridge. Stderr is logged with target `dap_
 **Errors:**
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 404 | Session ID not found |
 | 409 | Stdout already claimed |
 
@@ -302,7 +302,7 @@ Routes under `/mcp/*` on the main DSTerm server.
 
 ### Start MCP Server
 
-```
+```text
 POST /mcp/start
 ```
 
@@ -318,7 +318,7 @@ POST /mcp/start
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `id` | string | Yes | Unique session identifier |
 | `command` | string | Yes | MCP server binary to spawn |
 | `args` | array of strings | Yes | Arguments to pass to the server |
@@ -336,13 +336,13 @@ POST /mcp/start
 **Errors:**
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 409 | Session ID already exists |
 | 500 | Spawn failed |
 
 ### Kill MCP Session(s)
 
-```
+```text
 POST /mcp/kill
 ```
 
@@ -364,7 +364,7 @@ POST /mcp/kill
 
 ### MCP WebSocket Bridge
 
-```
+```text
 GET /mcp/{id}
 ```
 
@@ -375,7 +375,7 @@ Same protocol and behavior as the LSP bridge. Stderr is logged with target `mcp_
 **Errors:**
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 404 | Session ID not found |
 | 409 | Stdout already claimed |
 

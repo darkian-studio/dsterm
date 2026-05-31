@@ -9,7 +9,7 @@ dsterm [OPTIONS] [COMMAND]
 ## Global Options
 
 | Flag | Default | Description |
-|------|---------|-------------|
+| ------ | --------- | ------------- |
 | `-p, --port <PORT>` | `8767` | Port to start the server (range: 1–65535) |
 | `-i, --ip` | — | Bind to the first non-loopback IPv4 address instead of `127.0.0.1` |
 | `-c, --command <COMMAND>` | `login` | Custom program/shell for interactive PTY sessions (e.g. `/usr/bin/bash`) |
@@ -39,7 +39,7 @@ dsterm update
 Starts a **standalone LSP WebSocket proxy**. See [BRIDGES.md](./BRIDGES.md#standalone-lsp-mode-dsterm-lsp) for full details.
 
 | Flag | Description |
-|------|-------------|
+| ------ | ------------- |
 | `-s, --session <ID>` | Session identifier for port discovery file |
 | `<server>` | LSP server binary (e.g. `rust-analyzer`) |
 | `[args...]` | Additional arguments forwarded to the server |
@@ -50,25 +50,25 @@ These are available on the main server (port 8767 by default).
 
 ### GET /
 
-```
+```text
 GET /
 ```
 
 Returns the server identity string:
 
-```
+```text
 Rust based DSTerm server
 ```
 
 ### GET /status
 
-```
+```text
 GET /status
 ```
 
 Simple liveness check. Returns:
 
-```
+```text
 OK
 ```
 

@@ -2,7 +2,7 @@
 
 Run a shell command via a PTY and retrieve the (ANSI-stripped) output.
 
-```
+```text
 POST /execute-command
 ```
 
@@ -18,7 +18,7 @@ Spawns `sh -c <command>` inside a PTY, waits up to 30 seconds for completion, an
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | `command` | string | Yes | Shell command to execute |
 | `cwd` | string | No | Working directory. If empty or omitted, defaults to `$HOME` |
 | `u_cwd` | string | No | Alias for `cwd` (legacy field, same behavior) |
@@ -35,7 +35,7 @@ If both `cwd` and `u_cwd` are provided, `cwd` takes precedence.
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `output` | string | Command output with ANSI escape sequences removed |
 | `error` | string or null | Error message if the command failed |
 
@@ -56,7 +56,7 @@ If both `cwd` and `u_cwd` are provided, `cwd` takes precedence.
 ```
 
 | Status | Condition |
-|--------|-----------|
+| -------- | ----------- |
 | 400 | Working directory does not exist |
 | 500 | Execution timed out (>30s), spawn failed, or internal error |
 
