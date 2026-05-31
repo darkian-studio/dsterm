@@ -19,7 +19,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{ast_bridge, dap_bridge, lsp_bridge, mcp_bridge};
+use crate::{ast_bridge, dap_bridge, extension_host_bridge, lsp_bridge, mcp_bridge};
 use handlers::*;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -48,6 +48,8 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
     let sessions: Sessions = Arc::new(DashMap::new());
     let lsp_registry: lsp_bridge::LspRegistry = Arc::new(RwLock::new(HashMap::new()));
     let dap_registry: dap_bridge::DapRegistry = Arc::new(RwLock::new(HashMap::new()));
+    let extension_host_registry: extension_host_bridge::ExtensionHostRegistry =
+        Arc::new(RwLock::new(HashMap::new()));
     let mcp_registry: mcp_bridge::McpRegistry = Arc::new(RwLock::new(HashMap::new()));
     let ast_registry = ast_bridge::new_registry();
 
@@ -82,6 +84,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .merge(terminal_router)
         .merge(lsp_bridge::lsp_routes().with_state(lsp_registry))
         .merge(dap_bridge::dap_routes().with_state(dap_registry))
+        .merge(extension_host_bridge::extension_host_routes().with_state(extension_host_registry))
         .merge(mcp_bridge::mcp_routes().with_state(mcp_registry))
         .merge(ast_bridge::ast_routes().with_state(ast_registry))
         .layer(cors)
