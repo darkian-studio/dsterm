@@ -70,7 +70,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
 
     let terminal_router = Router::new()
         .route("/", get(|| async { "Rust based DSTerm server" }))
-        .route("/terminals", post(create_terminal))
+        .route("/terminals", post(create_terminal).get(list_terminals))
         .route("/terminals/{pid}/resize", post(resize_terminal))
         .route("/terminals/{pid}", get(terminal_websocket))
         .route("/terminals/{pid}/terminate", post(terminate_terminal))

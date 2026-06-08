@@ -326,6 +326,14 @@ pub async fn create_terminal(
     (axum::http::StatusCode::OK, pid.to_string()).into_response()
 }
 
+pub async fn list_terminals(State(sessions): State<Sessions>) -> impl IntoResponse {
+    let terminals: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|entry| serde_json::json!({ "pid": *entry.key() }))
+        .collect();
+    Json(serde_json::json!({ "terminals": terminals })).into_response()
+}
+
 pub async fn resize_terminal(
     State(sessions): State<Sessions>,
     Path(pid): Path<u32>,
