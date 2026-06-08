@@ -157,6 +157,9 @@ pub async fn create_terminal(
     let std_result = match openpty_result {
         Ok(pair) => {
             let mut cmd = CommandBuilder::new(&program);
+            if let Some(dir) = options.cwd.as_deref() {
+                cmd.cwd(dir);
+            }
             for (k, v) in &env_overrides {
                 cmd.env(k, v);
             }
@@ -189,7 +192,7 @@ pub async fn create_terminal(
                 "Standard openpty failed ({}), trying TIOCGPTPEER fallback",
                 e
             );
-            match fallback_open_and_spawn(size, &program, &args) {
+            match fallback_open_and_spawn(size, &program, &args, options.cwd.as_deref()) {
                 Ok(pair) => pair,
                 Err(fb_err) => {
                     tracing::error!("TIOCGPTPEER fallback also failed: {}", fb_err);

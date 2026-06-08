@@ -9,6 +9,8 @@ pub const MAX_SCROLLBACK_BYTES: usize = 262_144; // 256 KB
 pub struct TerminalOptions {
     pub cols: serde_json::Value,
     pub rows: serde_json::Value,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Deserialize)]

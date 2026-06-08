@@ -257,6 +257,7 @@ pub fn fallback_open_and_spawn(
     size: PtySize,
     program: &str,
     args: &[String],
+    cwd: Option<&str>,
 ) -> anyhow::Result<(Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>)> {
     use std::os::unix::process::CommandExt;
 
@@ -327,6 +328,9 @@ pub fn fallback_open_and_spawn(
     // 6. Spawn command
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
     unsafe {
         cmd.stdin(child_stdin)
             .stdout(child_stdout)
