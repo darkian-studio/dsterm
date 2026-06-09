@@ -19,7 +19,9 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge, lsp_bridge, mcp_bridge};
+use crate::{
+    ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge, lsp_bridge, mcp_bridge,
+};
 use handlers::*;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -97,8 +99,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         let sessions = sessions.clone();
         let timeout_secs = get_config().terminal.inactivity_timeout_secs;
         tokio::spawn(async move {
-            let mut tick =
-                tokio::time::interval(tokio::time::Duration::from_secs(60));
+            let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
             loop {
                 tick.tick().await;
                 let now = std::time::SystemTime::now();
@@ -106,10 +107,8 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
                     .iter()
                     .filter_map(|entry| {
                         let pid = *entry.key();
-                        let last =
-                            entry.value().last_accessed.try_lock().ok()?.clone();
-                        let elapsed =
-                            now.duration_since(last).unwrap_or_default();
+                        let last = *entry.value().last_accessed.try_lock().ok()?;
+                        let elapsed = now.duration_since(last).unwrap_or_default();
                         if elapsed.as_secs() > timeout_secs {
                             Some(pid)
                         } else {
@@ -121,10 +120,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
                     if let Some((_, session)) = sessions.remove(&pid) {
                         let _ = session.child_killer.lock().await.kill();
                         session.scrollback.cleanup();
-                        tracing::info!(
-                            "Evicted idle terminal session PID {}",
-                            pid
-                        );
+                        tracing::info!("Evicted idle terminal session PID {}", pid);
                     }
                 }
             }

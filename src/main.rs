@@ -191,11 +191,7 @@ async fn main() {
             let cfg = if let Some(ref path) = config_path {
                 match DstermConfig::load(path) {
                     Ok(c) => {
-                        println!(
-                            "{} Config loaded from {}",
-                            "✓".bright_green(),
-                            path
-                        );
+                        println!("{} Config loaded from {}", "✓".bright_green(), path);
                         c
                     }
                     Err(e) => {

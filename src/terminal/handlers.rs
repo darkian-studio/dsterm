@@ -17,6 +17,7 @@ use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, Pt
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use std::{
     io::Read,
@@ -28,7 +29,6 @@ use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub static SESSIONS_CREATED_TOTAL: AtomicU64 = AtomicU64::new(0);
 

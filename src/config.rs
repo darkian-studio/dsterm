@@ -46,20 +46,11 @@ impl Default for BridgesConfig {
 }
 
 /// Top-level dsterm configuration.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct DstermConfig {
     pub terminal: TerminalConfig,
     pub bridges: BridgesConfig,
-}
-
-impl Default for DstermConfig {
-    fn default() -> Self {
-        Self {
-            terminal: TerminalConfig::default(),
-            bridges: BridgesConfig::default(),
-        }
-    }
 }
 
 impl DstermConfig {

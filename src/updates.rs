@@ -6,8 +6,7 @@ use std::time::{Duration, SystemTime};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 
-const GITHUB_API_URL: &str =
-    "https://api.github.com/repos/darkian-studio/dsterm/releases/latest";
+const GITHUB_API_URL: &str = "https://api.github.com/repos/darkian-studio/dsterm/releases/latest";
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const CACHE_FILE: &str = ".dsterm_update_cache";
 
@@ -146,11 +145,7 @@ impl UpdateChecker {
             "arm" => "armv7",
             "aarch64" => "arm64",
             "x86_64" => "x86_64",
-            other => {
-                return Err(
-                    format!("Unsupported architecture: {other}").into(),
-                )
-            }
+            other => return Err(format!("Unsupported architecture: {other}").into()),
         };
 
         let binary_name = format!("dsterm-{platform}-{arch_suffix}");
