@@ -3,8 +3,6 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub const MAX_SCROLLBACK_BYTES: usize = 262_144; // 256 KB
-
 #[derive(Deserialize)]
 pub struct TerminalOptions {
     pub cols: serde_json::Value,

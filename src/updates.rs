@@ -6,7 +6,8 @@ use std::time::{Duration, SystemTime};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 
-const GITHUB_API_URL: &str = "https://api.github.com/repos/darkian-studio/dsterm/releases/latest";
+const GITHUB_API_URL: &str =
+    "https://api.github.com/repos/darkian-studio/dsterm/releases/latest";
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const CACHE_FILE: &str = ".dsterm_update_cache";
 
@@ -93,7 +94,6 @@ impl UpdateChecker {
     }
 
     pub async fn check_update(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        // Check cache first
         if let Some(cache) = Self::get_cache().await {
             let elapsed = SystemTime::now()
                 .duration_since(cache.last_check)
@@ -107,7 +107,6 @@ impl UpdateChecker {
             }
         }
 
-        // Fetch latest release from GitHub
         let release: GithubRelease = self
             .client
             .get(GITHUB_API_URL)
@@ -137,23 +136,31 @@ impl UpdateChecker {
             .json()
             .await?;
 
-        // Detect current architecture
-        let arch = match std::env::consts::ARCH {
-            "arm" => "android-armv7",
-            "aarch64" => "android-arm64",
-            "x86_64" => "android-x86_64",
-            _ => {
-                return Err(format!("Unsupported architecture: {}", std::env::consts::ARCH).into())
+        // Detect whether we are running inside Termux (Android) or regular Linux.
+        let is_termux = std::env::var("TERMUX_VERSION").is_ok()
+            || std::path::Path::new("/data/data/com.termux").exists();
+
+        let platform = if is_termux { "android" } else { "linux" };
+
+        let arch_suffix = match std::env::consts::ARCH {
+            "arm" => "armv7",
+            "aarch64" => "arm64",
+            "x86_64" => "x86_64",
+            other => {
+                return Err(
+                    format!("Unsupported architecture: {other}").into(),
+                )
             }
         };
+
+        let binary_name = format!("dsterm-{platform}-{arch_suffix}");
 
         let asset = release
             .assets
             .iter()
-            .find(|a| a.name == format!("dsterm-{arch}"))
-            .ok_or("No matching binary found")?;
+            .find(|a| a.name == binary_name)
+            .ok_or_else(|| format!("No matching binary found for {binary_name}"))?;
 
-        // Download binary
         let response = self
             .client
             .get(&asset.browser_download_url)
@@ -178,10 +185,8 @@ impl UpdateChecker {
             fs::set_permissions(&temp_path, perms).await?;
         }
 
-        // Replace old binary with new one
         fs::rename(temp_path, current_exe).await?;
 
-        // Clear update cache so next check uses new version
         if let Some(cache_path) = Self::get_cache_path() {
             let _ = fs::remove_file(cache_path).await;
         }

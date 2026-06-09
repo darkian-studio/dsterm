@@ -17,6 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         platform:
+          # Android (Termux) native binaries
           - os_name: Android-aarch64
             target: aarch64-linux-android
             binary_name: dsterm-android-arm64
@@ -26,15 +27,16 @@ jobs:
           - os_name: Android-x86_64
             target: x86_64-linux-android
             binary_name: dsterm-android-x86_64
-          - os_name: MuslAndroid-aarch64
+          # Linux musl static binaries (run on any Linux distro)
+          - os_name: Linux-aarch64-musl
             target: aarch64-unknown-linux-musl
-            binary_name: dsterm-musl-android-arm64
-          - os_name: MuslAndroid-armv7
+            binary_name: dsterm-linux-arm64
+          - os_name: Linux-armv7-musl
             target: armv7-unknown-linux-musleabihf
-            binary_name: dsterm-musl-android-armv7
-          - os_name: MuslAndroid-x86_64
+            binary_name: dsterm-linux-armv7
+          - os_name: Linux-x86_64-musl
             target: x86_64-unknown-linux-musl
-            binary_name: dsterm-musl-android-x86_64
+            binary_name: dsterm-linux-x86_64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3

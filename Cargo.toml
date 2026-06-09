@@ -1,6 +1,6 @@
 [package]
 name = "dsterm"
-version = "0.8.1"
+version = "1.0.0"
 edition = "2021"
 
 
@@ -23,6 +23,7 @@ serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
 tokio = { version = "1.42.0", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
+toml = "0.8"
 dashmap = "6"
 nom = "7.1"
 bytes = "1.5"

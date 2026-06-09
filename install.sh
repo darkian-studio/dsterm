@@ -1,46 +1,68 @@
 #!/bin/bash
 
-# detect architecture
-detect_arch() {
-    case $(uname -m) in
-        armv7l | armv8l)
-            echo "android-armv7"
-            ;;
-        aarch64)
-            echo "android-arm64"
-            ;;
-        x86_64)
-            echo "android-x86_64"
-            ;;
-        *)
-            echo "Unsupported architecture. Please create an issue on GitHub, and we will consider providing a binary for your architecture."
-            exit 1
-            ;;
-    esac
+set -euo pipefail
+
+# Detect the correct binary name for this platform and architecture.
+detect_binary_name() {
+    local arch
+    arch=$(uname -m)
+
+    # Detect Termux (Android)
+    if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux" ]; then
+        case "$arch" in
+            armv7l | armv8l) echo "dsterm-android-armv7" ;;
+            aarch64)          echo "dsterm-android-arm64" ;;
+            x86_64)           echo "dsterm-android-x86_64" ;;
+            *)
+                echo "Unsupported Termux architecture: $arch. Please open a GitHub issue." >&2
+                exit 1
+                ;;
+        esac
+        return
+    fi
+
+    # Detect regular Linux
+    local os
+    os=$(uname -s)
+    if [ "$os" = "Linux" ]; then
+        case "$arch" in
+            armv7l | armv8l) echo "dsterm-linux-armv7" ;;
+            aarch64)          echo "dsterm-linux-arm64" ;;
+            x86_64)           echo "dsterm-linux-x86_64" ;;
+            *)
+                echo "Unsupported Linux architecture: $arch. Please open a GitHub issue." >&2
+                exit 1
+                ;;
+        esac
+        return
+    fi
+
+    echo "Unsupported operating system: $os. Please open a GitHub issue." >&2
+    exit 1
 }
 
-# download the appropriate binary
+# Download and install the binary.
 download_binary() {
-    ARCH=$(detect_arch)
-    BASE_URL="https://github.com/darkian-studio/dsterm/releases/latest/download"
+    local file_name
+    file_name=$(detect_binary_name)
 
-    FILE_NAME="dsterm-$ARCH"
-    DOWNLOAD_URL="$BASE_URL/$FILE_NAME"
+    local base_url="https://github.com/darkian-studio/dsterm/releases/latest/download"
+    local download_url="$base_url/$file_name"
 
-    # Download the binary
-    echo "Downloading $FILE_NAME for $ARCH architecture..."
-    if ! curl --fail -L "$DOWNLOAD_URL" -o "$FILE_NAME"; then
-        echo "Failed to download the binary! Please check the URL and your connection: $DOWNLOAD_URL"
+    echo "Downloading $file_name..."
+    if ! curl --fail -L "$download_url" -o "$file_name"; then
+        echo "Download failed. URL: $download_url" >&2
         exit 1
     fi
 
-    # Move the binary to the PREFIX directory and rename it to 'dsterm'
-    echo "Installing dsterm binary to $PREFIX..."
-    mv "$FILE_NAME" "$PREFIX/bin/dsterm"
-    chmod +x "$PREFIX/bin/dsterm"
+    local install_dir="${PREFIX:-/usr/local}/bin"
+    mkdir -p "$install_dir"
 
-    echo "Binary downloaded and installed as 'dsterm'. You can now use the 'dsterm' command!"
-    echo "Make sure '$PREFIX/bin' is in your PATH."
+    mv "$file_name" "$install_dir/dsterm"
+    chmod +x "$install_dir/dsterm"
+
+    echo "Installed dsterm to $install_dir/dsterm"
+    echo "Make sure '$install_dir' is in your PATH."
 }
 
 download_binary

@@ -28,6 +28,9 @@ use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub static SESSIONS_CREATED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 pub struct TerminalSession {
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
@@ -253,7 +256,8 @@ pub async fn create_terminal(
         let osc_leftover = osc_leftover.clone();
         spawn_blocking(move || {
             let mut reader = reader;
-            let mut read_buffer = [0u8; 8192];
+            let buf_size = super::get_config().terminal.read_buffer_bytes;
+            let mut read_buffer = vec![0u8; buf_size];
             loop {
                 let n = match reader.read(&mut read_buffer) {
                     Ok(n) if n > 0 => n,
@@ -325,6 +329,7 @@ pub async fn create_terminal(
         last_accessed: Arc::new(Mutex::new(SystemTime::now())),
     };
 
+    SESSIONS_CREATED_TOTAL.fetch_add(1, Ordering::Relaxed);
     sessions.insert(pid, session);
     (axum::http::StatusCode::OK, pid.to_string()).into_response()
 }
@@ -453,7 +458,8 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
 
     // Send full scrollback history (client should clear terminal before connecting)
     let scrollback_for_replay = scrollback.clone();
-    match spawn_blocking(move || scrollback_for_replay.read_tail(MAX_SCROLLBACK_BYTES)).await {
+    let scrollback_limit = super::get_config().terminal.max_scrollback_bytes;
+    match spawn_blocking(move || scrollback_for_replay.read_tail(scrollback_limit)).await {
         Ok(Ok(contents)) if !contents.is_empty() => {
             let _ = sender.send(Message::Binary(Bytes::from(contents))).await;
         }
@@ -479,7 +485,8 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
 
     // Main loop with output coalescing
     let mut coalesce_buf: Vec<u8> = Vec::with_capacity(16384);
-    let mut interval = tokio::time::interval(Duration::from_millis(8));
+    let coalesce_ms = super::get_config().terminal.output_coalesce_ms;
+    let mut interval = tokio::time::interval(Duration::from_millis(coalesce_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -496,7 +503,7 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                 match data {
                     Some(data) => {
                         coalesce_buf.extend_from_slice(&data);
-                        if coalesce_buf.len() >= 8192 {
+                        if coalesce_buf.len() >= super::get_config().terminal.read_buffer_bytes {
                             let frame = std::mem::replace(&mut coalesce_buf, Vec::with_capacity(16384));
                             if sender.send(Message::Binary(Bytes::from(frame))).await.is_err() {
                                 break;
@@ -1159,6 +1166,28 @@ async fn handle_silent_exec_stream(socket: WebSocket) {
             }
         }
     }
+}
+
+pub async fn get_metrics(State(sessions): State<Sessions>) -> impl IntoResponse {
+    let active = sessions.len();
+    let total = SESSIONS_CREATED_TOTAL.load(Ordering::Relaxed);
+    let body = format!(
+        "# HELP dsterm_terminal_sessions_total Terminal sessions created since startup\n\
+         # TYPE dsterm_terminal_sessions_total counter\n\
+         dsterm_terminal_sessions_total {total}\n\
+         # HELP dsterm_terminal_sessions_active Currently active terminal sessions\n\
+         # TYPE dsterm_terminal_sessions_active gauge\n\
+         dsterm_terminal_sessions_active {active}\n"
+    );
+    (
+        axum::http::StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
 }
 
 #[cfg(test)]

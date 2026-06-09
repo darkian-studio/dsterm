@@ -1,4 +1,5 @@
 mod ast_bridge;
+mod config;
 mod dap_bridge;
 mod extension_host_bridge;
 mod lsp;
@@ -11,9 +12,10 @@ mod utils;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use config::DstermConfig;
 use lsp::{start_lsp_server, LspBridgeConfig};
 use std::net::Ipv4Addr;
-use terminal::{set_default_command, start_server};
+use terminal::{init_config, set_default_command, start_server};
 use updates::UpdateChecker;
 use utils::get_ip_address;
 
@@ -21,7 +23,7 @@ const DEFAULT_PORT: u16 = 8767;
 const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 #[derive(Parser)]
-#[command(name = "dsterm",version, author = "Darkian Studio <contact@darkian.io>", about = "CLI/Server backend to serve pty over socket", long_about = None)]
+#[command(name = "dsterm", version, author = "Darkian Studio <contact@darkian.io>", about = "CLI/Server backend to serve pty over socket", long_about = None)]
 struct Cli {
     /// Port to start the server
     #[arg(short, long, default_value_t = DEFAULT_PORT, value_parser = clap::value_parser!(u16).range(1..), global = true)]
@@ -35,6 +37,9 @@ struct Cli {
     /// Allow all origins for CORS (dangerous). By default only https://localhost is allowed.
     #[arg(long = "allow-any-origin", global = true)]
     allow_any_origin: bool,
+    /// Path to a TOML configuration file
+    #[arg(long = "config", global = true)]
+    config_path: Option<String>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -89,6 +94,7 @@ async fn main() {
         ip,
         command_override,
         allow_any_origin,
+        config_path,
         command,
     } = cli;
 
@@ -172,7 +178,6 @@ async fn main() {
                 args: server_args,
             };
 
-            // Use specified port if not default, otherwise auto-select
             let lsp_port = if port != DEFAULT_PORT {
                 Some(port)
             } else {
@@ -182,10 +187,33 @@ async fn main() {
             start_lsp_server(host, lsp_port, session, allow_any_origin, config).await;
         }
         None => {
+            // Load runtime config (defaults if no --config supplied).
+            let cfg = if let Some(ref path) = config_path {
+                match DstermConfig::load(path) {
+                    Ok(c) => {
+                        println!(
+                            "{} Config loaded from {}",
+                            "✓".bright_green(),
+                            path
+                        );
+                        c
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "{} Failed to load config from {path}: {e}. Using defaults.",
+                            "⚠".yellow()
+                        );
+                        DstermConfig::default()
+                    }
+                }
+            } else {
+                DstermConfig::default()
+            };
+            init_config(cfg);
+
             tokio::task::spawn(check_updates_in_background());
 
             if let Some(cmd) = command_override {
-                // Set custom default command for interactive terminals
                 set_default_command(cmd);
             }
 
