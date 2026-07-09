@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -79,12 +79,13 @@ impl ClientStore {
         if let Some(record) = self.file.clients.get_mut(client_id) {
             record.last_seen = now;
             update_info(record, info);
-            self.save()?;
-            return Ok(match record.approval {
+            let decision = match record.approval {
                 ClientApproval::Approved => ApprovalDecision::Allow,
                 ClientApproval::Rejected => ApprovalDecision::Reject,
                 ClientApproval::Pending => ApprovalDecision::Pending,
-            });
+            };
+            self.save()?;
+            return Ok(decision);
         }
 
         let approval = match unknown_policy {
