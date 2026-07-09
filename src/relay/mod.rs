@@ -1,3 +1,9 @@
 pub mod clients;
 pub mod crypto;
+pub mod dispatch;
+pub mod loopback;
 pub mod pairing;
+pub mod register;
+pub mod terminal;
+pub mod transport;
+pub mod wire;

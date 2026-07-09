@@ -79,6 +79,10 @@ enum Commands {
         #[command(subcommand)]
         action: ClientsAction,
     },
+    /// Register this host with the relay and cache the returned hostId
+    Register,
+    /// Run as a relay host: serve locally on 127.0.0.1 and bridge to the relay
+    Host,
 }
 
 #[derive(Subcommand)]
@@ -323,6 +327,89 @@ async fn main() {
                         std::process::exit(1);
                     }
                 },
+            }
+        }
+        Some(Commands::Register) => {
+            let cfg = load_config_or_default(config_path.as_deref(), false);
+            let http = reqwest::Client::new();
+            let machine_id = relay::register::machine_id();
+            match relay::register::register_host(
+                &http,
+                &cfg.relay.server_url,
+                cfg.relay.host_id_file.as_deref(),
+                &machine_id,
+            )
+            .await
+            {
+                Ok(host_id) => {
+                    println!("{} Registered host: {host_id}", "✓".bright_green().bold());
+                }
+                Err(e) => {
+                    eprintln!("{} Registration failed: {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Host) => {
+            let cfg = load_config_or_default(config_path.as_deref(), true);
+            init_config(cfg.clone());
+
+            if let Some(cmd) = command_override {
+                set_default_command(cmd);
+            }
+
+            let secretbox = match Secretbox::load_or_create(cfg.security.key_file.as_deref()) {
+                Ok(sb) => sb,
+                Err(e) => {
+                    eprintln!("{} Failed to load/create E2E key: {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+            };
+
+            let host_id = match relay::register::read_cached(cfg.relay.host_id_file.as_deref()) {
+                Some(id) => id,
+                None => {
+                    let http = reqwest::Client::new();
+                    let machine_id = relay::register::machine_id();
+                    match relay::register::register_host(
+                        &http,
+                        &cfg.relay.server_url,
+                        cfg.relay.host_id_file.as_deref(),
+                        &machine_id,
+                    )
+                    .await
+                    {
+                        Ok(id) => id,
+                        Err(e) => {
+                            eprintln!(
+                                "{} Host not registered and registration failed: {e}",
+                                "✗".red().bold()
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            };
+
+            println!(
+                "{} Serving locally on 127.0.0.1:{port} and bridging to relay as host {host_id}",
+                "⟳".blue().bold()
+            );
+
+            let server = tokio::spawn(async move {
+                start_server(LOCAL_IP, port, allow_any_origin).await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let relay_task = tokio::spawn(async move {
+                relay::transport::run(cfg, secretbox, host_id, port).await;
+            });
+
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    println!("\n{} Shutting down host", "✓".bright_green().bold());
+                }
+                _ = async { let _ = server.await; } => {}
+                _ = async { let _ = relay_task.await; } => {}
             }
         }
         None => {

@@ -75,6 +75,14 @@ pub enum IncomingMsg {
     PortsList { id: Option<String> },
     #[serde(rename = "ports:kill")]
     PortsKill { id: Option<String>, port: u16 },
+    #[serde(rename = "exec")]
+    Exec {
+        id: Option<String>,
+        command: String,
+        cwd: Option<String>,
+        #[serde(rename = "timeout_ms")]
+        timeout_ms: Option<u64>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -100,6 +108,12 @@ pub enum OutgoingMsg {
         #[serde(rename = "terminalId")]
         terminal_id: String,
         data: String,
+    },
+    #[serde(rename = "terminal:event")]
+    TerminalEvent {
+        #[serde(rename = "terminalId")]
+        terminal_id: String,
+        event: String,
     },
     #[serde(rename = "result")]
     Result {
