@@ -55,16 +55,14 @@ async fn connect_once(
         "machineId": crate::relay::register::machine_id(),
         "platform": std::env::consts::OS,
     });
-    write
-        .send(Message::Text(host_msg.to_string().into()))
-        .await?;
+    write.send(Message::Text(host_msg.to_string())).await?;
 
     let (out_tx, out_rx) = mpsc::channel::<String>(1024);
     let writer = tokio::spawn(async move {
         let mut write = write;
         let mut out_rx = out_rx;
         while let Some(frame) = out_rx.recv().await {
-            if write.send(Message::Text(frame.into())).await.is_err() {
+            if write.send(Message::Text(frame)).await.is_err() {
                 break;
             }
         }

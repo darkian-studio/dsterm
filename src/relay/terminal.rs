@@ -29,6 +29,7 @@ impl RelayTerminals {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         ctx: &ClientCtx,
@@ -101,7 +102,7 @@ impl RelayTerminals {
                     input = input_rx.recv() => {
                         match input {
                             Some(bytes) => {
-                                if ws_write.send(Message::Binary(bytes.into())).await.is_err() {
+                                if ws_write.send(Message::Binary(bytes)).await.is_err() {
                                     break;
                                 }
                             }
@@ -132,6 +133,7 @@ impl RelayTerminals {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn resize(
         &self,
         ctx: &ClientCtx,
