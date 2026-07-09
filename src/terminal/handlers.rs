@@ -27,18 +27,19 @@ use std::{
 };
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tokio::task::spawn_blocking;
 
 pub static SESSIONS_CREATED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 pub struct TerminalSession {
+    pub terminal_id: String,
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     pub child_killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
     pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pub scrollback: Arc<Scrollback>,
-    pub output_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>>,
-    pub command_exit_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<String>>>>,
+    pub output_tx: broadcast::Sender<Vec<u8>>,
+    pub command_exit_tx: broadcast::Sender<String>,
     pub osc_leftover: Arc<std::sync::Mutex<Vec<u8>>>,
     pub exit_status: Arc<std::sync::Mutex<Option<bool>>>,
     pub exit_notify: Arc<tokio::sync::Notify>,
@@ -240,10 +241,9 @@ pub async fn create_terminal(
     let child_killer = Arc::new(Mutex::new(child.clone_killer()));
 
     let scrollback = Arc::new(Scrollback::new(pid));
-    let output_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<Vec<u8>>>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let command_exit_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<String>>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    let terminal_id = uuid::Uuid::new_v4().to_string();
+    let (output_tx, _) = broadcast::channel::<Vec<u8>>(256);
+    let (command_exit_tx, _) = broadcast::channel::<String>(64);
     let osc_leftover: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let exit_status: Arc<std::sync::Mutex<Option<bool>>> = Arc::new(std::sync::Mutex::new(None));
     let exit_notify = Arc::new(tokio::sync::Notify::new());
@@ -270,24 +270,16 @@ pub async fn create_terminal(
                 drop(leftover_guard);
                 let _ = scrollback.append(&stripped);
 
-                if let Ok(guard) = output_tx.try_lock() {
-                    if let Some(ref tx) = *guard {
-                        let _ = tx.try_send(stripped);
-                    }
-                }
+                let _ = output_tx.send(stripped);
 
                 if !exits.is_empty() {
-                    if let Ok(guard) = command_exit_tx.lock() {
-                        if let Some(ref tx) = *guard {
-                            for code in exits {
-                                let msg = serde_json::to_string(&CommandExitMessage {
-                                    msg_type: "command_exit".to_string(),
-                                    exit_code: code,
-                                })
-                                .unwrap_or_default();
-                                let _ = tx.try_send(msg);
-                            }
-                        }
+                    for code in exits {
+                        let msg = serde_json::to_string(&CommandExitMessage {
+                            msg_type: "command_exit".to_string(),
+                            exit_code: code,
+                        })
+                        .unwrap_or_default();
+                        let _ = command_exit_tx.send(msg);
                     }
                 }
             }
@@ -317,6 +309,7 @@ pub async fn create_terminal(
     }
 
     let session = TerminalSession {
+        terminal_id: terminal_id.clone(),
         master,
         child_killer,
         writer,
@@ -331,13 +324,20 @@ pub async fn create_terminal(
 
     SESSIONS_CREATED_TOTAL.fetch_add(1, Ordering::Relaxed);
     sessions.insert(pid, session);
-    (axum::http::StatusCode::OK, pid.to_string()).into_response()
+    (
+        axum::http::StatusCode::OK,
+        [("x-dsterm-terminal-id", terminal_id)],
+        pid.to_string(),
+    )
+        .into_response()
 }
 
 pub async fn list_terminals(State(sessions): State<Sessions>) -> impl IntoResponse {
     let terminals: Vec<serde_json::Value> = sessions
         .iter()
-        .map(|entry| serde_json::json!({ "pid": *entry.key() }))
+        .map(|entry| {
+            serde_json::json!({ "pid": *entry.key(), "terminalId": entry.value().terminal_id.clone() })
+        })
         .collect();
     Json(serde_json::json!({ "terminals": terminals })).into_response()
 }
@@ -389,8 +389,8 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let (
         writer,
         scrollback,
-        output_tx_arc,
-        command_exit_tx_arc,
+        output_tx,
+        command_exit_tx,
         _osc_leftover_arc,
         exit_status_arc,
         exit_notify,
@@ -440,21 +440,8 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
         return;
     }
 
-    // Create output channel for this WS connection
-    let (ws_output_tx, mut ws_output_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-
-    // Set the sender so background reader starts forwarding to us
-    {
-        let mut guard = output_tx_arc.lock().unwrap();
-        *guard = Some(ws_output_tx);
-    }
-
-    // Create command_exit channel for this WS connection
-    let (cmd_exit_tx, mut cmd_exit_rx) = tokio::sync::mpsc::channel::<String>(64);
-    {
-        let mut guard = command_exit_tx_arc.lock().unwrap();
-        *guard = Some(cmd_exit_tx);
-    }
+    let mut ws_output_rx = output_tx.subscribe();
+    let mut cmd_exit_rx = command_exit_tx.subscribe();
 
     // Send full scrollback history (client should clear terminal before connecting)
     let scrollback_for_replay = scrollback.clone();
@@ -501,7 +488,7 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
             }
             data = ws_output_rx.recv() => {
                 match data {
-                    Some(data) => {
+                    Ok(data) => {
                         coalesce_buf.extend_from_slice(&data);
                         if coalesce_buf.len() >= super::get_config().terminal.read_buffer_bytes {
                             let frame = std::mem::replace(&mut coalesce_buf, Vec::with_capacity(16384));
@@ -510,19 +497,19 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                             }
                         }
                     }
-                    None => {
-                        if !coalesce_buf.is_empty() {
-                            let _ = sender.send(Message::Binary(Bytes::from(std::mem::take(&mut coalesce_buf)))).await;
-                        }
-                        break;
-                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
             maybe_msg = cmd_exit_rx.recv() => {
-                if let Some(json) = maybe_msg {
-                    if sender.send(Message::Text(json.into())).await.is_err() {
-                        break;
+                match maybe_msg {
+                    Ok(json) => {
+                        if sender.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
                     }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
             _ = exit_notify.notified() => {
@@ -574,16 +561,6 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                 }
             }
         }
-    }
-
-    // Disconnect: clear the output and command_exit senders so background stops forwarding
-    {
-        let mut guard = output_tx_arc.lock().unwrap();
-        *guard = None;
-    }
-    {
-        let mut guard = command_exit_tx_arc.lock().unwrap();
-        *guard = None;
     }
 
     drop(ws_input_tx);

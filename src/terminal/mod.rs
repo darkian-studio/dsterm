@@ -20,7 +20,8 @@ use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
-    ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge, lsp_bridge, mcp_bridge,
+    ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge, fs, lsp_bridge,
+    mcp_bridge, ports, sysmon,
 };
 use handlers::*;
 use std::collections::HashMap;
@@ -162,6 +163,9 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .merge(extension_host_bridge::extension_host_routes().with_state(extension_host_registry))
         .merge(mcp_bridge::mcp_routes().with_state(mcp_registry))
         .merge(ast_bridge::ast_routes().with_state(ast_registry))
+        .merge(fs::fs_routes())
+        .merge(sysmon::sysmon_routes())
+        .merge(ports::ports_routes())
         .layer(cors)
         .layer(
             TraceLayer::new_for_http()

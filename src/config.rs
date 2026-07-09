@@ -45,12 +45,108 @@ impl Default for BridgesConfig {
     }
 }
 
+/// Relay transport settings. The transport itself is added incrementally; these
+/// fields are accepted now so config files do not churn later.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct RelayConfig {
+    pub server_url: String,
+    pub heartbeat_secs: u64,
+    pub reconnect_secs: Vec<u64>,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            server_url: "https://localhost:3000".to_string(),
+            heartbeat_secs: 25,
+            reconnect_secs: vec![1, 2, 5, 10, 30],
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct SecurityConfig {
+    pub key_file: Option<String>,
+    pub clients_file: Option<String>,
+    pub unknown_clients: UnknownClientPolicy,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            key_file: None,
+            clients_file: None,
+            unknown_clients: UnknownClientPolicy::RequiresApproval,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UnknownClientPolicy {
+    AlwaysAllow,
+    AlwaysReject,
+    #[default]
+    RequiresApproval,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct FilesystemConfig {
+    pub enabled: bool,
+    pub workspace_root: Option<String>,
+    pub max_read_bytes: usize,
+}
+
+impl Default for FilesystemConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            workspace_root: None,
+            max_read_bytes: 2 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct PortsConfig {
+    pub kill_enabled: bool,
+}
+
+impl Default for PortsConfig {
+    fn default() -> Self {
+        Self {
+            kill_enabled: false,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ProxyConfig {
+    pub enabled: bool,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
+}
+
 /// Top-level dsterm configuration.
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct DstermConfig {
     pub terminal: TerminalConfig,
     pub bridges: BridgesConfig,
+    pub relay: RelayConfig,
+    pub security: SecurityConfig,
+    pub filesystem: FilesystemConfig,
+    pub proxy: ProxyConfig,
+    pub ports: PortsConfig,
 }
 
 impl DstermConfig {

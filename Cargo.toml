@@ -27,6 +27,7 @@ toml = "0.8"
 dashmap = "6"
 nom = "7.1"
 bytes = "1.5"
+base64 = "0.22"
 tower-http = { version = "0.6.2", features = ["cors", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
