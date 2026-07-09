@@ -307,7 +307,11 @@ struct GitFileEntry {
 
 fn run_git(args: &[&str]) -> anyhow::Result<String> {
     let root = workspace_root()?;
-    let output = Command::new("git").arg("-C").arg(&root).args(args).output()?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(args)
+        .output()?;
     if !output.status.success() {
         anyhow::bail!(
             "git {:?} failed: {}",
