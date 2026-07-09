@@ -63,6 +63,8 @@ pub enum IncomingMsg {
     },
     #[serde(rename = "fs:stat")]
     FsStat { id: Option<String>, path: String },
+    #[serde(rename = "fs:list")]
+    FsList { id: Option<String>, path: String },
     #[serde(rename = "project:file-search")]
     ProjectFileSearch {
         id: Option<String>,

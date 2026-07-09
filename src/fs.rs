@@ -345,6 +345,40 @@ pub async fn git_status() -> impl IntoResponse {
     Json(serde_json::json!({ "branch": branch, "files": files })).into_response()
 }
 
+pub async fn list_dir(Query(query): Query<PathQuery>) -> impl IntoResponse {
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
+    }
+    let path = match safe_path(&query.path) {
+        Ok(path) => path,
+        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+    };
+    let read_dir = match fs::read_dir(&path) {
+        Ok(read_dir) => read_dir,
+        Err(e) => return fs_error(axum::http::StatusCode::NOT_FOUND, e),
+    };
+    let mut entries = Vec::new();
+    for entry in read_dir.flatten() {
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs());
+        entries.push(serde_json::json!({
+            "name": entry.file_name().to_string_lossy(),
+            "is_dir": metadata.is_dir(),
+            "is_file": metadata.is_file(),
+            "size": metadata.len(),
+            "modified": modified,
+        }));
+    }
+    Json(serde_json::json!({ "path": query.path, "entries": entries })).into_response()
+}
+
 pub fn fs_routes() -> axum::Router {
     axum::Router::new()
         .route("/fs/read", axum::routing::get(read_file))
@@ -353,6 +387,7 @@ pub fn fs_routes() -> axum::Router {
         .route("/fs/delete", axum::routing::post(delete))
         .route("/fs/rename", axum::routing::post(rename))
         .route("/fs/stat", axum::routing::get(stat))
+        .route("/fs/list", axum::routing::get(list_dir))
         .route("/fs/git/status", axum::routing::get(git_status))
         .route("/project/file-search", axum::routing::get(file_search))
 }

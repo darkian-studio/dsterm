@@ -101,6 +101,14 @@ pub async fn dispatch(msg: IncomingMsg, ctx: &ClientCtx, http: &reqwest::Client,
             )
             .await;
         }
+        IncomingMsg::FsList { id, path } => {
+            reply(
+                ctx,
+                id,
+                loopback::get_json_query(http, port, "/fs/list", &[("path", path)]).await,
+            )
+            .await;
+        }
         IncomingMsg::ProjectFileSearch { id, query, limit } => {
             let mut params: Vec<(&str, String)> = vec![("query", query)];
             if let Some(limit) = limit {
