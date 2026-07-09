@@ -23,7 +23,7 @@ It is the working source of truth for scope, order, and status.
 | Step | Status | Scope | Notes |
 | --- | --- | --- | --- |
 | 1 | in-progress | Protocol + handler-core foundation | `src/protocol/` scaffold exists. Terminal fan-out work started. Full dispatcher and transport-agnostic cores still needed. |
-| 2 | todo | Secretbox encryption + key management | Must be libsodium `crypto_secretbox_easy` compatible. Prefer pure Rust for musl/Android. |
+| 2 | in-progress | Secretbox encryption + key management | `src/relay/crypto.rs` added with XSalsa20-Poly1305, base64 envelope parts, key-file load/create, and Unix `0600` create mode. CI verification pending. |
 | 3 | todo | Relay transport spine | `POST /host/register`, `/cli?hostId`, heartbeat, reconnect, encrypted send/receive. |
 | 4 | todo | Pairing + client approval | QR payload, clients JSON store, unknown-client policy, `dsterm clients`. |
 | 5 | in-progress | Terminal over relay prerequisites | Logical `terminalId` added to sessions/listing. Multi-client broadcast fan-out started. Relay adapters not yet added. |
@@ -45,6 +45,7 @@ The current unverified working slice is:
 - Add direct HTTP sysmon and ports routes; port killing is disabled by default.
 - Replace terminal single-attach output channels with broadcast fan-out.
 - Add `terminalId` metadata while preserving the existing `/terminals` PID response body.
+- Add relay secretbox encryption/key-management foundation.
 
 Before pushing for CI, finish or review:
 
@@ -58,7 +59,7 @@ Before pushing for CI, finish or review:
 | Item | Status | Notes |
 | --- | --- | --- |
 | E2E encrypted relay messages | todo | Required before relay feature dispatch. |
-| Key file permissions | todo | Target `~/.dsterm/dsterm-<machineId>.e2ee`, mode `0600`. |
+| Key file permissions | in-progress | Implemented for newly-created Unix key files in `src/relay/crypto.rs`; CI verification pending. |
 | Pairing QR | todo | Payload remains `hostId:keyBase64`. |
 | Client approval gate | todo | Must gate all relay dispatch. |
 | Workspace root enforcement | in-progress | Implemented for filesystem HTTP handlers when enabled; exec bounding still todo. |

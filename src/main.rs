@@ -9,6 +9,7 @@ mod mcp_bridge;
 mod ports;
 mod proto_frame;
 mod protocol;
+mod relay;
 mod sysmon;
 mod terminal;
 mod updates;
