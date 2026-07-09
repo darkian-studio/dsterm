@@ -51,6 +51,7 @@ impl Default for BridgesConfig {
 #[serde(default)]
 pub struct RelayConfig {
     pub server_url: String,
+    pub host_id_file: Option<String>,
     pub heartbeat_secs: u64,
     pub reconnect_secs: Vec<u64>,
 }
@@ -59,6 +60,7 @@ impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             server_url: "https://localhost:3000".to_string(),
+            host_id_file: None,
             heartbeat_secs: 25,
             reconnect_secs: vec![1, 2, 5, 10, 30],
         }

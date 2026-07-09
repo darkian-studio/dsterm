@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use config::DstermConfig;
 use lsp::{start_lsp_server, LspBridgeConfig};
+use relay::{crypto::Secretbox, pairing};
 use std::net::Ipv4Addr;
 use terminal::{init_config, set_default_command, start_server};
 use updates::UpdateChecker;
@@ -64,6 +65,15 @@ enum Commands {
         #[arg(trailing_var_arg = true)]
         server_args: Vec<String>,
     },
+    /// Print a Shellular-compatible pairing payload and QR code
+    Pair {
+        /// Host id from the relay. If omitted, relay.host_id_file is read.
+        #[arg(long = "host-id")]
+        host_id: Option<String>,
+        /// Print only the hostId:key payload, without rendering a QR code.
+        #[arg(long = "no-qr")]
+        no_qr: bool,
+    },
 }
 
 fn print_update_available(current_version: &str, new_version: &str) {
@@ -87,6 +97,28 @@ async fn check_updates_in_background() {
             format!("Failed to check for updates: {e}").red()
         ),
         _ => {}
+    }
+}
+
+fn load_config_or_default(path: Option<&str>, announce: bool) -> DstermConfig {
+    if let Some(path) = path {
+        match DstermConfig::load(path) {
+            Ok(config) => {
+                if announce {
+                    println!("{} Config loaded from {}", "✓".bright_green(), path);
+                }
+                config
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} Failed to load config from {path}: {e}. Using defaults.",
+                    "⚠".yellow()
+                );
+                DstermConfig::default()
+            }
+        }
+    } else {
+        DstermConfig::default()
     }
 }
 
@@ -190,6 +222,44 @@ async fn main() {
             };
 
             start_lsp_server(host, lsp_port, session, allow_any_origin, config).await;
+        }
+        Some(Commands::Pair { host_id, no_qr }) => {
+            let cfg = load_config_or_default(config_path.as_deref(), false);
+            let secretbox = match Secretbox::load_or_create(cfg.security.key_file.as_deref()) {
+                Ok(secretbox) => secretbox,
+                Err(e) => {
+                    eprintln!("{} Failed to load/create E2E key: {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+            };
+            let host_id = match pairing::resolve_host_id(
+                host_id.as_deref(),
+                cfg.relay.host_id_file.as_deref(),
+            ) {
+                Ok(host_id) => host_id,
+                Err(e) => {
+                    eprintln!("{} Failed to resolve host id: {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+            };
+            let payload = match pairing::PairingPayload::new(host_id, secretbox.key_base64()) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    eprintln!("{} Failed to build pairing payload: {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+            };
+
+            if !no_qr {
+                match pairing::render_qr(&payload) {
+                    Ok(qr) => println!("{qr}"),
+                    Err(e) => {
+                        eprintln!("{} Failed to render QR: {e}", "✗".red().bold());
+                        std::process::exit(1);
+                    }
+                }
+            }
+            println!("{}", payload.qr_text());
         }
         None => {
             // Load runtime config (defaults if no --config supplied).
