@@ -20,8 +20,8 @@ use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
-    ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge, fs, lsp_bridge,
-    mcp_bridge, ports, sysmon,
+    agent_bridge, ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge, fs,
+    lsp_bridge, mcp_bridge, ports, proxy, sysmon,
 };
 use handlers::*;
 use std::collections::HashMap;
@@ -93,6 +93,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
     let extension_host_registry: extension_host_bridge::ExtensionHostRegistry =
         Arc::new(RwLock::new(HashMap::new()));
     let mcp_registry: mcp_bridge::McpRegistry = Arc::new(RwLock::new(HashMap::new()));
+    let agent_registry: agent_bridge::AgentRegistry = Arc::new(RwLock::new(HashMap::new()));
     let ast_registry = ast_bridge::new_registry();
 
     // Background inactivity eviction task — runs every 60 seconds.
@@ -163,9 +164,11 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .merge(extension_host_bridge::extension_host_routes().with_state(extension_host_registry))
         .merge(mcp_bridge::mcp_routes().with_state(mcp_registry))
         .merge(ast_bridge::ast_routes().with_state(ast_registry))
+        .merge(agent_bridge::agent_routes().with_state(agent_registry))
         .merge(fs::fs_routes())
         .merge(sysmon::sysmon_routes())
         .merge(ports::ports_routes())
+        .merge(proxy::proxy_routes())
         .layer(cors)
         .layer(
             TraceLayer::new_for_http()

@@ -133,6 +133,26 @@ pub async fn dispatch(msg: IncomingMsg, ctx: &ClientCtx, http: &reqwest::Client,
             )
             .await;
         }
+        IncomingMsg::HttpRequest {
+            id,
+            url,
+            method,
+            headers,
+            body,
+        } => {
+            let payload = json!({
+                "url": url,
+                "method": method,
+                "headers": headers,
+                "body": body,
+            });
+            reply(
+                ctx,
+                id,
+                loopback::post_json(http, port, "/proxy/http", &payload).await,
+            )
+            .await;
+        }
         IncomingMsg::TerminalCreate { .. }
         | IncomingMsg::TerminalData { .. }
         | IncomingMsg::TerminalResize { .. }

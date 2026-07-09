@@ -1,3 +1,4 @@
+mod agent_bridge;
 mod ast_bridge;
 mod config;
 mod dap_bridge;
@@ -9,7 +10,9 @@ mod mcp_bridge;
 mod ports;
 mod proto_frame;
 mod protocol;
+mod proxy;
 mod relay;
+mod startup;
 mod sysmon;
 mod terminal;
 mod updates;
@@ -83,6 +86,8 @@ enum Commands {
     Register,
     /// Run as a relay host: serve locally on 127.0.0.1 and bridge to the relay
     Host,
+    /// Install an OS-native autostart entry (systemd user unit or Termux:Boot)
+    Startup,
 }
 
 #[derive(Subcommand)]
@@ -412,6 +417,13 @@ async fn main() {
                 _ = async { let _ = relay_task.await; } => {}
             }
         }
+        Some(Commands::Startup) => match startup::install() {
+            Ok(message) => println!("{} {message}", "✓".bright_green().bold()),
+            Err(e) => {
+                eprintln!("{} Startup install failed: {e}", "✗".red().bold());
+                std::process::exit(1);
+            }
+        },
         None => {
             // Load runtime config (defaults if no --config supplied).
             let cfg = if let Some(ref path) = config_path {

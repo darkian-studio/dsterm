@@ -83,6 +83,14 @@ pub enum IncomingMsg {
         #[serde(rename = "timeout_ms")]
         timeout_ms: Option<u64>,
     },
+    #[serde(rename = "http:request")]
+    HttpRequest {
+        id: Option<String>,
+        url: String,
+        method: Option<String>,
+        headers: Option<std::collections::HashMap<String, String>>,
+        body: Option<String>,
+    },
     #[serde(other)]
     Unknown,
 }
