@@ -25,7 +25,7 @@ It is the working source of truth for scope, order, and status.
 | 1 | in-progress | Protocol + handler-core foundation | `src/protocol/` scaffold exists. Terminal fan-out work started. Full dispatcher and transport-agnostic cores still needed. |
 | 2 | in-progress | Secretbox encryption + key management | `src/relay/crypto.rs` added with XSalsa20-Poly1305, base64 envelope parts, key-file load/create, and Unix `0600` create mode. CI verification pending. |
 | 3 | todo | Relay transport spine | `POST /host/register`, `/cli?hostId`, heartbeat, reconnect, encrypted send/receive. |
-| 4 | todo | Pairing + client approval | QR payload, clients JSON store, unknown-client policy, `dsterm clients`. |
+| 4 | in-progress | Pairing + client approval | `src/relay/clients.rs` added with clients JSON store and unknown-client policy decisions. QR and `dsterm clients` still todo. |
 | 5 | in-progress | Terminal over relay prerequisites | Logical `terminalId` added to sessions/listing. Multi-client broadcast fan-out started. Relay adapters not yet added. |
 | 6 | todo | Command execution over relay | Reuse existing exec cores, then enforce workspace-root policy for remote exposure. |
 | 7 | in-progress | Filesystem + project search | HTTP handlers added for read/write/mkdir/delete/rename/stat/search with workspace bounds. Git/status integration still todo. |
@@ -46,6 +46,7 @@ The current unverified working slice is:
 - Replace terminal single-attach output channels with broadcast fan-out.
 - Add `terminalId` metadata while preserving the existing `/terminals` PID response body.
 - Add relay secretbox encryption/key-management foundation.
+- Add relay client approval store foundation.
 
 Before pushing for CI, finish or review:
 
@@ -61,7 +62,7 @@ Before pushing for CI, finish or review:
 | E2E encrypted relay messages | todo | Required before relay feature dispatch. |
 | Key file permissions | in-progress | Implemented for newly-created Unix key files in `src/relay/crypto.rs`; CI verification pending. |
 | Pairing QR | todo | Payload remains `hostId:keyBase64`. |
-| Client approval gate | todo | Must gate all relay dispatch. |
+| Client approval gate | in-progress | JSON store and policy decisions implemented; relay join handling still todo. |
 | Workspace root enforcement | in-progress | Implemented for filesystem HTTP handlers when enabled; exec bounding still todo. |
 | Root delete guard | in-progress | Implemented for filesystem delete. |
 | Remote exec blast-radius review | todo | Required before exposing exec over relay. |
