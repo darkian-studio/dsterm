@@ -143,12 +143,12 @@ async fn proxy_ws_pump(socket: WebSocket, url: String) {
             client_msg = client_recv.next() => {
                 match client_msg {
                     Some(Ok(Message::Text(text))) => {
-                        if up_send.send(TMessage::Text(text.to_string().into())).await.is_err() {
+                        if up_send.send(TMessage::Text(text.to_string())).await.is_err() {
                             break;
                         }
                     }
                     Some(Ok(Message::Binary(data))) => {
-                        if up_send.send(TMessage::Binary(data.to_vec().into())).await.is_err() {
+                        if up_send.send(TMessage::Binary(data.to_vec())).await.is_err() {
                             break;
                         }
                     }
