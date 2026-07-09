@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Component, Path as StdPath, PathBuf},
+    process::Command,
     time::UNIX_EPOCH,
 };
 
@@ -298,6 +299,48 @@ pub async fn file_search(Query(query): Query<SearchQuery>) -> impl IntoResponse 
     Json(serde_json::json!({ "results": results })).into_response()
 }
 
+#[derive(Debug, Serialize)]
+struct GitFileEntry {
+    status: String,
+    path: String,
+}
+
+fn run_git(args: &[&str]) -> anyhow::Result<String> {
+    let root = workspace_root()?;
+    let output = Command::new("git").arg("-C").arg(&root).args(args).output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub async fn git_status() -> impl IntoResponse {
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
+    }
+    let branch = match run_git(&["rev-parse", "--abbrev-ref", "HEAD"]) {
+        Ok(value) => value.trim().to_string(),
+        Err(e) => return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let porcelain = match run_git(&["status", "--porcelain"]) {
+        Ok(value) => value,
+        Err(e) => return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let files = porcelain
+        .lines()
+        .filter(|line| line.len() > 3)
+        .map(|line| GitFileEntry {
+            status: line[..2].trim().to_string(),
+            path: line[3..].to_string(),
+        })
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({ "branch": branch, "files": files })).into_response()
+}
+
 pub fn fs_routes() -> axum::Router {
     axum::Router::new()
         .route("/fs/read", axum::routing::get(read_file))
@@ -306,5 +349,6 @@ pub fn fs_routes() -> axum::Router {
         .route("/fs/delete", axum::routing::post(delete))
         .route("/fs/rename", axum::routing::post(rename))
         .route("/fs/stat", axum::routing::get(stat))
+        .route("/fs/git/status", axum::routing::get(git_status))
         .route("/project/file-search", axum::routing::get(file_search))
 }

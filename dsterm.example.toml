@@ -1,0 +1,34 @@
+# dsterm example configuration.
+# Pass with: dsterm --config dsterm.example.toml
+# Every field is optional; omitted fields fall back to the defaults shown here.
+
+[terminal]
+max_scrollback_bytes = 262144   # 256 KB per session
+output_coalesce_ms = 8          # WebSocket flush interval
+read_buffer_bytes = 8192        # PTY read buffer size
+inactivity_timeout_secs = 1800  # Evict idle sessions after 30 min
+
+[bridges]
+kill_timeout_secs = 2           # Grace period when killing bridge processes
+
+[relay]
+server_url = "https://localhost:3000"   # Relay base URL (used by later phases)
+# host_id_file = "/home/user/.dsterm/host_id"
+heartbeat_secs = 25
+reconnect_secs = [1, 2, 5, 10, 30]
+
+[security]
+# key_file = "/home/user/.dsterm/dsterm-<machine>.e2ee"
+# clients_file = "/home/user/.dsterm/clients.json"
+unknown_clients = "requires-approval"   # always-allow | always-reject | requires-approval
+
+[filesystem]
+enabled = false                 # Must be true to expose /fs/* and /fs/git/status
+# workspace_root = "/home/user/project"   # Defaults to the process CWD
+max_read_bytes = 2097152        # 2 MB read cap
+
+[proxy]
+enabled = false                 # Localhost proxy (implemented in a later phase)
+
+[ports]
+kill_enabled = false            # Must be true to allow POST /ports/kill

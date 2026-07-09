@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use config::DstermConfig;
 use lsp::{start_lsp_server, LspBridgeConfig};
-use relay::{crypto::Secretbox, pairing};
+use relay::{clients::ClientStore, crypto::Secretbox, pairing};
 use std::net::Ipv4Addr;
 use terminal::{init_config, set_default_command, start_server};
 use updates::UpdateChecker;
@@ -73,6 +73,27 @@ enum Commands {
         /// Print only the hostId:key payload, without rendering a QR code.
         #[arg(long = "no-qr")]
         no_qr: bool,
+    },
+    /// Manage approved relay clients
+    Clients {
+        #[command(subcommand)]
+        action: ClientsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ClientsAction {
+    /// List all known clients and their approval state
+    List,
+    /// Approve a client by id
+    Approve {
+        /// The client id to approve
+        client_id: String,
+    },
+    /// Reject a client by id
+    Reject {
+        /// The client id to reject
+        client_id: String,
     },
 }
 
@@ -260,6 +281,49 @@ async fn main() {
                 }
             }
             println!("{}", payload.qr_text());
+        }
+        Some(Commands::Clients { action }) => {
+            let cfg = load_config_or_default(config_path.as_deref(), false);
+            let mut store = match ClientStore::load_or_default(cfg.security.clients_file.as_deref())
+            {
+                Ok(store) => store,
+                Err(e) => {
+                    eprintln!("{} Failed to load clients store: {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+            };
+            match action {
+                ClientsAction::List => {
+                    let clients = store.list();
+                    if clients.is_empty() {
+                        println!("No known clients.");
+                    } else {
+                        for record in clients {
+                            println!(
+                                "{}  {:?}  platform={}  app={}",
+                                record.client_id,
+                                record.approval,
+                                record.platform.as_deref().unwrap_or("-"),
+                                record.app_version.as_deref().unwrap_or("-"),
+                            );
+                        }
+                    }
+                }
+                ClientsAction::Approve { client_id } => match store.approve(&client_id) {
+                    Ok(()) => println!("{} Approved {client_id}", "✓".bright_green().bold()),
+                    Err(e) => {
+                        eprintln!("{} {e}", "✗".red().bold());
+                        std::process::exit(1);
+                    }
+                },
+                ClientsAction::Reject { client_id } => match store.reject(&client_id) {
+                    Ok(()) => println!("{} Rejected {client_id}", "✓".bright_green().bold()),
+                    Err(e) => {
+                        eprintln!("{} {e}", "✗".red().bold());
+                        std::process::exit(1);
+                    }
+                },
+            }
         }
         None => {
             // Load runtime config (defaults if no --config supplied).
