@@ -1,9 +1,5 @@
 use crate::terminal::get_config;
-use axum::{
-    extract::{Path, Query},
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::Query, response::IntoResponse, Json};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -100,20 +96,20 @@ fn fs_error(status: axum::http::StatusCode, error: impl ToString) -> axum::respo
         .into_response()
 }
 
-fn ensure_enabled() -> Result<(), axum::response::Response> {
-    if get_config().filesystem.enabled {
-        Ok(())
-    } else {
-        Err(fs_error(
-            axum::http::StatusCode::FORBIDDEN,
-            "Filesystem API is disabled",
-        ))
-    }
+fn filesystem_disabled_response() -> axum::response::Response {
+    fs_error(
+        axum::http::StatusCode::FORBIDDEN,
+        "Filesystem API is disabled",
+    )
+}
+
+fn filesystem_enabled() -> bool {
+    get_config().filesystem.enabled
 }
 
 pub async fn read_file(Query(query): Query<PathQuery>) -> impl IntoResponse {
-    if let Err(response) = ensure_enabled() {
-        return response;
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
     }
     let path = match safe_path(&query.path) {
         Ok(path) => path,
@@ -144,8 +140,8 @@ pub async fn read_file(Query(query): Query<PathQuery>) -> impl IntoResponse {
 }
 
 pub async fn write_file(Json(req): Json<WriteRequest>) -> impl IntoResponse {
-    if let Err(response) = ensure_enabled() {
-        return response;
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
     }
     let path = match safe_path(&req.path) {
         Ok(path) => path,
@@ -171,8 +167,8 @@ pub async fn write_file(Json(req): Json<WriteRequest>) -> impl IntoResponse {
 }
 
 pub async fn mkdir(Json(req): Json<MkdirRequest>) -> impl IntoResponse {
-    if let Err(response) = ensure_enabled() {
-        return response;
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
     }
     let path = match safe_path(&req.path) {
         Ok(path) => path,
@@ -185,8 +181,8 @@ pub async fn mkdir(Json(req): Json<MkdirRequest>) -> impl IntoResponse {
 }
 
 pub async fn delete(Json(req): Json<DeleteRequest>) -> impl IntoResponse {
-    if let Err(response) = ensure_enabled() {
-        return response;
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
     }
     let path = match safe_path(&req.path) {
         Ok(path) => path,
@@ -219,8 +215,8 @@ pub async fn delete(Json(req): Json<DeleteRequest>) -> impl IntoResponse {
 }
 
 pub async fn rename(Json(req): Json<RenameRequest>) -> impl IntoResponse {
-    if let Err(response) = ensure_enabled() {
-        return response;
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
     }
     let from = match safe_path(&req.from) {
         Ok(path) => path,
@@ -237,8 +233,8 @@ pub async fn rename(Json(req): Json<RenameRequest>) -> impl IntoResponse {
 }
 
 pub async fn stat(Query(query): Query<PathQuery>) -> impl IntoResponse {
-    if let Err(response) = ensure_enabled() {
-        return response;
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
     }
     let path = match safe_path(&query.path) {
         Ok(path) => path,
@@ -264,8 +260,8 @@ pub async fn stat(Query(query): Query<PathQuery>) -> impl IntoResponse {
 }
 
 pub async fn file_search(Query(query): Query<SearchQuery>) -> impl IntoResponse {
-    if let Err(response) = ensure_enabled() {
-        return response;
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
     }
     let root = match workspace_root() {
         Ok(root) => root,

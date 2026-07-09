@@ -110,30 +110,16 @@ impl Default for FilesystemConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct PortsConfig {
     pub kill_enabled: bool,
 }
 
-impl Default for PortsConfig {
-    fn default() -> Self {
-        Self {
-            kill_enabled: false,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct ProxyConfig {
     pub enabled: bool,
-}
-
-impl Default for ProxyConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 /// Top-level dsterm configuration.
