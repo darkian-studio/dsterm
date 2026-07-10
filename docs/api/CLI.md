@@ -14,6 +14,7 @@ dsterm [OPTIONS] [COMMAND]
 | `-i, --ip` | — | Bind to the first non-loopback IPv4 address instead of `127.0.0.1` |
 | `-c, --command <COMMAND>` | `login` | Custom program/shell for interactive PTY sessions (e.g. `/usr/bin/bash`) |
 | `--allow-any-origin` | — | Allow all CORS origins (dangerous — disables origin checks). Default restricts to `https://localhost` |
+| `--remote` | — | Enable the filesystem API (`/fs/*`) with the current directory as the workspace root, no config file needed (sets `filesystem.enabled = true`) |
 | `-h, --help` | — | Print help information |
 | `-V, --version` | — | Print version information |
 
@@ -22,6 +23,29 @@ dsterm [OPTIONS] [COMMAND]
 ### `dsterm` (default — server mode)
 
 Starts the main HTTP + WebSocket server. All API endpoints become available.
+
+#### Remote filesystem quickstart (`dsterm --remote`)
+
+To open this machine's files from Darkian Studio with **zero configuration**:
+
+```bash
+dsterm --remote
+```
+
+This enables `/fs/*` using the current directory as the workspace root — no TOML,
+no `--config`. In Darkian Studio choose **Open remote folder → Connect to local**
+**dsterm** (or add a `dsterm` connection to `127.0.0.1:8767`).
+
+For another machine on your LAN, bind a reachable address:
+
+```bash
+dsterm --remote -i
+```
+
+Then connect to that machine's IP on port `8767`. LAN mode is **unauthenticated**
+**and cleartext** — use it only on networks you trust; for untrusted networks use
+`dsterm host` (encrypted relay). To make it persistent, run `dsterm --remote`
+from your `dsterm startup` boot entry.
 
 ### `dsterm update`
 
@@ -83,6 +107,9 @@ dsterm -p 9090 -c /usr/bin/zsh
 
 # Start on LAN IP
 dsterm -i
+
+# Zero-config remote filesystem for Darkian Studio (serves the current dir)
+dsterm --remote
 
 # Start with CORS disabled
 dsterm --allow-any-origin

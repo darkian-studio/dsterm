@@ -1,7 +1,13 @@
 # Filesystem API
 
-All filesystem endpoints are **disabled by default**. Enable them and set the
-sandbox root in your config:
+All filesystem endpoints are **disabled by default**.
+
+**Zero-config:** run `dsterm --remote` to enable `/fs/*` using the current
+directory as the workspace root — no config file needed. This is the easiest way
+to open a machine's files from Darkian Studio (see [CLI.md](./CLI.md)).
+
+To configure it explicitly instead, enable it and set the sandbox root in your
+config:
 
 ```toml
 [filesystem]

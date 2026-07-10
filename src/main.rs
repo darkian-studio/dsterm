@@ -49,6 +49,11 @@ struct Cli {
     /// Path to a TOML configuration file
     #[arg(long = "config", global = true)]
     config_path: Option<String>,
+    /// Enable the remote filesystem API (/fs/*) using the current directory as
+    /// the workspace root, with no config file required. Equivalent to
+    /// [filesystem] enabled = true.
+    #[arg(long = "remote", global = true)]
+    remote: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -162,6 +167,7 @@ async fn main() {
         command_override,
         allow_any_origin,
         config_path,
+        remote,
         command,
     } = cli;
 
@@ -356,7 +362,10 @@ async fn main() {
             }
         }
         Some(Commands::Host) => {
-            let cfg = load_config_or_default(config_path.as_deref(), true);
+            let mut cfg = load_config_or_default(config_path.as_deref(), true);
+            if remote {
+                cfg.filesystem.enabled = true;
+            }
             init_config(cfg.clone());
 
             if let Some(cmd) = command_override {
@@ -426,7 +435,7 @@ async fn main() {
         },
         None => {
             // Load runtime config (defaults if no --config supplied).
-            let cfg = if let Some(ref path) = config_path {
+            let mut cfg = if let Some(ref path) = config_path {
                 match DstermConfig::load(path) {
                     Ok(c) => {
                         println!("{} Config loaded from {}", "✓".bright_green(), path);
@@ -443,6 +452,9 @@ async fn main() {
             } else {
                 DstermConfig::default()
             };
+            if remote {
+                cfg.filesystem.enabled = true;
+            }
             init_config(cfg);
 
             tokio::task::spawn(check_updates_in_background());
@@ -464,6 +476,14 @@ async fn main() {
             } else {
                 LOCAL_IP
             };
+
+            if remote {
+                println!(
+                    "{} Remote filesystem enabled at http://{ip}:{port}/fs (workspace root: current directory)",
+                    "✓".bright_green().bold()
+                );
+                println!("  In Darkian Studio: Open remote folder -> Connect to local dsterm");
+            }
 
             start_server(ip, port, allow_any_origin).await;
         }
