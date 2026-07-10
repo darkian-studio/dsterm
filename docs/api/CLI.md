@@ -44,8 +44,10 @@ dsterm --remote -i
 
 Then connect to that machine's IP on port `8767`. LAN mode is **unauthenticated**
 **and cleartext** — use it only on networks you trust; for untrusted networks use
-`dsterm host` (encrypted relay). To make it persistent, run `dsterm --remote`
-from your `dsterm startup` boot entry.
+`dsterm host` (encrypted relay). To make it persistent, run `dsterm startup` —
+its boot entry runs `dsterm host --remote` (relay host plus the `/fs/*` API) on
+Android (Termux:Boot), Linux (systemd), macOS (launchd), and Windows (Startup
+folder).
 
 ### `dsterm update`
 
