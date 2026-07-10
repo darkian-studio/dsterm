@@ -64,3 +64,70 @@ jobs:
           files: |
             target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
             target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}.sha256
+
+  build-macos:
+    name: Build ${{ matrix.platform.os_name }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os_name: macOS-arm64
+            target: aarch64-apple-darwin
+            binary_name: dsterm-macos-arm64
+          - os_name: macOS-x86_64
+            target: x86_64-apple-darwin
+            binary_name: dsterm-macos-x86_64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.platform.target }}
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.platform.target }}
+
+      - name: Rename binary
+        run: mv target/${{ matrix.platform.target }}/release/dsterm target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+
+      - name: Generate SHA-256
+        run: |
+          cd target/${{ matrix.platform.target }}/release
+          shasum -a 256 ${{ matrix.platform.binary_name }} > ${{ matrix.platform.binary_name }}.sha256
+
+      - name: Upload artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
+            target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}.sha256
+
+  build-windows:
+    name: Build Windows-x86_64
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Add Rust target
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Build binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Rename binary
+        run: Move-Item target/x86_64-pc-windows-msvc/release/dsterm.exe target/x86_64-pc-windows-msvc/release/dsterm-windows-x86_64.exe
+
+      - name: Generate SHA-256
+        run: |
+          $file = "target/x86_64-pc-windows-msvc/release/dsterm-windows-x86_64.exe"
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          "$hash  dsterm-windows-x86_64.exe" | Out-File -Encoding ascii "$file.sha256"
+
+      - name: Upload artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            target/x86_64-pc-windows-msvc/release/dsterm-windows-x86_64.exe
+            target/x86_64-pc-windows-msvc/release/dsterm-windows-x86_64.exe.sha256

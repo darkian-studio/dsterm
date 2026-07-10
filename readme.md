@@ -23,15 +23,33 @@ or any environment with a shell.
 
 ## Installation
 
+**Termux (Android), Linux, macOS** (bash):
+
 ```bash
 curl -L https://raw.githubusercontent.com/darkian-studio/dsterm/main/install.sh | bash
 ```
 
-The installer detects your platform automatically:
+**Windows** (PowerShell):
 
-- **Termux (Android)** — downloads the native Android binary
-- **Linux (x8664, aarch64, armv7)** — downloads a static musl binary that
-runs on any Linux distribution without glibc version constraints
+```powershell
+irm https://raw.githubusercontent.com/darkian-studio/dsterm/main/install.ps1 | iex
+```
+
+Both installers detect your platform automatically and download the matching
+prebuilt binary from the latest release:
+
+- **Termux (Android)** — native Android binary (arm64, armv7, x86_64)
+- **Linux** — static musl binary (x86_64, aarch64, armv7) that runs on any
+  distribution without glibc version constraints
+- **macOS** — native binary (Apple Silicon arm64, Intel x86_64)
+- **Windows** — native binary (x86_64)
+
+When no prebuilt binary matches your platform/architecture, the installers fall
+back to building from source with `cargo` (requires a [Rust toolchain](https://rustup.rs)):
+
+```sh
+cargo install --git https://github.com/darkian-studio/dsterm dsterm
+```
 
 ## Update
 

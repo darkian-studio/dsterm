@@ -135,11 +135,19 @@ impl UpdateChecker {
             .json()
             .await?;
 
-        // Detect whether we are running inside Termux (Android) or regular Linux.
+        // Detect the platform. Termux (Android) is detected at runtime; every
+        // other OS maps straight from the compiled target.
         let is_termux = std::env::var("TERMUX_VERSION").is_ok()
             || std::path::Path::new("/data/data/com.termux").exists();
 
-        let platform = if is_termux { "android" } else { "linux" };
+        let platform = if is_termux {
+            "android"
+        } else {
+            match std::env::consts::OS {
+                os @ ("linux" | "macos" | "windows") => os,
+                other => return Err(format!("Unsupported OS: {other}").into()),
+            }
+        };
 
         let arch_suffix = match std::env::consts::ARCH {
             "arm" => "armv7",
@@ -148,7 +156,8 @@ impl UpdateChecker {
             other => return Err(format!("Unsupported architecture: {other}").into()),
         };
 
-        let binary_name = format!("dsterm-{platform}-{arch_suffix}");
+        let ext = if platform == "windows" { ".exe" } else { "" };
+        let binary_name = format!("dsterm-{platform}-{arch_suffix}{ext}");
 
         let asset = release
             .assets
@@ -180,7 +189,20 @@ impl UpdateChecker {
             fs::set_permissions(&temp_path, perms).await?;
         }
 
-        fs::rename(temp_path, current_exe).await?;
+        // A running executable cannot be overwritten on Windows, so move the
+        // current binary aside first, then drop the new one into place. On Unix
+        // an atomic rename over the running binary is fine.
+        #[cfg(windows)]
+        {
+            let old_path = current_exe.with_extension("old");
+            let _ = fs::remove_file(&old_path).await;
+            fs::rename(&current_exe, &old_path).await?;
+            fs::rename(&temp_path, &current_exe).await?;
+        }
+        #[cfg(not(windows))]
+        {
+            fs::rename(&temp_path, &current_exe).await?;
+        }
 
         if let Some(cache_path) = Self::get_cache_path() {
             let _ = fs::remove_file(cache_path).await;
