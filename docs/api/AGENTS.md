@@ -31,3 +31,16 @@ text frame. Closing the socket terminates the agent.
 Body: `{ "id": "a1" }` to kill one session, or `{}` to kill all. Returns
 `{ "killed": ["a1"] }`. The grace period before force-kill is
 `[bridges] kill_timeout_secs`.
+
+## Over the relay
+
+Agents are reachable remotely through the encrypted relay:
+
+- `agents:start { id?, command, args?, cwd?, env? }` spawns an agent and replies
+  with `result { respTo, data: { agentId } }`.
+- `agents:input { agentId, data }` writes one NDJSON line to the agent's stdin.
+- `agents:kill { agentId }` terminates it.
+
+The host streams each stdout line back as `agent:output { agentId, data }` and
+emits `agent:exit { agentId }` when the agent's stdout closes. The client drives
+the ACP JSON-RPC conversation end-to-end over this pipe.

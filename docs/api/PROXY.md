@@ -39,4 +39,13 @@ The HTTP proxy is reachable remotely via the `http:request` message:
 ```
 
 The host replies with a `result` whose `data` is the `/proxy/http` response above.
-WebSocket tunneling is currently local-only (not relay-routed).
+
+WebSocket tunneling is also relay-routed (localhost targets only, `[proxy] enabled = true`):
+
+- `ws:open { id?, url }` opens the tunnel and replies with `result { data: { wsId } }`.
+- `ws:data { wsId, data, binary }` sends a frame (`data` is base64; `binary` selects
+  a binary vs. text frame).
+- `ws:close { wsId }` closes it.
+
+The host pushes upstream frames back as `ws:data { wsId, data, binary }` (base64) and
+`ws:close { wsId }` when the upstream closes.

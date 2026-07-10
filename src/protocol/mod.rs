@@ -38,6 +38,12 @@ pub enum IncomingMsg {
     },
     #[serde(rename = "terminal:list")]
     TerminalList { id: Option<String> },
+    #[serde(rename = "terminal:attach")]
+    TerminalAttach {
+        id: Option<String>,
+        #[serde(rename = "terminalId")]
+        terminal_id: String,
+    },
     #[serde(rename = "fs:read")]
     FsRead { id: Option<String>, path: String },
     #[serde(rename = "fs:write")]
@@ -73,6 +79,10 @@ pub enum IncomingMsg {
     },
     #[serde(rename = "sysmon:get")]
     SysmonGet { id: Option<String> },
+    #[serde(rename = "sysmon:subscribe")]
+    SysmonSubscribe { id: Option<String> },
+    #[serde(rename = "sysmon:unsubscribe")]
+    SysmonUnsubscribe { id: Option<String> },
     #[serde(rename = "ports:list")]
     PortsList { id: Option<String> },
     #[serde(rename = "ports:kill")]
@@ -92,6 +102,45 @@ pub enum IncomingMsg {
         method: Option<String>,
         headers: Option<std::collections::HashMap<String, String>>,
         body: Option<String>,
+    },
+    #[serde(rename = "agents:start")]
+    AgentsStart {
+        id: Option<String>,
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        cwd: Option<String>,
+        env: Option<std::collections::HashMap<String, String>>,
+    },
+    #[serde(rename = "agents:input")]
+    AgentsInput {
+        id: Option<String>,
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        data: String,
+    },
+    #[serde(rename = "agents:kill")]
+    AgentsKill {
+        id: Option<String>,
+        #[serde(rename = "agentId")]
+        agent_id: String,
+    },
+    #[serde(rename = "ws:open")]
+    WsOpen { id: Option<String>, url: String },
+    #[serde(rename = "ws:data")]
+    WsData {
+        id: Option<String>,
+        #[serde(rename = "wsId")]
+        ws_id: String,
+        data: String,
+        #[serde(default)]
+        binary: bool,
+    },
+    #[serde(rename = "ws:close")]
+    WsClose {
+        id: Option<String>,
+        #[serde(rename = "wsId")]
+        ws_id: String,
     },
     #[serde(other)]
     Unknown,
@@ -132,6 +181,31 @@ pub enum OutgoingMsg {
         resp_to: Option<String>,
         data: Value,
     },
+    #[serde(rename = "agent:output")]
+    AgentOutput {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        data: String,
+    },
+    #[serde(rename = "agent:exit")]
+    AgentExit {
+        #[serde(rename = "agentId")]
+        agent_id: String,
+    },
+    #[serde(rename = "ws:data")]
+    WsData {
+        #[serde(rename = "wsId")]
+        ws_id: String,
+        data: String,
+        binary: bool,
+    },
+    #[serde(rename = "ws:close")]
+    WsClose {
+        #[serde(rename = "wsId")]
+        ws_id: String,
+    },
+    #[serde(rename = "sysmon:update")]
+    SysmonUpdate { data: Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

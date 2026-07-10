@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-10
+
+### Added
+- Relay routing for ACP agents (`agents:start`, `agents:input`, `agents:kill`) with
+  `agent:output` / `agent:exit` streaming over the encrypted relay.
+- Relay routing for localhost WebSocket tunneling (`ws:open`, `ws:data`, `ws:close`).
+- Relay terminal re-attach (`terminal:attach`) to an existing PTY, replaying scrollback.
+- Relay system-monitor push (`sysmon:subscribe` / `sysmon:unsubscribe`) emitting
+  periodic `sysmon:update` snapshots.
+
+### Changed
+- Version bumped from `1.2.0` to `1.3.0`.
+
 ## [1.2.0] - 2026-07-09
 
 ### Added

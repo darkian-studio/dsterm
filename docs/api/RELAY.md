@@ -62,10 +62,13 @@ Every feature message is wrapped as:
 ```
 
 The inner plaintext is a JSON message. Client→host (`IncomingMsg`) includes
-`ping`, `terminal:create|data|resize|close|list`, `fs:read|write|mkdir|delete|rename|stat`,
-`project:file-search`, `sysmon:get`, `ports:list|kill`, `exec`, and `http:request`.
-Host→client (`OutgoingMsg`) includes `pong`, `error`, `terminal:data`,
-`terminal:event`, and `result { respTo, data }`.
+`ping`, `terminal:create|data|resize|close|list|attach`,
+`fs:read|write|mkdir|delete|rename|stat|list`, `project:file-search`,
+`sysmon:get|subscribe|unsubscribe`, `ports:list|kill`, `exec`, `http:request`,
+`agents:start|input|kill`, and `ws:open|data|close`.
+Host→client (`OutgoingMsg`) includes `pong`, `error`, `result { respTo, data }`,
+`terminal:data`, `terminal:event`, `agent:output`, `agent:exit`, `ws:data`,
+`ws:close`, and `sysmon:update`.
 
 Plaintext is only accepted for the control allowlist: `ping`, `pong`, and
 `session:*`.

@@ -165,10 +165,17 @@ pub async fn dispatch(msg: IncomingMsg, ctx: &ClientCtx, http: &reqwest::Client,
         | IncomingMsg::TerminalData { .. }
         | IncomingMsg::TerminalResize { .. }
         | IncomingMsg::TerminalClose { .. }
-        | IncomingMsg::TerminalList { .. } => {
-            tracing::warn!(
-                "terminal message reached dispatch; should be routed to terminal manager"
-            );
+        | IncomingMsg::TerminalList { .. }
+        | IncomingMsg::TerminalAttach { .. }
+        | IncomingMsg::SysmonSubscribe { .. }
+        | IncomingMsg::SysmonUnsubscribe { .. }
+        | IncomingMsg::AgentsStart { .. }
+        | IncomingMsg::AgentsInput { .. }
+        | IncomingMsg::AgentsKill { .. }
+        | IncomingMsg::WsOpen { .. }
+        | IncomingMsg::WsData { .. }
+        | IncomingMsg::WsClose { .. } => {
+            tracing::warn!("message reached dispatch; should be routed to a relay manager");
         }
         IncomingMsg::Unknown => {
             ctx.send_error(None, "Unknown message type").await;

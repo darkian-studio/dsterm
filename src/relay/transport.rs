@@ -2,9 +2,12 @@
 
 use crate::config::DstermConfig;
 use crate::protocol::{is_plaintext_allowed, IncomingMsg};
+use crate::relay::agents::RelayAgents;
 use crate::relay::clients::{ApprovalDecision, ClientInfo, ClientStore};
 use crate::relay::crypto::Secretbox;
 use crate::relay::dispatch::dispatch;
+use crate::relay::proxy_ws::RelayProxyWs;
+use crate::relay::sysmon::RelaySysmon;
 use crate::relay::terminal::RelayTerminals;
 use crate::relay::wire::ClientCtx;
 use futures::{SinkExt, StreamExt};
@@ -90,6 +93,9 @@ async fn connect_once(
 
     let http = reqwest::Client::new();
     let terminals = RelayTerminals::new();
+    let agents = RelayAgents::new();
+    let proxy_ws = RelayProxyWs::new();
+    let sysmon = RelaySysmon::new();
     let mut approved: HashSet<String> = HashSet::new();
 
     let loop_result: anyhow::Result<()> = async {
@@ -153,7 +159,10 @@ async fn connect_once(
                     }
                 };
                 let ctx = ClientCtx::new(client_id, secretbox.clone(), out_tx.clone());
-                route(incoming, &ctx, &http, local_port, &terminals).await;
+                route(
+                    incoming, &ctx, &http, local_port, &terminals, &agents, &proxy_ws, &sysmon,
+                )
+                .await;
             }
         }
         Ok(())
@@ -161,6 +170,9 @@ async fn connect_once(
     .await;
 
     terminals.shutdown();
+    agents.shutdown();
+    proxy_ws.shutdown();
+    sysmon.shutdown();
     heartbeat.abort();
     writer.abort();
     loop_result
@@ -227,12 +239,16 @@ async fn handle_control(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn route(
     incoming: IncomingMsg,
     ctx: &ClientCtx,
     http: &reqwest::Client,
     local_port: u16,
     terminals: &RelayTerminals,
+    agents: &RelayAgents,
+    proxy_ws: &RelayProxyWs,
+    sysmon: &RelaySysmon,
 ) {
     match incoming {
         IncomingMsg::TerminalCreate {
@@ -267,6 +283,46 @@ async fn route(
         }
         IncomingMsg::TerminalList { id } => {
             terminals.list(ctx, http, local_port, id).await;
+        }
+        IncomingMsg::TerminalAttach { id, terminal_id } => {
+            terminals.attach(ctx, local_port, id, &terminal_id).await;
+        }
+        IncomingMsg::AgentsStart {
+            id,
+            command,
+            args,
+            cwd,
+            env,
+        } => {
+            agents
+                .start(ctx, http, local_port, id, command, args, cwd, env)
+                .await;
+        }
+        IncomingMsg::AgentsInput { agent_id, data, .. } => {
+            agents.input(ctx, &agent_id, &data).await;
+        }
+        IncomingMsg::AgentsKill { id, agent_id } => {
+            agents.kill(ctx, http, local_port, id, &agent_id).await;
+        }
+        IncomingMsg::WsOpen { id, url } => {
+            proxy_ws.open(ctx, id, url).await;
+        }
+        IncomingMsg::WsData {
+            ws_id,
+            data,
+            binary,
+            ..
+        } => {
+            proxy_ws.data(ctx, &ws_id, &data, binary).await;
+        }
+        IncomingMsg::WsClose { ws_id, .. } => {
+            proxy_ws.close(&ws_id).await;
+        }
+        IncomingMsg::SysmonSubscribe { id } => {
+            sysmon.subscribe(ctx, http, local_port, id).await;
+        }
+        IncomingMsg::SysmonUnsubscribe { id } => {
+            sysmon.unsubscribe(ctx, id).await;
         }
         other => dispatch(other, ctx, http, local_port).await,
     }

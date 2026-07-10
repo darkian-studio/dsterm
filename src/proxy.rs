@@ -29,7 +29,7 @@ fn proxy_enabled() -> bool {
     get_config().proxy.enabled
 }
 
-fn is_localhost(url: &str) -> bool {
+pub fn is_localhost(url: &str) -> bool {
     match reqwest::Url::parse(url) {
         Ok(parsed) => match parsed.host_str() {
             Some(host) => {

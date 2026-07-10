@@ -49,3 +49,10 @@ Body: `{ "port": 3000 }`. Sends `SIGKILL` to every process owning that port.
 
 Returns HTTP 403 (`{"error":"Port killing is disabled"}`) when
 `kill_enabled = false`, or HTTP 400 (`{"error":"Invalid port"}`) for port `0`.
+
+## Over the relay
+
+`sysmon:get` returns a one-shot snapshot (same body as `GET /sysmon`). For a live
+feed, `sysmon:subscribe` starts a periodic push and `sysmon:unsubscribe` stops it;
+each push is delivered as `sysmon:update { data }` roughly every 30 seconds. Ports
+are reachable via `ports:list` and `ports:kill { port }`.

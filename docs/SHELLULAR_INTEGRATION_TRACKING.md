@@ -26,12 +26,12 @@ It is the working source of truth for scope, order, and status.
 | 2 | in-progress | Secretbox encryption + key management | `src/relay/crypto.rs` added with XSalsa20-Poly1305, base64 envelope parts, key-file load/create, and Unix `0600` create mode. CI verification pending. |
 | 3 | todo | Relay transport spine | `POST /host/register`, `/cli?hostId`, heartbeat, reconnect, encrypted send/receive. |
 | 4 | in-progress | Pairing + client approval | `src/relay/clients.rs` added with clients JSON store and unknown-client policy decisions. `dsterm pair` added for QR/payload output. `dsterm clients` still todo. |
-| 5 | in-progress | Terminal over relay prerequisites | Logical `terminalId` added to sessions/listing. Multi-client broadcast fan-out started. Relay adapters not yet added. |
+| 5 | done | Terminal over relay | Logical `terminalId`, broadcast fan-out, relay `terminal:create/data/resize/close/list`, and `terminal:attach` for reconnect. |
 | 6 | todo | Command execution over relay | Reuse existing exec cores, then enforce workspace-root policy for remote exposure. |
 | 7 | in-progress | Filesystem + project search | HTTP handlers added for read/write/mkdir/delete/rename/stat/search with workspace bounds. Git/status integration still todo. |
-| 8 | in-progress | Sysmon + ports | Native `/sysmon`, `/ports`, `/ports/kill` surfaces added. CI verification pending. Battery and richer metrics still todo. |
-| 9 | todo | Localhost proxy | HTTP and WS localhost-only tunnel, binary path, backpressure. |
-| 10 | todo | ACP agents | Reuse extension-host bridge pattern; add ACP JSON-RPC and permission mediation. |
+| 8 | done | Sysmon + ports | Native `/sysmon`, `/ports`, `/ports/kill`; relay `sysmon:get` plus `sysmon:subscribe/unsubscribe` periodic `sysmon:update` push. |
+| 9 | done | Localhost proxy | HTTP over relay (`http:request`) and WS over relay (`ws:open/data/close`); localhost-only, base64 frames. |
+| 10 | done | ACP agents | Relay `agents:start/input/kill` bridging the local NDJSON agent bridge; client drives ACP JSON-RPC end-to-end. |
 | 11 | todo | Daemon/startup | OS-native supervision docs/templates; no PM2. |
 | 12 | todo | Docs + compatibility matrix | Relay, pairing, filesystem, proxy, agents docs and protocol type matrix. |
 

@@ -1,9 +1,12 @@
+pub mod agents;
 pub mod clients;
 pub mod crypto;
 pub mod dispatch;
 pub mod loopback;
 pub mod pairing;
+pub mod proxy_ws;
 pub mod register;
+pub mod sysmon;
 pub mod terminal;
 pub mod transport;
 pub mod wire;

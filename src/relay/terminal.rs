@@ -183,11 +183,90 @@ impl RelayTerminals {
         }
     }
 
+    pub async fn attach(
+        &self,
+        ctx: &ClientCtx,
+        port: u16,
+        req_id: Option<String>,
+        terminal_id: &str,
+    ) {
+        if self.inner.contains_key(terminal_id) {
+            ctx.send_result(req_id, json!({ "terminalId": terminal_id }))
+                .await;
+            return;
+        }
+        let url = format!("ws://127.0.0.1:{port}/terminals/{terminal_id}");
+        let ws = match tokio_tungstenite::connect_async(url.as_str()).await {
+            Ok((ws, _)) => ws,
+            Err(e) => {
+                ctx.send_error(req_id, format!("terminal attach failed: {e}"))
+                    .await;
+                return;
+            }
+        };
+        let (mut ws_write, mut ws_read) = ws.split();
+
+        let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(256);
+        let task_ctx = ctx.clone();
+        let terminal_id_owned = terminal_id.to_string();
+
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    incoming = ws_read.next() => {
+                        match incoming {
+                            Some(Ok(Message::Binary(bytes))) => {
+                                task_ctx
+                                    .send(OutgoingMsg::TerminalData {
+                                        terminal_id: terminal_id_owned.clone(),
+                                        data: BASE64.encode(&bytes[..]),
+                                    })
+                                    .await;
+                            }
+                            Some(Ok(Message::Text(text))) => {
+                                task_ctx
+                                    .send(OutgoingMsg::TerminalEvent {
+                                        terminal_id: terminal_id_owned.clone(),
+                                        event: text.to_string(),
+                                    })
+                                    .await;
+                            }
+                            Some(Ok(Message::Close(_))) | None => break,
+                            Some(Err(_)) => break,
+                            _ => {}
+                        }
+                    }
+                    input = input_rx.recv() => {
+                        match input {
+                            Some(bytes) => {
+                                if ws_write.send(Message::Binary(bytes)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+        });
+
+        self.inner
+            .insert(terminal_id.to_string(), TerminalHandle { input_tx, task });
+        ctx.send_result(req_id, json!({ "terminalId": terminal_id }))
+            .await;
+    }
+
     /// Abort all pump tasks (called when the relay connection drops).
     pub fn shutdown(&self) {
         for entry in self.inner.iter() {
             entry.value().task.abort();
         }
         self.inner.clear();
+    }
+}
+
+impl Default for RelayTerminals {
+    fn default() -> Self {
+        Self::new()
     }
 }
