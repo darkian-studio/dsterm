@@ -478,11 +478,13 @@ async fn main() {
             };
 
             if remote {
-                println!(
-                    "{} Remote filesystem enabled at http://{ip}:{port}/fs (workspace root: current directory)",
-                    "✓".bright_green().bold()
-                );
-                println!("  In Darkian Studio: Open remote folder -> Connect to local dsterm");
+                let folder = std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| ".".to_string());
+                println!("{} Remote file system enabled", "✓".bright_green().bold());
+                println!("IP: {ip}");
+                println!("Port: {port}");
+                println!("Folder: {folder}");
             }
 
             start_server(ip, port, allow_any_origin).await;
