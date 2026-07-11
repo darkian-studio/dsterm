@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0]
+
+### Added
+- `GET /fs/root` endpoint returning the workspace root absolute path and folder
+  name for remote project labeling.
+
+### Fixed
+- On Windows, `terminate_terminal` treats `WSAEWOULDBLOCK` (os error 10035)
+  from `kill()` as success, since the session is already removed and the child
+  is being torn down.
+
 ## [1.5.1] - 2026-07-11
 
 ### Fixed
