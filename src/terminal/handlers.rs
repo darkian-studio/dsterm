@@ -1,4 +1,5 @@
 use super::get_default_command;
+#[cfg(unix)]
 use super::pty_fallback::fallback_open_and_spawn;
 use super::scrollback::Scrollback;
 use super::types::*;
@@ -31,6 +32,35 @@ use tokio::sync::{broadcast, Mutex};
 use tokio::task::spawn_blocking;
 
 pub static SESSIONS_CREATED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+fn shell_program() -> String {
+    #[cfg(windows)]
+    {
+        return std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        String::from("sh")
+    }
+}
+
+fn default_working_directory() -> PathBuf {
+    #[cfg(windows)]
+    {
+        return std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    }
+}
 
 pub struct TerminalSession {
     pub terminal_id: String,
@@ -111,13 +141,24 @@ pub async fn create_terminal(
     let cols = parse_u16(&options.cols, "cols").expect("failed");
     tracing::info!("Creating new terminal with cols={}, rows={}", cols, rows);
 
+    #[cfg(not(windows))]
     let session_uuid = uuid::Uuid::new_v4().to_string();
+    #[cfg(not(windows))]
     let mut env_overrides: Vec<(String, String)> = Vec::new();
+    #[cfg(windows)]
+    let env_overrides: Vec<(String, String)> = Vec::new();
     let (program, args) = if get_default_command().is_some() {
         let cmd = get_default_command().unwrap();
         let parts: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
         if parts.is_empty() {
-            (String::from("login"), Vec::<String>::new())
+            #[cfg(windows)]
+            {
+                (shell_program(), Vec::<String>::new())
+            }
+            #[cfg(not(windows))]
+            {
+                (String::from("login"), Vec::<String>::new())
+            }
         } else {
             let prog = parts[0].clone();
             let rest: Vec<String> = if parts.len() > 1 {
@@ -128,21 +169,29 @@ pub async fn create_terminal(
             (prog, rest)
         }
     } else {
-        match super::shell_integration::write_integration_files(&session_uuid) {
-            Ok(paths) => {
-                let (prog, prog_args) = super::shell_integration::integration_command(&paths);
-                let base = prog.rsplit('/').next().unwrap_or("").to_string();
-                if base == "zsh" {
-                    env_overrides
-                        .push(("ZDOTDIR".to_string(), paths.zshrc_dir.display().to_string()));
+        #[cfg(windows)]
+        {
+            // ConPTY starts cmd.exe natively; Unix shell integration is not applicable.
+            (shell_program(), Vec::<String>::new())
+        }
+        #[cfg(not(windows))]
+        {
+            match super::shell_integration::write_integration_files(&session_uuid) {
+                Ok(paths) => {
+                    let (prog, prog_args) = super::shell_integration::integration_command(&paths);
+                    let base = prog.rsplit('/').next().unwrap_or("").to_string();
+                    if base == "zsh" {
+                        env_overrides
+                            .push(("ZDOTDIR".to_string(), paths.zshrc_dir.display().to_string()));
+                    }
+                    (prog, prog_args)
                 }
-                (prog, prog_args)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to write dsterm integration files: {e}; falling back to login"
-                );
-                (String::from("login"), Vec::<String>::new())
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to write dsterm integration files: {e}; falling back to login"
+                    );
+                    (String::from("login"), Vec::<String>::new())
+                }
             }
         }
     };
@@ -188,23 +237,36 @@ pub async fn create_terminal(
         Err(e) => Err(e),
     };
 
-    // --- If openpty itself failed, fall back to TIOCGPTPEER ---
+    // --- If openpty itself failed, fall back to TIOCGPTPEER on Unix ---
     let (master, mut child) = match std_result {
         Ok(pair) => pair,
         Err(e) => {
-            tracing::warn!(
-                "Standard openpty failed ({}), trying TIOCGPTPEER fallback",
-                e
-            );
-            match fallback_open_and_spawn(size, &program, &args, options.cwd.as_deref()) {
-                Ok(pair) => pair,
-                Err(fb_err) => {
-                    tracing::error!("TIOCGPTPEER fallback also failed: {}", fb_err);
-                    return Json(ErrorResponse {
-                        error: format!("Failed to open PTY: {e}; TIOCGPTPEER fallback: {fb_err}"),
-                    })
-                    .into_response();
+            #[cfg(unix)]
+            {
+                tracing::warn!(
+                    "Standard openpty failed ({}), trying TIOCGPTPEER fallback",
+                    e
+                );
+                match fallback_open_and_spawn(size, &program, &args, options.cwd.as_deref()) {
+                    Ok(pair) => pair,
+                    Err(fb_err) => {
+                        tracing::error!("TIOCGPTPEER fallback also failed: {}", fb_err);
+                        return Json(ErrorResponse {
+                            error: format!(
+                                "Failed to open PTY: {e}; TIOCGPTPEER fallback: {fb_err}"
+                            ),
+                        })
+                        .into_response();
+                    }
                 }
+            }
+            #[cfg(not(unix))]
+            {
+                tracing::error!("Native PTY open failed: {}", e);
+                return Json(ErrorResponse {
+                    error: format!("Failed to open PTY: {e}"),
+                })
+                .into_response();
             }
         }
     };
@@ -617,11 +679,9 @@ pub async fn execute_command(Json(options): Json<ExecuteCommandOption>) -> impl 
         "Executing command"
     );
 
-    let shell = String::from("sh");
+    let shell = shell_program();
     let cwd = if cwd.is_empty() {
-        std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        default_working_directory()
     } else {
         PathBuf::from(cwd)
     };
@@ -651,6 +711,9 @@ pub async fn execute_command(Json(options): Json<ExecuteCommandOption>) -> impl 
         let pair = pty_system.openpty(size)?;
 
         let mut cmd = CommandBuilder::new(shell);
+        #[cfg(windows)]
+        cmd.args(["/C", &command]);
+        #[cfg(not(windows))]
         cmd.args(["-c", &command]);
         cmd.cwd(cwd);
 
@@ -783,9 +846,7 @@ pub async fn silent_exec(Json(options): Json<SilentExecRequest>) -> impl IntoRes
     let cwd_path = if let Some(c) = cwd {
         PathBuf::from(c)
     } else {
-        std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        default_working_directory()
     };
 
     if !cwd_path.exists() {
@@ -848,7 +909,10 @@ async fn execute_silent_command(
     env: Option<HashMap<String, String>>,
     timeout_ms: u64,
 ) -> Result<(i32, String, String, bool), String> {
-    let mut cmd = Command::new("sh");
+    let mut cmd = Command::new(shell_program());
+    #[cfg(windows)]
+    cmd.arg("/C").arg(&command);
+    #[cfg(not(windows))]
     cmd.arg("-c").arg(&command);
     cmd.current_dir(&cwd);
 
@@ -982,9 +1046,7 @@ async fn handle_silent_exec_stream(socket: WebSocket) {
     let cwd_path = if let Some(c) = cwd {
         PathBuf::from(c)
     } else {
-        std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        default_working_directory()
     };
 
     if !cwd_path.exists() {
@@ -1006,7 +1068,10 @@ async fn handle_silent_exec_stream(socket: WebSocket) {
         return;
     }
 
-    let mut cmd = Command::new("sh");
+    let mut cmd = Command::new(shell_program());
+    #[cfg(windows)]
+    cmd.arg("/C").arg(&command);
+    #[cfg(not(windows))]
     cmd.arg("-c").arg(&command);
     cmd.current_dir(&cwd_path);
 

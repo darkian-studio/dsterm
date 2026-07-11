@@ -95,6 +95,12 @@ pub fn key_path(configured: Option<&str>) -> anyhow::Result<PathBuf> {
     if let Some(path) = configured {
         return Ok(PathBuf::from(path));
     }
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+    #[cfg(not(windows))]
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
@@ -104,6 +110,34 @@ pub fn key_path(configured: Option<&str>) -> anyhow::Result<PathBuf> {
         .join(format!("dsterm-{}.e2ee", machine_id())))
 }
 
+#[cfg(windows)]
+pub(crate) fn windows_computer_name() -> Option<String> {
+    use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
+
+    // The documented maximum is much smaller, but leave room for unusual host names.
+    let mut buffer = vec![0u16; 256];
+    let mut len = buffer.len() as u32;
+    if unsafe { GetComputerNameW(buffer.as_mut_ptr(), &mut len) } == 0 {
+        return None;
+    }
+    String::from_utf16(&buffer[..len as usize]).ok()
+}
+
+#[cfg(windows)]
+fn machine_id() -> String {
+    [
+        windows_computer_name(),
+        std::env::var("COMPUTERNAME").ok(),
+        std::env::var("HOSTNAME").ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|value| sanitize_id(value.trim()))
+    .find(|value| !value.is_empty())
+    .unwrap_or_else(|| "default".to_string())
+}
+
+#[cfg(not(windows))]
 fn machine_id() -> String {
     let candidates = [
         fs::read_to_string("/etc/machine-id").ok(),
@@ -142,7 +176,18 @@ fn write_key_file(path: &Path, key: &[u8; KEY_BYTES]) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn write_key_file(path: &Path, key: &[u8; KEY_BYTES]) -> anyhow::Result<()> {
+    // The default path lives under USERPROFILE, whose inherited NTFS DACL is
+    // user-restricted. Configured paths may use a different ACL, so this is a
+    // best-effort Windows equivalent of the Unix 0600 creation mode.
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    std::io::Write::write_all(&mut options.open(path)?, key)?;
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn write_key_file(path: &Path, key: &[u8; KEY_BYTES]) -> anyhow::Result<()> {
     fs::write(path, key)?;
     Ok(())

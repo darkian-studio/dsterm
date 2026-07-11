@@ -4,6 +4,12 @@ use serde_json::json;
 use std::path::PathBuf;
 
 fn default_host_id_file() -> anyhow::Result<PathBuf> {
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+    #[cfg(not(windows))]
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
@@ -57,6 +63,18 @@ pub async fn register_host(
 }
 
 /// Best-effort stable machine identifier used in the relay handshake.
+#[cfg(windows)]
+pub fn machine_id() -> String {
+    crate::relay::crypto::windows_computer_name()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Best-effort stable machine identifier used in the relay handshake.
+#[cfg(not(windows))]
 pub fn machine_id() -> String {
     std::fs::read_to_string("/etc/machine-id")
         .map(|s| s.trim().to_string())
