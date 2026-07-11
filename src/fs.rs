@@ -379,6 +379,26 @@ pub async fn list_dir(Query(query): Query<PathQuery>) -> impl IntoResponse {
     Json(serde_json::json!({ "path": query.path, "entries": entries })).into_response()
 }
 
+pub async fn root_info() -> impl IntoResponse {
+    if !filesystem_enabled() {
+        return filesystem_disabled_response();
+    }
+    let root = match workspace_root() {
+        Ok(root) => root,
+        Err(e) => return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let path_display = root.to_string_lossy();
+    let cleaned = path_display
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&path_display)
+        .to_string();
+    let name = root
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cleaned.clone());
+    Json(serde_json::json!({ "path": cleaned, "name": name })).into_response()
+}
+
 pub fn fs_routes() -> axum::Router {
     axum::Router::new()
         .route("/fs/read", axum::routing::get(read_file))
@@ -388,6 +408,7 @@ pub fn fs_routes() -> axum::Router {
         .route("/fs/rename", axum::routing::post(rename))
         .route("/fs/stat", axum::routing::get(stat))
         .route("/fs/list", axum::routing::get(list_dir))
+        .route("/fs/root", axum::routing::get(root_info))
         .route("/fs/git/status", axum::routing::get(git_status))
         .route("/project/file-search", axum::routing::get(file_search))
 }
