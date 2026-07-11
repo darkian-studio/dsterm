@@ -2,6 +2,7 @@ mod handlers;
 #[cfg(unix)]
 mod pty_fallback;
 mod scrollback;
+#[cfg(not(windows))]
 mod shell_integration;
 mod types;
 
