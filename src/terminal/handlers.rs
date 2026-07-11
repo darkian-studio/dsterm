@@ -638,12 +638,7 @@ pub async fn terminate_terminal(
     tracing::info!("Terminating terminal {}", pid);
 
     if let Some((_, session)) = sessions.remove(&pid) {
-        let result = session
-            .child_killer
-            .lock()
-            .await
-            .kill()
-            .map_err(|e| e.to_string());
+        let result = session.child_killer.lock().await.kill();
 
         drop(session.writer.lock().await);
         session.scrollback.cleanup();
@@ -651,6 +646,14 @@ pub async fn terminate_terminal(
         match result {
             Ok(_) => {
                 tracing::info!("Terminal {} terminated successfully", pid);
+                Json(serde_json::json!({"success": true})).into_response()
+            }
+            Err(e) if e.raw_os_error() == Some(10035) => {
+                tracing::warn!(
+                    "Terminal {} kill returned WSAEWOULDBLOCK (os error 10035); \
+                     session already removed, treating as terminated",
+                    pid
+                );
                 Json(serde_json::json!({"success": true})).into_response()
             }
             Err(e) => {
