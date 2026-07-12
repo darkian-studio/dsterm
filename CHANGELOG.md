@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.4]
+
+### Fixed
+- `update()` no longer mis-detects the platform on Windows. Platform is now
+  derived from `std::env::consts::OS` (baked into the binary at compile time)
+  instead of probing `/data/data/com.termux`, which resolves to
+  `C:\data\data\com.termux` on Windows and caused the updater to download the
+  Android binary over the running Windows `.exe`. Termux is still detected via
+  the `TERMUX_VERSION` env var (native `android` target or a linux binary run
+  inside Termux). The same Termux gating was applied to `install.sh`.
+
 ## [1.6.2]
 
 ### Added

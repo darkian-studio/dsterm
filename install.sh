@@ -12,8 +12,10 @@ detect_binary_name() {
     local arch os
     arch=$(uname -m)
 
-    # Termux (Android)
-    if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux" ]; then
+    # Termux (Android). TERMUX_VERSION is the concrete signal Termux always
+    # sets; a `/data/data/com.termux` path check can resolve incorrectly on
+    # some hosts, so rely on the env var instead.
+    if [ -n "${TERMUX_VERSION:-}" ]; then
         case "$arch" in
             armv7l | armv8l) echo "dsterm-android-armv7" ;;
             aarch64)         echo "dsterm-android-arm64" ;;

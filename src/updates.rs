@@ -141,18 +141,23 @@ impl UpdateChecker {
             .json()
             .await?;
 
-        // Detect the platform. Termux (Android) is detected at runtime; every
-        // other OS maps straight from the compiled target.
-        let is_termux = std::env::var("TERMUX_VERSION").is_ok()
-            || std::path::Path::new("/data/data/com.termux").exists();
-
-        let platform = if is_termux {
-            "android"
-        } else {
-            match std::env::consts::OS {
-                os @ ("linux" | "macos" | "windows") => os,
-                other => return Err(format!("Unsupported OS: {other}").into()),
+        // The target OS is baked into the binary at compile time; read it
+        // directly instead of probing the filesystem. A `/data/data/...` probe
+        // resolves to `C:\data\data\...` on Windows and mis-detects Android.
+        let platform = match std::env::consts::OS {
+            "android" => "android",
+            "linux" => {
+                // A linux-target binary running inside Termux still needs the
+                // Android assets; TERMUX_VERSION is the concrete signal Termux
+                // always sets (never a path guess).
+                if std::env::var("TERMUX_VERSION").is_ok() {
+                    "android"
+                } else {
+                    "linux"
+                }
             }
+            os @ ("macos" | "windows") => os,
+            other => return Err(format!("Unsupported OS: {other}").into()),
         };
 
         let arch_suffix = match std::env::consts::ARCH {
