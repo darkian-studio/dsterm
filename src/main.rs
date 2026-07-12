@@ -25,7 +25,6 @@ use lsp::{start_lsp_server, LspBridgeConfig};
 use relay::{clients::ClientStore, crypto::Secretbox, pairing};
 use std::net::Ipv4Addr;
 use terminal::{init_config, set_default_command, start_server};
-use tokio::fs;
 use updates::UpdateChecker;
 use utils::get_ip_address;
 
@@ -232,7 +231,13 @@ async fn main() {
             }
         }
         Some(Commands::Downgrade) => {
-            let current_exe = std::env::current_exe()?;
+            let current_exe = match std::env::current_exe() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{} {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+            };
             let old_path = current_exe.with_extension("old");
             if !old_path.exists() {
                 eprintln!(
@@ -256,19 +261,28 @@ async fn main() {
             #[cfg(windows)]
             {
                 let stash_path = current_exe.with_extension("disabled");
-                let _ = fs::remove_file(&stash_path).await;
-                fs::rename(&current_exe, &stash_path).await?;
-                fs::rename(&old_path, &current_exe).await?;
-                let _ = fs::remove_file(&stash_path).await;
+                let _ = tokio::fs::remove_file(&stash_path).await;
+                if let Err(e) = tokio::fs::rename(&current_exe, &stash_path).await {
+                    eprintln!("{} {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+                if let Err(e) = tokio::fs::rename(&old_path, &current_exe).await {
+                    eprintln!("{} {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+                let _ = tokio::fs::remove_file(&stash_path).await;
             }
             #[cfg(not(windows))]
             {
-                fs::rename(&old_path, &current_exe).await?;
+                if let Err(e) = tokio::fs::rename(&old_path, &current_exe).await {
+                    eprintln!("{} {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
             }
 
             println!(
                 "\n{} {}",
-                "✓".right_green().bold(),
+                "✓".bright_green().bold(),
                 "Revert successful! Please restart dsterm.".green().bold()
             );
         }
