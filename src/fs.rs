@@ -138,6 +138,7 @@ pub async fn read_file(Query(query): Query<PathQuery>) -> impl IntoResponse {
         Ok(path) => path,
         Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
     };
+    tracing::debug!("fs read requested={:?} resolved={}", query.path, path.display());
     let metadata = match fs::metadata(&path) {
         Ok(metadata) => metadata,
         Err(e) => return fs_error(axum::http::StatusCode::NOT_FOUND, e),
@@ -375,6 +376,7 @@ pub async fn list_dir(Query(query): Query<PathQuery>) -> impl IntoResponse {
         Ok(path) => path,
         Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
     };
+    tracing::debug!("fs list requested={:?} resolved={}", query.path, path.display());
     let read_dir = match fs::read_dir(&path) {
         Ok(read_dir) => read_dir,
         Err(e) => return fs_error(axum::http::StatusCode::NOT_FOUND, e),
