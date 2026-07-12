@@ -49,12 +49,30 @@ struct FsError {
     error: String,
 }
 
+/// Windows `canonicalize()` returns extended-length (`\\?\`) verbatim paths,
+/// which the OS treats literally (no `.`/`..` normalization). Strip the prefix
+/// so downstream joins, lexical normalization, and `read_dir` behave normally.
+fn strip_extended_length_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(text) = path.to_str() {
+            if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{rest}"));
+            }
+            if let Some(rest) = text.strip_prefix(r"\\?\") {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path
+}
+
 fn workspace_root() -> anyhow::Result<PathBuf> {
     let configured = get_config().filesystem.workspace_root.clone();
     let root = configured
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
-    Ok(root.canonicalize()?)
+    Ok(strip_extended_length_prefix(root.canonicalize()?))
 }
 
 fn lexical_normalize(path: &StdPath) -> PathBuf {
@@ -73,6 +91,10 @@ fn lexical_normalize(path: &StdPath) -> PathBuf {
 
 fn safe_path(requested: &str) -> anyhow::Result<PathBuf> {
     let root = workspace_root()?;
+    let trimmed = requested.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == "./" {
+        return Ok(root);
+    }
     let requested = StdPath::new(requested);
     let joined = if requested.is_absolute() {
         requested.to_path_buf()

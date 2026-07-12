@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2]
+
+### Added
+- `dsterm downgrade` reverts to the previous version by swapping the
+  `dsterm.old` binary stashed by the last successful `update` — no manual
+  file gymnastics needed.
+
+### Fixed
+- `update()` now verifies the downloaded payload before touching disk: it
+  checks the asset `size`, the published `<binary>.sha256` checksum, and
+  the platform magic (Windows `MZ`) — aborting with a clear error and
+  leaving the installed binary untouched on any mismatch.
+
 ## [1.6.1]
 
 ### Fixed

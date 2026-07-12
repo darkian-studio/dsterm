@@ -19,6 +19,7 @@ struct GithubRelease {
 #[derive(Deserialize)]
 struct GithubAsset {
     name: String,
+    size: u64,
     browser_download_url: String,
 }
 
@@ -92,17 +93,22 @@ impl UpdateChecker {
         }
     }
 
-    pub async fn check_update(&self) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        if let Some(cache) = Self::get_cache().await {
-            let elapsed = SystemTime::now()
-                .duration_since(cache.last_check)
-                .unwrap_or(UPDATE_CHECK_INTERVAL);
-            if elapsed < UPDATE_CHECK_INTERVAL {
-                let cached_version = Version::parse(&cache.latest_version)?;
-                if cached_version > self.current_version {
-                    return Ok(Some(cache.latest_version));
+    pub async fn check_update(
+        &self,
+        force: bool,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        if !force {
+            if let Some(cache) = Self::get_cache().await {
+                let elapsed = SystemTime::now()
+                    .duration_since(cache.last_check)
+                    .unwrap_or(UPDATE_CHECK_INTERVAL);
+                if elapsed < UPDATE_CHECK_INTERVAL {
+                    let cached_version = Version::parse(&cache.latest_version)?;
+                    if cached_version > self.current_version {
+                        return Ok(Some(cache.latest_version));
+                    }
+                    return Ok(None);
                 }
-                return Ok(None);
             }
         }
 
@@ -172,6 +178,65 @@ impl UpdateChecker {
             .await?
             .bytes()
             .await?;
+
+        // Verify before touching anything on disk. A bad download here (wrong
+        // platform, truncated transfer, mismatched redirect target) must fail
+        // loudly, never silently replace a working binary. Nothing past this
+        // block runs unless every check passes.
+
+        if response.len() as u64 != asset.size {
+            return Err(format!(
+                "Size mismatch for {binary_name}: expected {} bytes, got {}. \
+                 Aborting update; the installed binary was NOT touched.",
+                asset.size,
+                response.len()
+            )
+            .into());
+        }
+
+        let checksum_name = format!("{binary_name}.sha256");
+        if let Some(checksum_asset) = release.assets.iter().find(|a| a.name == checksum_name) {
+            let checksum_body = self
+                .client
+                .get(&checksum_asset.browser_download_url)
+                .send()
+                .await?
+                .text()
+                .await?;
+            let expected = checksum_body
+                .split_whitespace()
+                .next()
+                .ok_or("Malformed checksum asset")?
+                .to_lowercase();
+
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(response.as_ref());
+            let actual: String = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+
+            if actual != expected {
+                return Err(format!(
+                    "Checksum mismatch for {binary_name}: expected {expected}, got {actual}. \
+                     Aborting update; the installed binary was NOT touched."
+                )
+                .into());
+            }
+        }
+
+        // Independent of the checksum: this is the exact failure already observed
+        // (an asset named dsterm-windows-x86_64.exe served ELF bytes). Confirm the
+        // payload's magic number matches the platform before it goes near current_exe.
+        if platform == "windows" && !response.starts_with(b"MZ") {
+            return Err(format!(
+                "{binary_name} does not have a Windows PE header (expected 'MZ'). \
+                 Aborting update; the installed binary was NOT touched."
+            )
+            .into());
+        }
 
         let current_exe = std::env::current_exe()?;
         let temp_path = current_exe.with_extension("new");

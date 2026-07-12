@@ -25,6 +25,7 @@ use lsp::{start_lsp_server, LspBridgeConfig};
 use relay::{clients::ClientStore, crypto::Secretbox, pairing};
 use std::net::Ipv4Addr;
 use terminal::{init_config, set_default_command, start_server};
+use tokio::fs;
 use updates::UpdateChecker;
 use utils::get_ip_address;
 
@@ -62,6 +63,9 @@ struct Cli {
 enum Commands {
     /// Update dsterm server
     Update,
+    /// Revert to the previous dsterm version (the binary stashed as
+    /// dsterm.old by the last successful `update`)
+    Downgrade,
     /// Start a WebSocket LSP bridge for a stdio language server
     Lsp {
         /// Session ID for port discovery (allows multiple instances of same server)
@@ -122,7 +126,7 @@ fn print_update_available(current_version: &str, new_version: &str) {
 
 async fn check_updates_in_background() {
     let checker = UpdateChecker::new(env!("CARGO_PKG_VERSION"));
-    match checker.check_update().await {
+    match checker.check_update(false).await {
         Ok(Some(version)) => {
             print_update_available(env!("CARGO_PKG_VERSION"), &version);
         }
@@ -177,7 +181,7 @@ async fn main() {
 
             let checker = UpdateChecker::new(env!("CARGO_PKG_VERSION"));
 
-            match checker.check_update().await {
+            match checker.check_update(true).await {
                 Ok(Some(version)) => {
                     println!(
                         "{} Found new version: {}",
@@ -226,6 +230,47 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+        Some(Commands::Downgrade) => {
+            let current_exe = std::env::current_exe()?;
+            let old_path = current_exe.with_extension("old");
+            if !old_path.exists() {
+                eprintln!(
+                    "{} {}",
+                    "✗".red().bold(),
+                    "No previous version found (dsterm.old is missing).".red()
+                );
+                std::process::exit(1);
+            }
+
+            println!(
+                "{} {}",
+                "⟲".blue(),
+                "Reverting to the previous version...".blue()
+            );
+
+            // A running binary cannot be overwritten in place on Windows, so swap
+            // via a sibling: stash the running exe, drop the old one in, then
+            // remove the stash. On Unix an atomic rename over the running
+            // binary is fine.
+            #[cfg(windows)]
+            {
+                let stash_path = current_exe.with_extension("disabled");
+                let _ = fs::remove_file(&stash_path).await;
+                fs::rename(&current_exe, &stash_path).await?;
+                fs::rename(&old_path, &current_exe).await?;
+                let _ = fs::remove_file(&stash_path).await;
+            }
+            #[cfg(not(windows))]
+            {
+                fs::rename(&old_path, &current_exe).await?;
+            }
+
+            println!(
+                "\n{} {}",
+                "✓".right_green().bold(),
+                "Revert successful! Please restart dsterm.".green().bold()
+            );
         }
         Some(Commands::Lsp {
             session,
