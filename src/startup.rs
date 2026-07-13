@@ -4,7 +4,7 @@
 //! script on Windows. PM2 is intentionally NOT used.
 use std::path::PathBuf;
 
-fn home_dir() -> anyhow::Result<PathBuf> {
+pub fn home_dir() -> anyhow::Result<PathBuf> {
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         Ok(PathBuf::from(home))
     } else {
@@ -13,8 +13,9 @@ fn home_dir() -> anyhow::Result<PathBuf> {
 }
 
 fn is_termux() -> bool {
+    // Rely on the env var Termux always sets. A `/data/data/com.termux` path
+    // probe false-positives as `C:\data\data\com.termux` on Windows.
     std::env::var("TERMUX_VERSION").is_ok()
-        || std::path::Path::new("/data/data/com.termux").exists()
 }
 
 fn exe_path() -> String {

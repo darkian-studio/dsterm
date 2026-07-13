@@ -34,8 +34,7 @@ pub fn write_integration_files(session_uuid: &str) -> std::io::Result<Integratio
 }
 
 pub fn integration_command(paths: &IntegrationPaths) -> (String, Vec<String>) {
-    let shell = std::env::var("SHELL")
-        .unwrap_or_else(|_| String::from("/data/data/com.termux/files/usr/bin/bash"));
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| String::from("/bin/bash"));
     let base = shell.rsplit('/').next().unwrap_or("bash");
     match base {
         "zsh" => (shell.clone(), vec!["-i".to_string()]),

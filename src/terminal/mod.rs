@@ -40,7 +40,12 @@ pub fn get_default_command() -> Option<&'static str> {
 }
 
 /// Store the runtime config once at startup. Ignored if called more than once.
-pub fn init_config(config: DstermConfig) {
+pub fn init_config(mut config: DstermConfig) {
+    if config.home.is_empty() {
+        config.home = crate::startup::home_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+    }
     let _ = CONFIG.set(config);
 }
 
@@ -153,7 +158,15 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .route("/execute-command", post(execute_command))
         .route("/silent-exec", post(silent_exec))
         .route("/silent-exec-stream", get(silent_exec_stream))
-        .route("/status", get(|| async { "OK" }))
+        .route(
+            "/status",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "status": "OK",
+                    "home": get_config().home.clone(),
+                }))
+            }),
+        )
         .route("/metrics", get(get_metrics))
         .with_state(sessions);
 

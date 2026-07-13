@@ -128,6 +128,9 @@ pub struct ProxyConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct DstermConfig {
+    /// Authoritative host home directory, resolved once at startup. Empty until
+    /// `init_config` fills it from the OS (`HOME`/`USERPROFILE`, else cwd).
+    pub home: String,
     pub terminal: TerminalConfig,
     pub bridges: BridgesConfig,
     pub relay: RelayConfig,
