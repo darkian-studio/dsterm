@@ -345,6 +345,7 @@ pub async fn create_terminal(
             let mut reader = reader;
             let buf_size = super::get_config().terminal.read_buffer_bytes;
             let mut read_buffer = vec![0u8; buf_size];
+            let mut first_bytes_logged = false;
             loop {
                 match reader.read(&mut read_buffer) {
                     Ok(0) => {
