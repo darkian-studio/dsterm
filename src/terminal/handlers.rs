@@ -642,15 +642,13 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let mut interval = tokio::time::interval(Duration::from_millis(coalesce_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    let mut close_reason: &str = "unknown";
-    loop {
+    let close_reason: &str = loop {
         tokio::select! {
             _ = interval.tick() => {
                 if !coalesce_buf.is_empty() {
                     let frame = std::mem::replace(&mut coalesce_buf, Vec::with_capacity(16384));
                     if sender.send(Message::Binary(Bytes::from(frame))).await.is_err() {
-                        close_reason = "output flush send failed";
-                        break;
+                        break "output flush send failed";
                     }
                 }
             }
@@ -661,8 +659,7 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                         if coalesce_buf.len() >= super::get_config().terminal.read_buffer_bytes {
                             let frame = std::mem::replace(&mut coalesce_buf, Vec::with_capacity(16384));
                             if sender.send(Message::Binary(Bytes::from(frame))).await.is_err() {
-                                close_reason = "output send failed";
-                                break;
+                                break "output send failed";
                             }
                             if first_ws_output {
                                 tracing::info!(
@@ -676,8 +673,7 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        close_reason = "output broadcast closed";
-                        break;
+                        break "output broadcast closed";
                     }
                 }
             }
@@ -685,14 +681,12 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                 match maybe_msg {
                     Ok(json) => {
                         if sender.send(Message::Text(json.into())).await.is_err() {
-                            close_reason = "command_exit send failed";
-                            break;
+                            break "command_exit send failed";
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        close_reason = "command_exit broadcast closed";
-                        break;
+                        break "command_exit broadcast closed";
                     }
                 }
             }
@@ -726,8 +720,7 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                     .await;
 
                 sessions.remove(&pid);
-                close_reason = "process exited";
-                break;
+                break "process exited";
             }
             msg = receiver.next() => {
                 match msg {
@@ -736,24 +729,21 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                             Message::Text(text) => text.as_bytes().to_vec(),
                             Message::Binary(data) => data.to_vec(),
                             Message::Close(_) => {
-                                close_reason = "client close";
-                                break;
+                                break "client close";
                             }
                             _ => continue,
                         };
                         if ws_input_tx.send(data).is_err() {
-                            close_reason = "input forward failed";
-                            break;
+                            break "input forward failed";
                         }
                     }
                     None | Some(Err(_)) => {
-                        close_reason = "client stream ended";
-                        break;
+                        break "client stream ended";
                     }
                 }
             }
         }
-    }
+    };
 
     drop(ws_input_tx);
     let _ = write_handle.await;
