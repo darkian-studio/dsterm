@@ -33,6 +33,14 @@ use tokio::task::spawn_blocking;
 
 pub static SESSIONS_CREATED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+/// Human-readable timestamp (unix seconds.millis) for lifecycle tracing.
+fn trace_ts() -> String {
+    let dur = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}.{:03}", dur.as_secs(), dur.subsec_millis())
+}
+
 fn shell_program() -> String {
     #[cfg(windows)]
     {
@@ -196,6 +204,14 @@ pub async fn create_terminal(
         }
     };
 
+    tracing::info!(
+        "[{}] create_terminal: shell_program={:?} args={:?} cwd={:?}",
+        trace_ts(),
+        program,
+        args,
+        options.cwd
+    );
+
     let size = PtySize {
         rows,
         cols,
@@ -209,6 +225,7 @@ pub async fn create_terminal(
 
     let std_result = match openpty_result {
         Ok(pair) => {
+            tracing::info!("[{}] create_terminal: openpty succeeded", trace_ts());
             let mut cmd = CommandBuilder::new(&program);
             if let Some(dir) = options.cwd.as_deref() {
                 cmd.cwd(dir);
@@ -221,7 +238,14 @@ pub async fn create_terminal(
                 cmd.args(arg_refs);
             }
             match pair.slave.spawn_command(cmd) {
-                Ok(child) => Ok((pair.master, child)),
+                Ok(child) => {
+                    tracing::info!(
+                        "[{}] create_terminal: spawn_command succeeded (program={})",
+                        trace_ts(),
+                        program
+                    );
+                    Ok((pair.master, child))
+                }
                 Err(e) => {
                     // openpty succeeded but spawn failed — this is a command
                     // error (e.g. missing program), not a PTY capability issue.
@@ -273,6 +297,7 @@ pub async fn create_terminal(
 
     // --- Common session setup ---
     let pid = child.process_id().unwrap_or(0);
+    tracing::info!("[{}] create_terminal: process id = {}", trace_ts(), pid);
     tracing::info!("Terminal created successfully with PID: {}", pid);
 
     let reader = match master.try_clone_reader() {
@@ -321,27 +346,43 @@ pub async fn create_terminal(
             let buf_size = super::get_config().terminal.read_buffer_bytes;
             let mut read_buffer = vec![0u8; buf_size];
             loop {
-                let n = match reader.read(&mut read_buffer) {
-                    Ok(n) if n > 0 => n,
-                    _ => break,
-                };
+                match reader.read(&mut read_buffer) {
+                    Ok(0) => {
+                        tracing::info!("[{}] PTY reader EOF for PID {}", trace_ts(), pid);
+                        break;
+                    }
+                    Ok(n) => {
+                        if !first_bytes_logged {
+                            tracing::info!(
+                                "[{}] PTY reader first bytes received for PID {} ({} bytes)",
+                                trace_ts(),
+                                pid,
+                                n
+                            );
+                            first_bytes_logged = true;
+                        }
+                        let data = &read_buffer[..n];
+                        let mut leftover_guard = osc_leftover.lock().unwrap();
+                        let (stripped, exits) = strip_osc_633(data, &mut leftover_guard);
+                        drop(leftover_guard);
+                        let _ = scrollback.append(&stripped);
 
-                let data = &read_buffer[..n];
-                let mut leftover_guard = osc_leftover.lock().unwrap();
-                let (stripped, exits) = strip_osc_633(data, &mut leftover_guard);
-                drop(leftover_guard);
-                let _ = scrollback.append(&stripped);
+                        let _ = output_tx.send(stripped);
 
-                let _ = output_tx.send(stripped);
-
-                if !exits.is_empty() {
-                    for code in exits {
-                        let msg = serde_json::to_string(&CommandExitMessage {
-                            msg_type: "command_exit".to_string(),
-                            exit_code: code,
-                        })
-                        .unwrap_or_default();
-                        let _ = command_exit_tx.send(msg);
+                        if !exits.is_empty() {
+                            for code in exits {
+                                let msg = serde_json::to_string(&CommandExitMessage {
+                                    msg_type: "command_exit".to_string(),
+                                    exit_code: code,
+                                })
+                                .unwrap_or_default();
+                                let _ = command_exit_tx.send(msg);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("[{}] PTY reader error for PID {}: {}", trace_ts(), pid, e);
+                        break;
                     }
                 }
             }
@@ -356,16 +397,28 @@ pub async fn create_terminal(
         let child = Arc::new(std::sync::Mutex::new(child));
         spawn_blocking(move || {
             let mut child_guard = child.lock().unwrap();
-            let success = match child_guard.wait() {
-                Ok(status) => status.success(),
-                Err(_) => false,
+            let status = match child_guard.wait() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(
+                        "[{}] child waiter wait() error for PID {}: {}",
+                        trace_ts(),
+                        pid,
+                        e
+                    );
+                    return;
+                }
             };
+            let success = status.success();
+            let code = status.exit_code();
             *exit_status.lock().unwrap() = Some(success);
             exit_notify.notify_waiters();
             tracing::info!(
-                "Background child waiter exited for PID {} (success={})",
+                "[{}] child waiter exited for PID {} (success={}, exit_code={})",
+                trace_ts(),
                 pid,
-                success
+                success,
+                code
             );
         });
     }
@@ -386,6 +439,11 @@ pub async fn create_terminal(
 
     SESSIONS_CREATED_TOTAL.fetch_add(1, Ordering::Relaxed);
     sessions.insert(pid, session);
+    tracing::info!(
+        "[{}] create_terminal: returning HTTP 200 with pid={}",
+        trace_ts(),
+        pid
+    );
     (
         axum::http::StatusCode::OK,
         [("x-dsterm-terminal-id", terminal_id)],
@@ -447,6 +505,11 @@ pub async fn terminal_websocket(
 
 async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let (mut sender, mut receiver) = socket.split();
+    tracing::info!(
+        "[{}] handle_socket entered for PID {} (websocket upgraded)",
+        trace_ts(),
+        pid
+    );
 
     let (
         writer,
@@ -458,9 +521,19 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
         exit_notify,
     ) = {
         let Some(session) = sessions.get(&pid) else {
-            tracing::error!("Session {} not found", pid);
+            tracing::error!(
+                "[{}] handle_socket: session NOT found for PID {}",
+                trace_ts(),
+                pid
+            );
             return;
         };
+
+        tracing::info!(
+            "[{}] handle_socket: session found for PID {}",
+            trace_ts(),
+            pid
+        );
 
         *session.last_accessed.lock().await = SystemTime::now();
         tracing::info!("WebSocket connection established for terminal {}", pid);
@@ -479,8 +552,21 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     // Check if process already exited
     let already_exited = {
         let guard = exit_status_arc.lock().unwrap();
-        *guard
+        let v = *guard;
+        tracing::info!(
+            "[{}] handle_socket: exit_status for PID {} = {:?}",
+            trace_ts(),
+            pid,
+            v
+        );
+        v
     };
+    tracing::info!(
+        "[{}] handle_socket: already_exited decision for PID {} = {}",
+        trace_ts(),
+        pid,
+        already_exited.is_some()
+    );
     if let Some(success) = already_exited {
         let exit_message = ProcessExitMessage {
             exit_code: Some(if success { 0 } else { 1 }),
@@ -506,10 +592,16 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let mut cmd_exit_rx = command_exit_tx.subscribe();
 
     // Send full scrollback history (client should clear terminal before connecting)
+    let mut first_ws_output = true;
     let scrollback_for_replay = scrollback.clone();
     let scrollback_limit = super::get_config().terminal.max_scrollback_bytes;
     match spawn_blocking(move || scrollback_for_replay.read_tail(scrollback_limit)).await {
         Ok(Ok(contents)) if !contents.is_empty() => {
+            tracing::info!(
+                "[{}] handle_socket: scrollback replay sent for PID {} (first output)",
+                trace_ts(),
+                pid
+            );
             let _ = sender.send(Message::Binary(Bytes::from(contents))).await;
         }
         Ok(Err(e)) => {
@@ -523,9 +615,20 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let write_handle = {
         let writer = writer.clone();
         spawn_blocking(move || {
+            let mut first_input_logged = false;
             while let Ok(data) = ws_input_rx.recv() {
+                if !first_input_logged {
+                    tracing::info!(
+                        "[{}] PTY writer first client input for PID {} ({} bytes)",
+                        trace_ts(),
+                        pid,
+                        data.len()
+                    );
+                    first_input_logged = true;
+                }
                 let mut guard = writer.blocking_lock();
                 if guard.write_all(&data).is_err() || guard.flush().is_err() {
+                    tracing::error!("[{}] PTY writer failed for PID {}", trace_ts(), pid);
                     break;
                 }
             }
@@ -538,12 +641,14 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let mut interval = tokio::time::interval(Duration::from_millis(coalesce_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let mut close_reason: &str = "unknown";
     loop {
         tokio::select! {
             _ = interval.tick() => {
                 if !coalesce_buf.is_empty() {
                     let frame = std::mem::replace(&mut coalesce_buf, Vec::with_capacity(16384));
                     if sender.send(Message::Binary(Bytes::from(frame))).await.is_err() {
+                        close_reason = "output flush send failed";
                         break;
                     }
                 }
@@ -555,23 +660,39 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                         if coalesce_buf.len() >= super::get_config().terminal.read_buffer_bytes {
                             let frame = std::mem::replace(&mut coalesce_buf, Vec::with_capacity(16384));
                             if sender.send(Message::Binary(Bytes::from(frame))).await.is_err() {
+                                close_reason = "output send failed";
                                 break;
+                            }
+                            if first_ws_output {
+                                tracing::info!(
+                                    "[{}] handle_socket: first live output sent for PID {}",
+                                    trace_ts(),
+                                    pid
+                                );
+                                first_ws_output = false;
                             }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        close_reason = "output broadcast closed";
+                        break;
+                    }
                 }
             }
             maybe_msg = cmd_exit_rx.recv() => {
                 match maybe_msg {
                     Ok(json) => {
                         if sender.send(Message::Text(json.into())).await.is_err() {
+                            close_reason = "command_exit send failed";
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        close_reason = "command_exit broadcast closed";
+                        break;
+                    }
                 }
             }
             _ = exit_notify.notified() => {
@@ -604,6 +725,7 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                     .await;
 
                 sessions.remove(&pid);
+                close_reason = "process exited";
                 break;
             }
             msg = receiver.next() => {
@@ -612,14 +734,21 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                         let data = match message {
                             Message::Text(text) => text.as_bytes().to_vec(),
                             Message::Binary(data) => data.to_vec(),
-                            Message::Close(_) => break,
+                            Message::Close(_) => {
+                                close_reason = "client close";
+                                break;
+                            }
                             _ => continue,
                         };
                         if ws_input_tx.send(data).is_err() {
+                            close_reason = "input forward failed";
                             break;
                         }
                     }
-                    None | Some(Err(_)) => break,
+                    None | Some(Err(_)) => {
+                        close_reason = "client stream ended";
+                        break;
+                    }
                 }
             }
         }
@@ -628,7 +757,12 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     drop(ws_input_tx);
     let _ = write_handle.await;
 
-    tracing::info!("WebSocket disconnected for terminal {}", pid);
+    tracing::info!(
+        "[{}] WebSocket disconnected for terminal {} (reason: {})",
+        trace_ts(),
+        pid,
+        close_reason
+    );
 }
 
 pub async fn terminate_terminal(
