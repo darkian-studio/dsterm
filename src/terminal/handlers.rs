@@ -44,12 +44,23 @@ fn trace_ts() -> String {
 fn shell_program() -> String {
     #[cfg(windows)]
     {
-        return std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        return std::env::var("DSTERM_SHELL").unwrap_or_else(|_| {
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string()
+        });
     }
 
     #[cfg(not(windows))]
     {
         String::from("sh")
+    }
+}
+
+#[cfg(windows)]
+fn windows_shell_args(program: &str) -> Vec<String> {
+    if program.to_ascii_lowercase().contains("powershell") {
+        vec!["-NoLogo".to_string(), "-NoProfile".to_string()]
+    } else {
+        Vec::new()
     }
 }
 
@@ -161,7 +172,8 @@ pub async fn create_terminal(
         if parts.is_empty() {
             #[cfg(windows)]
             {
-                (shell_program(), Vec::<String>::new())
+                let prog = shell_program();
+                (prog.clone(), windows_shell_args(&prog))
             }
             #[cfg(not(windows))]
             {
@@ -179,8 +191,8 @@ pub async fn create_terminal(
     } else {
         #[cfg(windows)]
         {
-            // ConPTY starts cmd.exe natively; Unix shell integration is not applicable.
-            (shell_program(), Vec::<String>::new())
+            let prog = shell_program();
+            (prog.clone(), windows_shell_args(&prog))
         }
         #[cfg(not(windows))]
         {
