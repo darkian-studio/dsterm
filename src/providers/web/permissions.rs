@@ -148,7 +148,7 @@ fn is_reserved_ipv4(ip: &Ipv4Addr) -> bool {
         100 => (64..=127).contains(&octets[1]),
         169 => octets[1] == 254,
         192 => octets[1] == 0 && octets[2] == 0,
-        198 => (octets[1] == 18 || octets[1] == 19),
+        198 => octets[1] == 18 || octets[1] == 19,
         203 => octets[1] == 0 && octets[2] == 113,
         _ => false,
     }

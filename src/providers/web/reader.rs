@@ -1,5 +1,7 @@
 use regex::Regex;
 
+type NodeRef<'a> = ego_tree::NodeRef<'a, scraper::Node>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageType {
     Article,
@@ -87,7 +89,8 @@ fn is_article_page(lower: &str) -> bool {
     let has_article_tag = lower.contains("<article");
     let has_main_content = lower.contains("<main") || lower.contains("role=\"main\"");
     let paragraph_count = lower.matches("<p").count();
-    let heading_count = lower.matches("<h1") + lower.matches("<h2") + lower.matches("<h3");
+    let heading_count =
+        lower.matches("<h1").count() + lower.matches("<h2").count() + lower.matches("<h3").count();
 
     if has_article_tag && paragraph_count >= 3 {
         return true;
@@ -194,7 +197,7 @@ fn extract_element_markdown(element: &scraper::ElementRef) -> String {
     re.replace_all(&output, "\n\n").trim().to_string()
 }
 
-fn extract_node(node: &scraper::NodeRef, output: &mut String) {
+fn extract_node(node: &NodeRef<'_>, output: &mut String) {
     match node.value() {
         scraper::Node::Element(el) => {
             let tag = el.name();
@@ -279,7 +282,7 @@ fn extract_node(node: &scraper::NodeRef, output: &mut String) {
     }
 }
 
-fn extract_table(table_node: &scraper::NodeRef, output: &mut String) {
+fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut current_row: Vec<String> = Vec::new();
 

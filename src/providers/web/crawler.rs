@@ -1,9 +1,9 @@
-use super::fetch::{FetchError, HttpService};
+use super::fetch::HttpService;
 use super::models::{CrawlPage, CrawlRequest, CrawlResponse};
 use super::reader::{self, PageType};
 use reqwest::Url;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -98,7 +98,6 @@ impl CrawlService {
             let results = futures::future::join_all(futs).await;
             for result in results {
                 if let Ok(Some(page)) = result {
-                    total_chars += page.markdown.len();
                     pages.push(page);
                 }
             }
@@ -258,7 +257,6 @@ impl CrawlService {
 
         for rx in pending_futs {
             if let Ok(Some((page, links))) = rx.await {
-                total_chars += page.markdown.len();
                 for link in &links {
                     let link_domain = extract_domain(link);
                     if link_domain != root_domain {

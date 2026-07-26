@@ -23,6 +23,23 @@ struct RawResult {
     position: usize,
 }
 
+#[derive(Debug)]
+enum SearchError {
+    Network(String),
+    Empty,
+}
+
+impl std::fmt::Display for SearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SearchError::Network(e) => write!(f, "network error: {e}"),
+            SearchError::Empty => write!(f, "no results"),
+        }
+    }
+}
+
+impl std::error::Error for SearchError {}
+
 pub struct SearchService {
     clients: Vec<Client>,
     counter: std::sync::atomic::AtomicU64,
@@ -88,7 +105,7 @@ impl SearchService {
         engine: &str,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<RawResult>, reqwest::Error> {
+    ) -> Result<Vec<RawResult>, SearchError> {
         let mut last_err = None;
         for attempt in 0..=ENGINE_RETRIES {
             let result = match engine {
@@ -97,13 +114,13 @@ impl SearchService {
                 "mojeek" => self.search_mojek(query, limit).await,
                 "yahoo" => self.search_yahoo(query, limit).await,
                 "startpage" => self.search_startpage(query, limit).await,
-                _ => return Err(last_err.unwrap_or_else(|| reqwest::Error::builder().build())),
+                _ => return Err(last_err.unwrap_or(SearchError::Empty)),
             };
 
             match result {
                 Ok(r) if !r.is_empty() => return Ok(r),
                 Ok(_) => {
-                    last_err = Some(reqwest::Error::builder().build());
+                    last_err = Some(SearchError::Empty);
                 }
                 Err(e) => {
                     last_err = Some(e);
@@ -113,21 +130,29 @@ impl SearchService {
                 }
             }
         }
-        Err(last_err.unwrap_or_else(|| reqwest::Error::builder().build()))
+        Err(last_err.unwrap_or(SearchError::Empty))
     }
 
     async fn search_duckduckgo(
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<RawResult>, reqwest::Error> {
+    ) -> Result<Vec<RawResult>, SearchError> {
         let url = format!(
             "https://html.duckduckgo.com/html/?q={}",
             urlencoding::encode(query)
         );
 
-        let resp = self.client().get(&url).send().await?;
-        let html = resp.text().await?;
+        let resp = self
+            .client()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
+        let html = resp
+            .text()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
 
         let document = scraper::Html::parse_document(&html);
 
@@ -149,11 +174,14 @@ impl SearchService {
                         if let Ok(s) = scraper::Selector::parse(snip_sel) {
                             if let Some(parent) = element.parent() {
                                 if let Some(grandparent) = parent.parent() {
-                                    if let Some(snip) = grandparent.select(&s).next() {
-                                        snippet =
-                                            snip.text().collect::<String>().trim().to_string();
-                                        if !snippet.is_empty() {
-                                            break;
+                                    if let Some(gp_element) = scraper::ElementRef::wrap(grandparent)
+                                    {
+                                        if let Some(snip) = gp_element.select(&s).next() {
+                                            snippet =
+                                                snip.text().collect::<String>().trim().to_string();
+                                            if !snippet.is_empty() {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -180,18 +208,22 @@ impl SearchService {
         Ok(results)
     }
 
-    async fn search_brave(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<RawResult>, reqwest::Error> {
+    async fn search_brave(&self, query: &str, limit: usize) -> Result<Vec<RawResult>, SearchError> {
         let url = format!(
             "https://search.brave.com/search?q={}",
             urlencoding::encode(query)
         );
 
-        let resp = self.client().get(&url).send().await?;
-        let html = resp.text().await?;
+        let resp = self
+            .client()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
+        let html = resp
+            .text()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
 
         let document = scraper::Html::parse_document(&html);
 
@@ -225,10 +257,13 @@ impl SearchService {
                     for snip_sel in &snippet_selectors {
                         if let Ok(s) = scraper::Selector::parse(snip_sel) {
                             if let Some(parent) = element.parent() {
-                                if let Some(snip) = parent.select(&s).next() {
-                                    snippet = snip.text().collect::<String>().trim().to_string();
-                                    if !snippet.is_empty() {
-                                        break;
+                                if let Some(p_element) = scraper::ElementRef::wrap(parent) {
+                                    if let Some(snip) = p_element.select(&s).next() {
+                                        snippet =
+                                            snip.text().collect::<String>().trim().to_string();
+                                        if !snippet.is_empty() {
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -254,18 +289,22 @@ impl SearchService {
         Ok(results)
     }
 
-    async fn search_mojek(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<RawResult>, reqwest::Error> {
+    async fn search_mojek(&self, query: &str, limit: usize) -> Result<Vec<RawResult>, SearchError> {
         let url = format!(
             "https://www.mojeek.com/search?q={}",
             urlencoding::encode(query)
         );
 
-        let resp = self.client().get(&url).send().await?;
-        let html = resp.text().await?;
+        let resp = self
+            .client()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
+        let html = resp
+            .text()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
 
         let document = scraper::Html::parse_document(&html);
 
@@ -324,18 +363,22 @@ impl SearchService {
         Ok(results)
     }
 
-    async fn search_yahoo(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<RawResult>, reqwest::Error> {
+    async fn search_yahoo(&self, query: &str, limit: usize) -> Result<Vec<RawResult>, SearchError> {
         let url = format!(
             "https://search.yahoo.com/search?p={}",
             urlencoding::encode(query)
         );
 
-        let resp = self.client().get(&url).send().await?;
-        let html = resp.text().await?;
+        let resp = self
+            .client()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
+        let html = resp
+            .text()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
 
         let document = scraper::Html::parse_document(&html);
 
@@ -366,11 +409,14 @@ impl SearchService {
                         if let Ok(s) = scraper::Selector::parse(snip_sel) {
                             if let Some(parent) = element.parent() {
                                 if let Some(grandparent) = parent.parent() {
-                                    if let Some(snip) = grandparent.select(&s).next() {
-                                        snippet =
-                                            snip.text().collect::<String>().trim().to_string();
-                                        if !snippet.is_empty() {
-                                            break;
+                                    if let Some(gp_element) = scraper::ElementRef::wrap(grandparent)
+                                    {
+                                        if let Some(snip) = gp_element.select(&s).next() {
+                                            snippet =
+                                                snip.text().collect::<String>().trim().to_string();
+                                            if !snippet.is_empty() {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -401,14 +447,22 @@ impl SearchService {
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<RawResult>, reqwest::Error> {
+    ) -> Result<Vec<RawResult>, SearchError> {
         let url = format!(
             "https://www.startpage.com/do/dsearch?query={}&cat=web",
             urlencoding::encode(query)
         );
 
-        let resp = self.client().get(&url).send().await?;
-        let html = resp.text().await?;
+        let resp = self
+            .client()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
+        let html = resp
+            .text()
+            .await
+            .map_err(|e| SearchError::Network(e.to_string()))?;
 
         let document = scraper::Html::parse_document(&html);
 
@@ -439,11 +493,14 @@ impl SearchService {
                         if let Ok(s) = scraper::Selector::parse(snip_sel) {
                             if let Some(parent) = element.parent() {
                                 if let Some(grandparent) = parent.parent() {
-                                    if let Some(snip) = grandparent.select(&s).next() {
-                                        snippet =
-                                            snip.text().collect::<String>().trim().to_string();
-                                        if !snippet.is_empty() {
-                                            break;
+                                    if let Some(gp_element) = scraper::ElementRef::wrap(grandparent)
+                                    {
+                                        if let Some(snip) = gp_element.select(&s).next() {
+                                            snippet =
+                                                snip.text().collect::<String>().trim().to_string();
+                                            if !snippet.is_empty() {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -473,8 +530,10 @@ impl SearchService {
 
 fn extract_ddg_url(href: &str) -> String {
     if let Ok(url) = Url::parse(href) {
-        if let Some(uddg) = url.query_pairs().find(|(k, _)| k == "uddg") {
-            return uddg.to_string();
+        for (key, value) in url.query_pairs() {
+            if key == "uddg" {
+                return value.to_string();
+            }
         }
     }
     if href.starts_with("http") {
@@ -650,10 +709,7 @@ mod tests {
             position: 0,
         });
         let merged = merge_and_rank(&mut raw, "test", 10);
-        let domains: Vec<&str> = merged
-            .iter()
-            .map(|r| extract_domain(&r.url).as_str())
-            .collect();
-        assert!(domains.contains(&"different.com"));
+        let domains: Vec<String> = merged.iter().map(|r| extract_domain(&r.url)).collect();
+        assert!(domains.contains(&"different.com".to_string()));
     }
 }

@@ -1,6 +1,7 @@
 use lru::LruCache;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -44,8 +45,9 @@ pub struct ContentCache {
 
 impl ContentCache {
     pub fn new(capacity: usize) -> Arc<Self> {
+        let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(256).unwrap());
         Arc::new(Self {
-            inner: RwLock::new(LruCache::new(capacity)),
+            inner: RwLock::new(LruCache::new(cap)),
         })
     }
 

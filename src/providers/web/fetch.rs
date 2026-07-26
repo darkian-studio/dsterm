@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+type NodeRef<'a> = ego_tree::NodeRef<'a, scraper::Node>;
+
 const MAX_RETRIES: u32 = 3;
 const BASE_RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_RESPONSE_BYTES: usize = 10_000_000;
@@ -36,13 +38,7 @@ const TRACKING_PARAMS: &[&str] = &[
     "twclid",
     "li_fat_id",
     "igshid",
-    "mc_cid",
-    "mc_eid",
 ];
-
-fn pick_ua(seed: u64) -> &'static str {
-    USER_AGENTS[(seed as usize) % USER_AGENTS.len()]
-}
 
 pub struct HttpService {
     clients: Vec<Client>,
@@ -60,7 +56,6 @@ impl HttpService {
                     .timeout(Duration::from_secs(30))
                     .connect_timeout(Duration::from_secs(10))
                     .redirect(reqwest::redirect::Policy::limited(10))
-                    .http2_prior_knowledge(false)
                     .user_agent(*ua)
                     .build()
                     .expect("failed to build HTTP client")
@@ -86,7 +81,7 @@ impl HttpService {
         &self,
         url: &str,
         css_selector: Option<&str>,
-        focus: Option<&str>,
+        _focus: Option<&str>,
         max_bytes: usize,
     ) -> Result<FetchResponse, FetchError> {
         self.permissions.check(url)?;
@@ -232,7 +227,7 @@ impl HttpService {
         let _encoding = detect_encoding(&content_type, &body_bytes);
         let html = String::from_utf8_lossy(&body_bytes)
             .replace('\0', "")
-            .into_owned();
+            .to_owned();
 
         let markdown = if should_extract_markdown(&content_type) {
             html_to_markdown(&html)
@@ -389,7 +384,7 @@ pub fn html_to_markdown(html: &str) -> String {
     result.trim().to_string()
 }
 
-fn extract_node(node: &scraper::NodeRef, output: &mut String) {
+fn extract_node(node: &NodeRef<'_>, output: &mut String) {
     match node.value() {
         scraper::Node::Element(el) => {
             let tag = el.name();
@@ -480,7 +475,7 @@ fn extract_node(node: &scraper::NodeRef, output: &mut String) {
     }
 }
 
-fn extract_table(table_node: &scraper::NodeRef, output: &mut String) {
+fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut current_row: Vec<String> = Vec::new();
 
@@ -583,7 +578,7 @@ pub fn normalize_url(url: &str) -> String {
     let host = parsed.host_str().unwrap_or("").to_lowercase();
     let _ = parsed.set_host(Some(&host));
 
-    let mut params: Vec<(String, String)> = parsed
+    let params: Vec<(String, String)> = parsed
         .query_pairs()
         .filter(|(key, _)| {
             let k = key.to_lowercase();
@@ -597,7 +592,7 @@ pub fn normalize_url(url: &str) -> String {
         parsed.query_pairs_mut().append_pair(k, v);
     }
 
-    let path = parsed.path();
+    let path = parsed.path().to_string();
     if path.len() > 1 && path.ends_with('/') {
         let _ = parsed.set_path(&path[..path.len() - 1]);
     }
