@@ -41,6 +41,12 @@ tree-sitter-javascript = "0.23"
 tree-sitter-typescript = "0.23"
 lru = "0.12"
 sha2 = "0.10"
+async-trait = "0.1"
+scraper = "0.22"
+htmlescape = "0.3"
+url = "2"
+thiserror = "2"
+urlencoding = "2"
 
 
 [target.'cfg(not(windows))'.dependencies]

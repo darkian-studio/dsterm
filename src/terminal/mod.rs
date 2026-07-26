@@ -100,6 +100,8 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
     let mcp_registry: mcp_bridge::McpRegistry = Arc::new(RwLock::new(HashMap::new()));
     let agent_registry: agent_bridge::AgentRegistry = Arc::new(RwLock::new(HashMap::new()));
     let ast_registry = ast_bridge::new_registry();
+    let web_provider: crate::web_routes::WebState =
+        Arc::new(crate::providers::web::WebProvider::new());
 
     // Background inactivity eviction task — runs every 60 seconds.
     {
@@ -182,6 +184,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .merge(sysmon::sysmon_routes())
         .merge(ports::ports_routes())
         .merge(proxy::proxy_routes())
+        .merge(crate::web_routes::web_routes().with_state(web_provider))
         .layer(cors)
         .layer(
             TraceLayer::new_for_http()

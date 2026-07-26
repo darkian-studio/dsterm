@@ -10,6 +10,7 @@ mod mcp_bridge;
 mod ports;
 mod proto_frame;
 mod protocol;
+mod providers;
 mod proxy;
 mod relay;
 mod startup;
@@ -17,6 +18,7 @@ mod sysmon;
 mod terminal;
 mod updates;
 mod utils;
+mod web_routes;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
