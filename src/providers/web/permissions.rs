@@ -169,7 +169,7 @@ fn is_ipv6_private(host: &str) -> Option<String> {
             return Some(host.to_string());
         }
 
-        if segments[0] == 0xff00 {
+        if (segments[0] & 0xff00) == 0xff00 {
             return Some(host.to_string());
         }
     }

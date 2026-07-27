@@ -308,6 +308,19 @@ fn is_content_ok(status: u16, html: &str) -> bool {
 
     let lower = html.to_lowercase();
 
+    let unconditional_bot_patterns = [
+        "rate limit",
+        "too many requests",
+        "service unavailable",
+        "temporarily unavailable",
+    ];
+
+    for pattern in &unconditional_bot_patterns {
+        if lower.contains(pattern) {
+            return false;
+        }
+    }
+
     let bot_patterns = [
         "just a moment",
         "checking your browser",
@@ -334,10 +347,6 @@ fn is_content_ok(status: u16, html: &str) -> bool {
         "denied by administrator",
         "forbidden",
         "request blocked",
-        "rate limit",
-        "too many requests",
-        "service unavailable",
-        "temporarily unavailable",
     ];
 
     for pattern in &bot_patterns {
