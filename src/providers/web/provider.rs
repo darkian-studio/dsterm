@@ -31,6 +31,7 @@ impl WebProvider {
         }
     }
 
+    #[allow(dead_code)] // part of provider API
     pub fn with_permissions(permissions: NetworkPermissions) -> Self {
         let cache = ContentCache::new(256);
         let http = Arc::new(HttpService::new(permissions, cache));

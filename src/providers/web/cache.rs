@@ -72,11 +72,13 @@ impl ContentCache {
         cache.put(hash, entry);
     }
 
+    #[allow(dead_code)] // part of cache API
     pub async fn clear(&self) {
         let mut cache = self.inner.write().await;
         cache.clear();
     }
 
+    #[allow(dead_code)] // part of cache API
     pub async fn remove(&self, key: &CacheKey) -> bool {
         let hash = key.hash_key();
         let mut cache = self.inner.write().await;

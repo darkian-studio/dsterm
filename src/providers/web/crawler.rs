@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 const CRAWL_CONCURRENCY: usize = 5;
 const PER_PAGE_TIMEOUT: Duration = Duration::from_secs(15);
-const CRAWL_RETRIES: u32 = 1;
+
+type CrawlResult = Option<(CrawlPage, Vec<String>)>;
+type PendingFuts = Vec<tokio::sync::oneshot::Receiver<CrawlResult>>;
 
 struct CrawlUrl {
     url: String,
@@ -145,9 +147,7 @@ impl CrawlService {
         });
         discovered.insert(normalize_crawl_url(&request.root_url));
 
-        let mut pending_futs: Vec<
-            tokio::sync::oneshot::Receiver<Option<(CrawlPage, Vec<String>)>>,
-        > = Vec::new();
+        let mut pending_futs: PendingFuts = Vec::new();
 
         while let Some(current) = queue.pop() {
             if start.elapsed() >= deadline {

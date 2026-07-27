@@ -329,7 +329,7 @@ fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
         output.push('\n');
     }
 
-    output.push_str("|");
+    output.push('|');
     for _ in 0..col_count {
         output.push_str("---|");
     }
@@ -395,7 +395,7 @@ pub fn apply_focus(markdown: &str, focus: &str) -> String {
         .filter(|(score, _)| *score > 0)
         .collect();
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     if scored.is_empty() {
         return markdown.to_string();
@@ -409,6 +409,7 @@ pub fn apply_focus(markdown: &str, focus: &str) -> String {
     result.join("\n\n")
 }
 
+#[allow(dead_code)] // part of reader API
 pub fn extract_meta_description(html: &str) -> Option<String> {
     let document = scraper::Html::parse_document(html);
 
@@ -510,7 +511,7 @@ mod tests {
         let sel = scraper::Selector::parse("table").unwrap();
         if let Some(table) = document.select(&sel).next() {
             let mut output = String::new();
-            extract_table(&*table, &mut output);
+            extract_table(&table, &mut output);
             assert!(output.contains("| Name | Age |"));
             assert!(output.contains("| Alice | 30 |"));
             assert!(output.contains("| Bob | 25 |"));

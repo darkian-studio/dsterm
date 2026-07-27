@@ -59,6 +59,7 @@ pub struct ProviderResponse {
 
 #[async_trait]
 pub trait Provider: Send + Sync {
+    #[allow(dead_code)] // part of trait API, may be called by consumers
     fn id(&self) -> &'static str;
     async fn execute(&self, request: ProviderRequest) -> ProviderResponse;
 }

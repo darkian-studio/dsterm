@@ -20,6 +20,7 @@ struct RawResult {
     url: String,
     snippet: String,
     engine: String,
+    #[allow(dead_code)] // tracks search result position for debugging
     position: usize,
 }
 
@@ -74,13 +75,13 @@ impl SearchService {
     }
 
     pub async fn search(&self, request: SearchRequest) -> SearchResponse {
-        let mut futs = Vec::new();
-
-        futs.push(self.search_engine_retry("duckduckgo", &request.query, request.limit));
-        futs.push(self.search_engine_retry("brave", &request.query, request.limit));
-        futs.push(self.search_engine_retry("mojeek", &request.query, request.limit));
-        futs.push(self.search_engine_retry("yahoo", &request.query, request.limit));
-        futs.push(self.search_engine_retry("startpage", &request.query, request.limit));
+        let futs = vec![
+            self.search_engine_retry("duckduckgo", &request.query, request.limit),
+            self.search_engine_retry("brave", &request.query, request.limit),
+            self.search_engine_retry("mojeek", &request.query, request.limit),
+            self.search_engine_retry("yahoo", &request.query, request.limit),
+            self.search_engine_retry("startpage", &request.query, request.limit),
+        ];
 
         let results = futures::future::join_all(futs).await;
 
@@ -542,7 +543,7 @@ fn extract_ddg_url(href: &str) -> String {
     String::new()
 }
 
-fn merge_and_rank(raw: &mut Vec<RawResult>, query: &str, limit: usize) -> Vec<SearchResult> {
+fn merge_and_rank(raw: &mut [RawResult], query: &str, limit: usize) -> Vec<SearchResult> {
     let mut seen_urls: HashMap<String, usize> = HashMap::new();
     let mut merged: Vec<SearchResult> = Vec::new();
 
@@ -624,11 +625,11 @@ fn merge_and_rank(raw: &mut Vec<RawResult>, query: &str, limit: usize) -> Vec<Se
 
 fn normalize_search_url(url: &str) -> String {
     if let Ok(mut parsed) = Url::parse(url) {
-        let _ = parsed.set_query(None);
-        let _ = parsed.set_fragment(None);
+        parsed.set_query(None);
+        parsed.set_fragment(None);
         let path = parsed.path().to_string();
         if path.len() > 1 && path.ends_with('/') {
-            let _ = parsed.set_path(&path[..path.len() - 1]);
+            parsed.set_path(&path[..path.len() - 1]);
         }
         parsed.to_string()
     } else {

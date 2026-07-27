@@ -1,23 +1,12 @@
 use reqwest::Url;
 use std::net::Ipv4Addr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NetworkPermissions {
     pub allow_private: bool,
     pub allow_file: bool,
     pub allow_data_uri: bool,
     pub extra_denied_hosts: Vec<String>,
-}
-
-impl Default for NetworkPermissions {
-    fn default() -> Self {
-        Self {
-            allow_private: false,
-            allow_file: false,
-            allow_data_uri: false,
-            extra_denied_hosts: vec![],
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -174,7 +174,7 @@ impl HttpService {
                 .get("retry-after")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
-                .map(|s| Duration::from_secs(s));
+                .map(Duration::from_secs);
             return Err(FetchError::Retryable(status, retry_after));
         }
 
@@ -257,6 +257,7 @@ impl HttpService {
         })
     }
 
+    #[allow(dead_code)] // part of redirect validation API
     pub fn check_redirect(&self, original: &str, redirect: &str) -> Result<(), FetchError> {
         self.permissions.check(redirect).map_err(|e| {
             FetchError::Network(format!(
@@ -522,7 +523,7 @@ fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
         output.push('\n');
     }
 
-    output.push_str("|");
+    output.push('|');
     for _ in 0..col_count {
         output.push_str("---|");
     }
@@ -571,7 +572,7 @@ pub fn normalize_url(url: &str) -> String {
 
     let path = parsed.path().to_string();
     if path.len() > 1 && path.ends_with('/') {
-        let _ = parsed.set_path(&path[..path.len() - 1]);
+        parsed.set_path(&path[..path.len() - 1]);
     }
 
     parsed.to_string()
