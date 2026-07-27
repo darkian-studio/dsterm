@@ -283,63 +283,29 @@ fn extract_node(node: &NodeRef<'_>, output: &mut String) {
 }
 
 fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut current_row: Vec<String> = Vec::new();
+    let table_el = match scraper::ElementRef::wrap(*table_node) {
+        Some(el) => el,
+        None => return,
+    };
 
-    for child in table_node.children() {
-        match child.value() {
-            scraper::Node::Element(el) => match el.name() {
-                "tr" => {
-                    if !current_row.is_empty() {
-                        rows.push(std::mem::take(&mut current_row));
-                    }
-                }
-                "th" | "td" => {
-                    let cell_text: String = if let Some(el) = scraper::ElementRef::wrap(child) {
-                        el.text().collect::<String>().trim().to_string()
-                    } else {
-                        child.value().as_text().unwrap_or("").trim().to_string()
-                    };
-                    current_row.push(cell_text);
-                }
-                "thead" | "tbody" | "tfoot" => {
-                    for inner in child.children() {
-                        if let scraper::Node::Element(inner_el) = inner.value() {
-                            if inner_el.name() == "tr" {
-                                if !current_row.is_empty() {
-                                    rows.push(std::mem::take(&mut current_row));
-                                }
-                                for cell in inner.children() {
-                                    if let scraper::Node::Element(cell_el) = cell.value() {
-                                        if cell_el.name() == "th" || cell_el.name() == "td" {
-                                            let cell_text: String =
-                                                if let Some(el) = scraper::ElementRef::wrap(cell) {
-                                                    el.text().collect::<String>().trim().to_string()
-                                                } else {
-                                                    cell.value()
-                                                        .as_text()
-                                                        .unwrap_or("")
-                                                        .trim()
-                                                        .to_string()
-                                                };
-                                            current_row.push(cell_text);
-                                        }
-                                    }
-                                }
-                                if !current_row.is_empty() {
-                                    rows.push(std::mem::take(&mut current_row));
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
+    let tr_sel = match scraper::Selector::parse("tr") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let cell_sel = match scraper::Selector::parse("th, td") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for tr in table_el.select(&tr_sel) {
+        let cells: Vec<String> = tr
+            .select(&cell_sel)
+            .map(|cell| cell.text().collect::<String>().trim().to_string())
+            .collect();
+        if !cells.is_empty() {
+            rows.push(cells);
         }
-    }
-    if !current_row.is_empty() {
-        rows.push(current_row);
     }
 
     if rows.is_empty() {
@@ -352,9 +318,8 @@ fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
     }
 
     for row in &rows {
-        let cells: Vec<&str> = row.iter().map(|s| s.as_str()).collect();
         output.push_str("| ");
-        for cell in &cells {
+        for cell in row {
             output.push_str(cell);
             output.push_str(" | ");
         }
