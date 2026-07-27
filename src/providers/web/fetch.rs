@@ -488,7 +488,11 @@ fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
                     }
                 }
                 "th" | "td" => {
-                    let cell_text: String = child.text().collect::<String>().trim().to_string();
+                    let cell_text: String = if let Some(el) = scraper::ElementRef::wrap(child) {
+                        el.text().collect::<String>().trim().to_string()
+                    } else {
+                        child.value().as_text().unwrap_or("").trim().to_string()
+                    };
                     current_row.push(cell_text);
                 }
                 "thead" | "tbody" | "tfoot" => {
@@ -502,7 +506,15 @@ fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
                                     if let scraper::Node::Element(cell_el) = cell.value() {
                                         if cell_el.name() == "th" || cell_el.name() == "td" {
                                             let cell_text: String =
-                                                cell.text().collect::<String>().trim().to_string();
+                                                if let Some(el) = scraper::ElementRef::wrap(cell) {
+                                                    el.text().collect::<String>().trim().to_string()
+                                                } else {
+                                                    cell.value()
+                                                        .as_text()
+                                                        .unwrap_or("")
+                                                        .trim()
+                                                        .to_string()
+                                                };
                                             current_row.push(cell_text);
                                         }
                                     }
