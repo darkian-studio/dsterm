@@ -529,7 +529,9 @@ fn extract_node(node: &NodeRef<'_>, ctx: &mut ConverterCtx) {
                     }
                     // Inline code
                     ctx.output.push('`');
-                    let text = node.text().collect::<String>();
+                    let text = scraper::ElementRef::wrap(*node)
+                        .map(|e| e.text().collect::<String>())
+                        .unwrap_or_default();
                     let trimmed = text.trim();
                     ctx.output.push_str(trimmed);
                     ctx.output.push('`');
@@ -537,7 +539,9 @@ fn extract_node(node: &NodeRef<'_>, ctx: &mut ConverterCtx) {
                 }
                 "kbd" => {
                     ctx.output.push_str("<kbd>");
-                    let text = node.text().collect::<String>();
+                    let text = scraper::ElementRef::wrap(*node)
+                        .map(|e| e.text().collect::<String>())
+                        .unwrap_or_default();
                     ctx.output.push_str(text.trim());
                     ctx.output.push_str("</kbd>");
                     return;
