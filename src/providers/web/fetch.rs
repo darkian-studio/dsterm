@@ -386,15 +386,24 @@ pub fn html_to_markdown(html: &str) -> String {
     let document = scraper::Html::parse_document(html);
     let root = document.root_element();
 
-    let mut output = String::new();
-    extract_node(&root, &mut output);
+    let mut ctx = ConverterCtx::default();
+    extract_node(&root, &mut ctx);
 
     let re_single = Regex::new(r"\n{3,}").unwrap();
-    let result = re_single.replace_all(&output, "\n\n");
+    let result = re_single.replace_all(&ctx.output, "\n\n");
     result.trim().to_string()
 }
 
-fn extract_node(node: &NodeRef<'_>, output: &mut String) {
+#[derive(Default)]
+struct ConverterCtx {
+    output: String,
+    in_code_block: bool,
+    in_pre: bool,
+    list_depth: u32,
+    list_counter: Vec<u32>,
+}
+
+fn extract_node(node: &NodeRef<'_>, ctx: &mut ConverterCtx) {
     match node.value() {
         scraper::Node::Element(el) => {
             let tag = el.name();
@@ -402,90 +411,242 @@ fn extract_node(node: &NodeRef<'_>, output: &mut String) {
                 "script" | "style" | "noscript" | "svg" | "head" | "meta" | "link" => return,
                 "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                     let level = tag.chars().last().unwrap() as usize - '0' as usize;
-                    output.push_str(&"#".repeat(level));
-                    output.push(' ');
+                    ctx.output.push('\n');
+                    ctx.output.push_str(&"#".repeat(level));
+                    ctx.output.push(' ');
                 }
-                "p" | "div" | "section" | "article" | "main" | "aside" | "footer" | "header" => {
-                    output.push('\n');
+                "p" | "div" | "section" | "article" | "main" | "aside" | "footer" | "header"
+                | "nav" | "figcaption" => {
+                    ctx.output.push('\n');
                 }
-                "br" => {
-                    output.push('\n');
+                "br" | "wbr" => {
+                    ctx.output.push('\n');
                 }
-                "li" => {
-                    output.push_str("- ");
+                "hr" => {
+                    ctx.output.push_str("\n---\n");
+                }
+                "b" | "strong" => {
+                    ctx.output.push_str("**");
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push_str("**");
+                    return;
+                }
+                "i" | "em" => {
+                    ctx.output.push('*');
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push('*');
+                    return;
+                }
+                "u" => {
+                    ctx.output.push_str("<u>");
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push_str("</u>");
+                    return;
+                }
+                "s" | "del" => {
+                    ctx.output.push_str("~~");
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push_str("~~");
+                    return;
+                }
+                "sub" => {
+                    ctx.output.push('~');
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push('~');
+                    return;
+                }
+                "sup" => {
+                    ctx.output.push('^');
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push('^');
+                    return;
+                }
+                "mark" => {
+                    ctx.output.push_str("==");
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push_str("==");
+                    return;
                 }
                 "a" => {
-                    if let Some(href) = el.attr("href") {
-                        output.push('[');
+                    let href = el.attr("href").unwrap_or("");
+                    if href.is_empty() || href.starts_with('#') {
                         for child in node.children() {
-                            extract_node(&child, output);
+                            extract_node(&child, ctx);
                         }
-                        output.push_str("](");
-                        output.push_str(href);
-                        output.push(']');
                         return;
                     }
+                    ctx.output.push('[');
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push_str("](");
+                    ctx.output.push_str(href);
+                    ctx.output.push(')');
+                    return;
                 }
                 "img" => {
-                    if let Some(alt) = el.attr("alt") {
-                        if !alt.is_empty() {
-                            output.push_str(&format!("[image: {}]", alt));
+                    let src = el.attr("src").unwrap_or("");
+                    let alt = el.attr("alt").unwrap_or("");
+                    ctx.output.push_str(&format!("![{}]({})", alt, src));
+                    return;
+                }
+                "pre" => {
+                    ctx.in_pre = true;
+                    if !ctx.in_code_block {
+                        ctx.output.push_str("\n```\n");
+                        ctx.in_code_block = true;
+                    }
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    if ctx.in_code_block {
+                        ctx.output.push_str("\n```\n");
+                        ctx.in_code_block = false;
+                    }
+                    ctx.in_pre = false;
+                    return;
+                }
+                "code" => {
+                    if ctx.in_pre {
+                        for child in node.children() {
+                            extract_node(&child, ctx);
                         }
+                        return;
+                    }
+                    // Inline code
+                    ctx.output.push('`');
+                    let text = node.text().collect::<String>();
+                    let trimmed = text.trim();
+                    ctx.output.push_str(trimmed);
+                    ctx.output.push('`');
+                    return;
+                }
+                "kbd" => {
+                    ctx.output.push_str("<kbd>");
+                    let text = node.text().collect::<String>();
+                    ctx.output.push_str(text.trim());
+                    ctx.output.push_str("</kbd>");
+                    return;
+                }
+                "ul" | "ol" => {
+                    let is_ol = tag == "ol";
+                    ctx.list_depth += 1;
+                    if is_ol {
+                        ctx.list_counter.push(1);
+                    }
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    if is_ol {
+                        ctx.list_counter.pop();
+                    }
+                    ctx.list_depth -= 1;
+                    ctx.output.push('\n');
+                    return;
+                }
+                "li" => {
+                    ctx.output.push('\n');
+                    let indent = "  ".repeat(ctx.list_depth.saturating_sub(1) as usize);
+                    ctx.output.push_str(&indent);
+                    if let Some(counter) = ctx.list_counter.last_mut() {
+                        let n = *counter;
+                        *counter += 1;
+                        ctx.output.push_str(&format!("{n}. "));
+                    } else {
+                        ctx.output.push_str("- ");
+                    }
+                    ctx.output.push(' ');
+                    for child in node.children() {
+                        extract_node(&child, ctx);
                     }
                     return;
                 }
-                "pre" | "code" => {
-                    output.push_str("\n```\n");
-                }
                 "table" => {
-                    output.push('\n');
-                    extract_table(node, output);
+                    ctx.output.push('\n');
+                    extract_table(node, ctx);
                     return;
                 }
                 "blockquote" => {
-                    output.push_str("\n> ");
-                }
-                "hr" => {
-                    output.push_str("\n---\n");
+                    ctx.output.push_str("\n> ");
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push('\n');
+                    return;
                 }
                 "dt" => {
-                    output.push_str("**");
+                    ctx.output.push_str("\n**");
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push_str("**");
+                    return;
                 }
                 "dd" => {
-                    output.push_str(": ");
+                    ctx.output.push('\n');
+                    ctx.output.push_str(": ");
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    ctx.output.push('\n');
+                    return;
+                }
+                "span" | "label" | "summary" | "details" => {
+                    for child in node.children() {
+                        extract_node(&child, ctx);
+                    }
+                    return;
                 }
                 _ => {}
             }
 
             for child in node.children() {
-                extract_node(&child, output);
+                extract_node(&child, ctx);
             }
 
             match tag {
-                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => output.push('\n'),
-                "p" | "div" | "section" | "article" | "main" | "aside" | "footer" | "header" => {
-                    output.push('\n');
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => ctx.output.push('\n'),
+                "p" | "div" | "section" | "article" | "main" | "aside" | "footer" | "header"
+                | "nav" => {
+                    ctx.output.push('\n');
                 }
-                "li" => output.push('\n'),
-                "pre" | "code" => output.push_str("\n```\n"),
-                "dt" => output.push_str("**"),
-                "dd" => output.push('\n'),
-                "blockquote" => output.push('\n'),
                 _ => {}
             }
         }
         scraper::Node::Text(text) => {
-            let text = text.trim();
-            if !text.is_empty() {
-                output.push_str(text);
-                output.push(' ');
+            if ctx.in_pre || ctx.in_code_block {
+                ctx.output.push_str(text);
+                return;
+            }
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                if ctx.output.ends_with(' ') || ctx.output.ends_with('\n') {
+                    ctx.output.push_str(trimmed);
+                } else {
+                    ctx.output.push(' ');
+                    ctx.output.push_str(trimmed);
+                }
             }
         }
         _ => {}
     }
 }
 
-fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
+fn extract_table(table_node: &NodeRef<'_>, ctx: &mut ConverterCtx) {
     let table_el = match scraper::ElementRef::wrap(*table_node) {
         Some(el) => el,
         None => return,
@@ -521,22 +682,22 @@ fn extract_table(table_node: &NodeRef<'_>, output: &mut String) {
     }
 
     for row in &rows {
-        output.push_str("| ");
+        ctx.output.push_str("| ");
         for cell in row {
-            output.push_str(cell);
-            output.push_str(" | ");
+            ctx.output.push_str(cell);
+            ctx.output.push_str(" | ");
         }
         for _ in row.len()..col_count {
-            output.push_str(" | ");
+            ctx.output.push_str(" | ");
         }
-        output.push('\n');
+        ctx.output.push('\n');
     }
 
-    output.push('|');
+    ctx.output.push('|');
     for _ in 0..col_count {
-        output.push_str("---|");
+        ctx.output.push_str("---|");
     }
-    output.push('\n');
+    ctx.output.push('\n');
 }
 
 fn extract_title(html: &str) -> Option<String> {
