@@ -1,4 +1,7 @@
-use axum::extract::{Path, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}};
+use axum::extract::{
+    ws::{Message, WebSocket, WebSocketUpgrade},
+    Path, Query, State,
+};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -210,9 +213,7 @@ async fn ai_unload(body: Option<Json<Value>>) -> impl IntoResponse {
     )
 }
 
-async fn ai_list_models(
-    State(state): State<AiState>,
-) -> impl IntoResponse {
+async fn ai_list_models(State(state): State<AiState>) -> impl IntoResponse {
     let guard = state.model_registry.read().await;
     let models = guard.list().to_vec();
     drop(guard);
@@ -231,31 +232,78 @@ async fn ai_model_register(
     State(state): State<AiState>,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let provider = body.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let repository = body.get("repository").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let filename = body.get("filename").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let local_path = body.get("local_path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let provider = body
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let repository = body
+        .get("repository")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let filename = body
+        .get("filename")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let local_path = body
+        .get("local_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let model = ModelRegistration {
         id,
         provider,
         repository,
         filename,
-        revision: body.get("revision").and_then(|v| v.as_str()).unwrap_or("latest").to_string(),
+        revision: body
+            .get("revision")
+            .and_then(|v| v.as_str())
+            .unwrap_or("latest")
+            .to_string(),
         local_path,
         size: body.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
-        sha256: body.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        quantisation: body.get("quantisation").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        parameter_count: body.get("parameter_count").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        download_url: body.get("download_url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        installed_at: body.get("installed_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        sha256: body
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        quantisation: body
+            .get("quantisation")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        parameter_count: body
+            .get("parameter_count")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        download_url: body
+            .get("download_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        installed_at: body
+            .get("installed_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         status: ModelStatus::Registered,
     };
 
     state.model_registry.write().await.register(model);
 
-    (StatusCode::OK, Json(json!({ "success": true, "message": "registered" })))
+    (
+        StatusCode::OK,
+        Json(json!({ "success": true, "message": "registered" })),
+    )
 }
 
 async fn ai_model_remove(
@@ -264,19 +312,25 @@ async fn ai_model_remove(
 ) -> impl IntoResponse {
     let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
     state.model_registry.write().await.remove(id);
-    (StatusCode::OK, Json(json!({ "success": true, "message": "removed" })))
+    (
+        StatusCode::OK,
+        Json(json!({ "success": true, "message": "removed" })),
+    )
 }
 
-async fn ai_model_get(
-    State(state): State<AiState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+async fn ai_model_get(State(state): State<AiState>, Path(id): Path<String>) -> impl IntoResponse {
     let guard = state.model_registry.read().await;
     let found = guard.get(&id).cloned();
     drop(guard);
     match found {
-        Some(model) => (StatusCode::OK, Json(json!({ "success": true, "data": model }))),
-        None => (StatusCode::NOT_FOUND, Json(json!({ "success": false, "message": "not found" }))),
+        Some(model) => (
+            StatusCode::OK,
+            Json(json!({ "success": true, "data": model })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "success": false, "message": "not found" })),
+        ),
     }
 }
 
@@ -297,7 +351,10 @@ async fn ai_model_update_status(
         _ => ModelStatus::Registered,
     };
     state.model_registry.write().await.update_status(id, status);
-    (StatusCode::OK, Json(json!({ "success": true, "message": "status updated" })))
+    (
+        StatusCode::OK,
+        Json(json!({ "success": true, "message": "status updated" })),
+    )
 }
 
 async fn ai_loaded_models() -> impl IntoResponse {
