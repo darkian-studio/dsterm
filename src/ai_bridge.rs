@@ -547,12 +547,17 @@ async fn ai_generate(
 ) -> Result<impl IntoResponse, AiError> {
     let body = body.ok_or_else(|| error::bad_request("body required"))?;
 
-    let prompt = body.0.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-    let model_id = body
-        .0
+    let body_value = body.0.clone();
+    let prompt = body_value
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let model_id = body_value
         .get("model_id")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
     if prompt.is_empty() {
         return Err(error::bad_request("prompt is required"));
@@ -563,7 +568,7 @@ async fn ai_generate(
 
     #[cfg(feature = "llama")]
     {
-        return ai_generate_real(state, body.0, prompt, model_id).await;
+        return ai_generate_real(state, body_value, &prompt, &model_id).await;
     }
 
     #[cfg(not(feature = "llama"))]
@@ -601,7 +606,7 @@ async fn ai_generate_real(
     drop(pool);
 
     let n_ctx = body.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
-    let mut ctx_params = llama::bindings::llama_context_default_params();
+    let mut ctx_params = unsafe { llama::bindings::llama_context_default_params() };
     ctx_params.n_ctx = n_ctx;
 
     let mut ctx = llama_model
@@ -981,7 +986,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
 
     #[cfg(not(feature = "llama"))]
     {
-        let _ = (state, model_id);
+        let _ = (state.clone(), model_id);
         let done = json!({
             "type": "done",
             "data": {
@@ -1028,7 +1033,7 @@ async fn handle_generate_stream_llama(
     drop(pool);
 
     let n_ctx = params.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
-    let mut ctx_params = llama::bindings::llama_context_default_params();
+    let mut ctx_params = unsafe { llama::bindings::llama_context_default_params() };
     ctx_params.n_ctx = n_ctx;
 
     let mut ctx = llama_model
