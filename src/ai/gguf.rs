@@ -492,7 +492,15 @@ fn quantisation_from_ftype(ftype: u32) -> Option<String> {
 
 pub fn bytes_per_param(quantisation: &str) -> f64 {
     let q = quantisation.to_lowercase();
-    if q.contains("q2") {
+    if q.contains("iq1") {
+        0.125
+    } else if q.contains("iq2") {
+        0.25
+    } else if q.contains("iq3") {
+        0.375
+    } else if q.contains("iq4") {
+        0.5
+    } else if q.contains("q2") {
         0.27
     } else if q.contains("q3") {
         0.34
@@ -508,14 +516,6 @@ pub fn bytes_per_param(quantisation: &str) -> f64 {
         2.0
     } else if q.contains("f32") {
         4.0
-    } else if q.contains("iq1") {
-        0.125
-    } else if q.contains("iq2") {
-        0.25
-    } else if q.contains("iq3") {
-        0.375
-    } else if q.contains("iq4") {
-        0.5
     } else {
         1.0
     }
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_format_parameter_count() {
-        assert_eq!(format_parameter_count(500_000_000.0), "0.50B");
+        assert_eq!(format_parameter_count(500_000_000.0), "500.00M");
         assert_eq!(format_parameter_count(7_000_000_000.0), "7.00B");
         assert_eq!(format_parameter_count(72_000_000_000.0), "72.00B");
     }

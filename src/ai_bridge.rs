@@ -921,7 +921,7 @@ mod tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["message"], "path is required");
+        assert_eq!(json["error"]["message"], "path is required");
     }
 
     #[tokio::test]
