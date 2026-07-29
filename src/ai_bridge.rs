@@ -200,22 +200,25 @@ async fn ai_session_state(
     Query(params): Query<Value>,
 ) -> impl IntoResponse {
     let session_id = params.get("session_id").and_then(|v| v.as_str());
-    let found = state
-        .registry
-        .read()
-        .await
+    let guard = state.registry.read().await;
+    let found = guard
         .iter()
-        .find(|s| session_id.map_or(false, |sid| s.id == sid));
+        .find(|s| session_id.map_or(false, |sid| s.id == sid))
+        .cloned();
+    drop(guard);
+    let data = found.as_ref().map(|s| {
+        json!({
+            "id": s.id,
+            "created_at": s.created_at,
+            "metadata": s.metadata
+        })
+    });
     (
         StatusCode::OK,
         Json(json!({
             "success": true,
             "method": "inference.sessionState",
-            "data": found.map(|s| json!({
-                "id": s.id,
-                "created_at": s.created_at,
-                "metadata": s.metadata
-            })).unwrap_or(json!(null)),
+            "data": data.unwrap_or(json!(null)),
             "message": if found.is_some() { "session found" } else { "session not found" }
         })),
     )
@@ -446,7 +449,7 @@ async fn ai_generate_stream(
     ws.on_upgrade(handle_generate_stream)
 }
 
-async fn handle_generate_stream(mut socket: WebSocket) {
+async fn handle_generate_stream(socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
 
     let done = json!({
@@ -503,7 +506,7 @@ pub fn ai_routes() -> Router<AiState> {
 mod tests {
     use super::*;
     use axum::http::Request;
-    use tower::ServiceExt;
+    use tower::util::ServiceExt;
 
     fn test_state() -> AiState {
         AiState::new()
