@@ -1227,7 +1227,7 @@ mod tests {
         let recent = make_model("pool://2", "reg://b", 100, 0, 100);
         let old_score = strategy.score(&old);
         let recent_score = strategy.score(&recent);
-        assert!(old_score < recent_score); // older model has lower (more negative) score
+        assert!(old_score > recent_score); // older model has higher (less negative) score, evict picks max_by
     }
 
     // --- Lifecycle timestamp tracking ---
