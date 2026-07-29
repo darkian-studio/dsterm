@@ -374,15 +374,12 @@ impl LoadLockManager {
         }
     }
 
-    pub async fn acquire(&self, key: &str) -> tokio::sync::SemaphorePermit<'_> {
-        let semaphore = {
-            let mut locks = self.locks.lock().await;
-            locks
-                .entry(key.to_string())
-                .or_insert_with(|| Arc::new(Semaphore::new(1)))
-                .clone()
-        };
-        semaphore.acquire().await.unwrap()
+    pub async fn acquire(&self, key: &str) -> Arc<Semaphore> {
+        let mut locks = self.locks.lock().await;
+        locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(Semaphore::new(1)))
+            .clone()
     }
 
     pub async fn active_locks(&self) -> usize {
@@ -471,22 +468,26 @@ impl ModelPoolInner {
         let model_hash = compute_model_hash(&meta);
 
         // Check if already loaded by registry_id
+        let mut found = None;
         for model in self.models.values_mut() {
             if model.metadata.registry_id == registry_id {
                 model.lifecycle.acquire().map_err(|e| format!("{e}"))?;
                 model.lifecycle.last_accessed_at = now_secs();
-                self.emit(PoolEvent::RefIncremented {
-                    pool_id: model.metadata.pool_id.clone(),
-                    ref_count: model.lifecycle.ref_count,
-                });
-                // Build a minimal model view for the response
-                let response = LoadedModel {
-                    metadata: model.metadata.clone(),
-                    runtime: None,
-                    lifecycle: model.lifecycle.clone(),
-                };
-                return Ok(response);
+                let pool_id = model.metadata.pool_id.clone();
+                let ref_count = model.lifecycle.ref_count;
+                let meta = model.metadata.clone();
+                let lc = model.lifecycle.clone();
+                found = Some((pool_id, ref_count, meta, lc));
+                break;
             }
+        }
+        if let Some((pool_id, ref_count, meta, lc)) = found {
+            self.emit(PoolEvent::RefIncremented { pool_id, ref_count });
+            return Ok(LoadedModel {
+                metadata: meta,
+                runtime: None,
+                lifecycle: lc,
+            });
         }
 
         // Check model_hash for dedup
@@ -525,7 +526,7 @@ impl ModelPoolInner {
         let pool_id = self.next_pool_id_str();
 
         // Cache file info
-        self.file_cache.insert(path.to_string(), file_info);
+        self.file_cache.insert(path.to_string(), file_info.clone());
 
         let model = LoadedModel {
             metadata: LoadedModelMetadata {
@@ -578,13 +579,16 @@ impl ModelPoolInner {
     }
 
     pub fn unload(&mut self, pool_id: &str) -> Result<bool, String> {
-        let model = self
-            .models
-            .get_mut(pool_id)
-            .ok_or_else(|| format!("Model not loaded: {pool_id}"))?;
-
-        let fully_released = model.lifecycle.release()?;
-        let new_ref = model.lifecycle.ref_count;
+        let (fully_released, new_ref, registry_id) = {
+            let model = self
+                .models
+                .get_mut(pool_id)
+                .ok_or_else(|| format!("Model not loaded: {pool_id}"))?;
+            let fully_released = model.lifecycle.release()?;
+            let new_ref = model.lifecycle.ref_count;
+            let registry_id = model.metadata.registry_id.clone();
+            (fully_released, new_ref, registry_id)
+        };
 
         self.emit(PoolEvent::RefDecremented {
             pool_id: pool_id.to_string(),
@@ -592,7 +596,6 @@ impl ModelPoolInner {
         });
 
         if fully_released {
-            let registry_id = model.metadata.registry_id.clone();
             self.emit(PoolEvent::StateChanged {
                 pool_id: pool_id.to_string(),
                 from: LifecycleState::Loaded,
@@ -625,7 +628,6 @@ impl ModelPoolInner {
     }
 
     pub fn stats(&self) -> PoolStats {
-        let models: Vec<&LoadedModel> = self.models.values().collect();
         let models: Vec<&LoadedModel> = self.models.values().collect();
         let memory = MemoryBreakdown::aggregate(&models);
         let total_ref: u32 = self.models.values().map(|m| m.lifecycle.ref_count).sum();

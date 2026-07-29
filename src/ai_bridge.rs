@@ -252,7 +252,8 @@ async fn ai_load(
 
     // Acquire per-model load lock to prevent duplicate loads
     let lock_key = format!("path:{}", model_path);
-    let _permit = state.load_locks.acquire(&lock_key).await;
+    let semaphore = state.load_locks.acquire(&lock_key).await;
+    let _permit = semaphore.acquire().await.unwrap();
 
     let pool = state.model_pool.clone();
     let mut guard = pool.write().await;
