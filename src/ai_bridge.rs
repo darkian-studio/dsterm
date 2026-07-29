@@ -611,7 +611,7 @@ async fn ai_generate_real(
 
     let mut ctx = llama_model
         .create_context(ctx_params)
-        .map_err(|e| error::internal_error(e))?;
+        .map_err(error::internal_error)?;
 
     let config = llama::GenerateConfig {
         max_tokens: body
@@ -639,7 +639,7 @@ async fn ai_generate_real(
 
     let result = ctx
         .generate(prompt, &config)
-        .map_err(|e| error::internal_error(e))?;
+        .map_err(error::internal_error)?;
 
     Ok(ok_response(
         "inference.generate",
