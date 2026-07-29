@@ -9,14 +9,17 @@ use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::ai::error::{self, AiError};
 use crate::ai::inspect;
+#[cfg(feature = "llama")]
+use crate::ai::llama;
 use crate::ai::pool::{
     LoadLockManager, LoadLockManagerState, ModelPoolInner, ModelPoolState, PoolConfig,
 };
@@ -161,6 +164,8 @@ impl InferenceSupervisor {
 
 pub type SupervisorState = Arc<RwLock<InferenceSupervisor>>;
 
+pub type CancellationMap = Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>;
+
 #[derive(Clone)]
 pub struct AiState {
     pub registry: AiRegistry,
@@ -168,6 +173,7 @@ pub struct AiState {
     pub model_registry: ModelRegistryState,
     pub model_pool: ModelPoolState,
     pub load_locks: LoadLockManagerState,
+    pub cancel_tokens: CancellationMap,
 }
 
 impl AiState {
@@ -178,6 +184,7 @@ impl AiState {
             model_registry: Arc::new(RwLock::new(ModelRegistryInner::load())),
             model_pool: Arc::new(RwLock::new(ModelPoolInner::new(PoolConfig::default()))),
             load_locks: Arc::new(LoadLockManager::new()),
+            cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -497,8 +504,20 @@ async fn ai_release_session(
     ok_response("inference.releaseSession", json!({ "released": true }))
 }
 
-async fn ai_cancel_session(body: Option<Json<Value>>) -> impl IntoResponse {
-    let _ = body;
+async fn ai_cancel_session(
+    State(state): State<AiState>,
+    body: Option<Json<Value>>,
+) -> impl IntoResponse {
+    let session_id = body
+        .and_then(|b| b.0.get("session_id").cloned())
+        .and_then(|v| v.as_str().map(String::from));
+
+    if let Some(sid) = session_id {
+        if let Some(token) = state.cancel_tokens.write().await.remove(&sid) {
+            token.store(true, Ordering::SeqCst);
+        }
+    }
+
     ok_response("inference.cancelSession", json!({ "cancelled": true }))
 }
 
@@ -523,20 +542,146 @@ async fn ai_session_state(
     ok_response("inference.sessionState", json!({ "session": data }))
 }
 
-async fn ai_generate(body: Option<Json<Value>>) -> impl IntoResponse {
-    let _ = body;
-    ok_response(
-        "inference.generate",
-        json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
-    )
+async fn ai_generate(
+    State(state): State<AiState>,
+    body: Option<Json<Value>>,
+) -> Result<impl IntoResponse, AiError> {
+    let body = body.ok_or_else(|| error::bad_request("body required"))?;
+
+    let prompt = body.0.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    let model_id = body
+        .0
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if prompt.is_empty() {
+        return Err(error::bad_request("prompt is required"));
+    }
+    if model_id.is_empty() {
+        return Err(error::bad_request("model_id is required"));
+    }
+
+    #[cfg(feature = "llama")]
+    {
+        return ai_generate_real(state, body.0, prompt, model_id).await;
+    }
+
+    #[cfg(not(feature = "llama"))]
+    {
+        let _ = (state, model_id);
+        Ok(ok_response(
+            "inference.generate",
+            json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
+        ))
+    }
 }
 
-async fn ai_complete(body: Option<Json<Value>>) -> impl IntoResponse {
-    let _ = body;
-    ok_response(
-        "inference.complete",
-        json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
-    )
+#[cfg(feature = "llama")]
+async fn ai_generate_real(
+    state: AiState,
+    body: Value,
+    prompt: &str,
+    model_id: &str,
+) -> Result<impl IntoResponse, AiError> {
+    let pool = state.model_pool.read().await;
+    let loaded = pool
+        .get(model_id)
+        .or_else(|| pool.get_by_registry_id(model_id))
+        .map(|m| {
+            (
+                m.metadata.pool_id.clone(),
+                m.runtime.as_ref().and_then(|r| r.model.clone()),
+            )
+        })
+        .ok_or_else(|| error::model_not_found(model_id))?;
+
+    let (pool_id, backend) = loaded;
+    let llama_model =
+        backend.ok_or_else(|| error::internal_error(format!("model {pool_id} has no backend")))?;
+    drop(pool);
+
+    let n_ctx = body.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
+    let mut ctx_params = llama::bindings::llama_context_default_params();
+    ctx_params.n_ctx = n_ctx;
+
+    let mut ctx = llama_model
+        .create_context(ctx_params)
+        .map_err(|e| error::internal_error(e))?;
+
+    let config = llama::GenerateConfig {
+        max_tokens: body
+            .get("max_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(512) as i32,
+        temperature: body
+            .get("temperature")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.7) as f32,
+        top_p: body.get("top_p").and_then(|v| v.as_f64()).unwrap_or(0.9) as f32,
+        repeat_penalty: body
+            .get("repeat_penalty")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.1) as f32,
+        frequency_penalty: body
+            .get("frequency_penalty")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32,
+        presence_penalty: body
+            .get("presence_penalty")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32,
+    };
+
+    let result = ctx
+        .generate(prompt, &config)
+        .map_err(|e| error::internal_error(e))?;
+
+    Ok(ok_response(
+        "inference.generate",
+        json!({
+            "text": result.text,
+            "usage": {
+                "prompt_tokens": result.prompt_tokens,
+                "completion_tokens": result.completion_tokens
+            }
+        }),
+    ))
+}
+
+async fn ai_complete(
+    State(state): State<AiState>,
+    body: Option<Json<Value>>,
+) -> Result<impl IntoResponse, AiError> {
+    let body = body.ok_or_else(|| error::bad_request("body required"))?;
+
+    let prompt = body.0.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    let model_id = body
+        .0
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if prompt.is_empty() {
+        return Err(error::bad_request("prompt is required"));
+    }
+    if model_id.is_empty() {
+        return Err(error::bad_request("model_id is required"));
+    }
+
+    #[cfg(feature = "llama")]
+    {
+        return ai_generate_real(state, body.0, prompt, model_id).await;
+    }
+
+    #[cfg(not(feature = "llama"))]
+    {
+        let _ = (state, model_id);
+        Ok(ok_response(
+            "inference.complete",
+            json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
+        ))
+    }
 }
 
 async fn ai_embed(body: Option<Json<Value>>) -> impl IntoResponse {
@@ -608,18 +753,19 @@ async fn ai_capabilities() -> impl IntoResponse {
     ok_response(
         "inference.capabilities",
         json!({
-            "chat": false,
-            "completion": false,
+            "chat": cfg!(feature = "llama"),
+            "completion": cfg!(feature = "llama"),
             "fim": false,
             "embeddings": false,
             "tool_calling": false,
-            "streaming": true,
+            "streaming": cfg!(feature = "llama"),
             "model_inspection": true,
             "gguf_parsing": true,
             "metadata_extraction": true,
             "architecture_detection": true,
             "memory_estimation": true,
-            "capability_detection": true
+            "capability_detection": true,
+            "llama_backend": cfg!(feature = "llama")
         }),
     )
 }
@@ -734,32 +880,209 @@ async fn ai_generate_stream(
     ws: WebSocketUpgrade,
     State(state): State<AiState>,
 ) -> impl IntoResponse {
-    let _ = state;
-    ws.on_upgrade(handle_generate_stream)
+    ws.on_upgrade(move |socket| handle_generate_stream(socket, state))
 }
 
-async fn handle_generate_stream(socket: WebSocket) {
+async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     let (mut sender, mut receiver) = socket.split();
+    let cancel = Arc::new(AtomicBool::new(false));
 
-    let done = json!({
-        "type": "done",
-        "data": {
-            "text": "",
-            "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
+    // Wait for first message with generation params
+    let msg = match receiver.next().await {
+        Some(Ok(Message::Text(text))) => text,
+        _ => {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(
+                        &json!({"type": "error", "data": {"message": "expected text message"}}),
+                    )
+                    .unwrap()
+                    .into(),
+                ))
+                .await;
+            return;
         }
-    });
+    };
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let _ = sender
-        .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
+    let params: Value = match serde_json::from_str(&msg) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(
+                        &json!({"type": "error", "data": {"message": "invalid JSON"}}),
+                    )
+                    .unwrap()
+                    .into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    let prompt = params.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    let model_id = params
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let session_id = params
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if prompt.is_empty() {
+        let _ = sender
+            .send(Message::Text(
+                serde_json::to_string(
+                    &json!({"type": "error", "data": {"message": "prompt is required"}}),
+                )
+                .unwrap()
+                .into(),
+            ))
+            .await;
+        return;
+    }
+
+    // Register cancel token if session_id provided
+    if !session_id.is_empty() {
+        state
+            .cancel_tokens
+            .write()
+            .await
+            .insert(session_id.to_string(), cancel.clone());
+    }
+
+    #[cfg(feature = "llama")]
+    {
+        let result = handle_generate_stream_llama(
+            &mut sender,
+            &mut receiver,
+            state,
+            &params,
+            prompt,
+            model_id,
+            cancel.clone(),
+        )
         .await;
-    let _ = sender.send(Message::Close(None)).await;
+        if let Err(e) = result {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(&json!({"type": "error", "data": {"message": e}}))
+                        .unwrap()
+                        .into(),
+                ))
+                .await;
+        }
+    }
 
+    #[cfg(not(feature = "llama"))]
+    {
+        let _ = (state, model_id);
+        let done = json!({
+            "type": "done",
+            "data": {
+                "text": "",
+                "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
+            }
+        });
+        let _ = sender
+            .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
+            .await;
+    }
+
+    // Cleanup cancel token
+    if !session_id.is_empty() {
+        state.cancel_tokens.write().await.remove(session_id);
+    }
+
+    let _ = sender.send(Message::Close(None)).await;
     while let Some(msg) = receiver.next().await {
         if matches!(msg, Ok(Message::Close(_)) | Err(_)) {
             break;
         }
     }
+}
+
+#[cfg(feature = "llama")]
+async fn handle_generate_stream_llama(
+    sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    receiver: &mut futures::stream::SplitStream<WebSocket>,
+    state: AiState,
+    params: &Value,
+    prompt: &str,
+    model_id: &str,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let pool = state.model_pool.read().await;
+    let loaded = pool
+        .get(model_id)
+        .or_else(|| pool.get_by_registry_id(model_id))
+        .map(|m| (m.runtime.as_ref().and_then(|r| r.model.clone())))
+        .ok_or_else(|| format!("model not found: {model_id}"))?;
+
+    let llama_model = loaded.ok_or_else(|| format!("model {model_id} has no backend"))?;
+    drop(pool);
+
+    let n_ctx = params.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
+    let mut ctx_params = llama::bindings::llama_context_default_params();
+    ctx_params.n_ctx = n_ctx;
+
+    let mut ctx = llama_model
+        .create_context(ctx_params)
+        .map_err(|e| format!("failed to create context: {e}"))?;
+
+    let config = llama::GenerateConfig {
+        max_tokens: params
+            .get("max_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(512) as i32,
+        temperature: params
+            .get("temperature")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.7) as f32,
+        top_p: params.get("top_p").and_then(|v| v.as_f64()).unwrap_or(0.9) as f32,
+        repeat_penalty: params
+            .get("repeat_penalty")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.1) as f32,
+        frequency_penalty: params
+            .get("frequency_penalty")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32,
+        presence_penalty: params
+            .get("presence_penalty")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32,
+    };
+
+    // Tokenize prompt first to get token count for streaming
+    let prompt_tokens = ctx
+        .tokenize(prompt, true)
+        .map_err(|e| format!("tokenize failed: {e}"))?;
+    let prompt_token_count = prompt_tokens.len() as i32;
+
+    // Run generation with cancel checking
+    let result = ctx
+        .generate_with_cancel(prompt, &config, &cancel)
+        .map_err(|e| format!("generation failed: {e}"))?;
+
+    // Build the completed output with all tokens
+    let done = json!({
+        "type": "done",
+        "data": {
+            "text": result.text,
+            "usage": {
+                "prompt_tokens": prompt_token_count,
+                "completion_tokens": result.completion_tokens
+            }
+        }
+    });
+
+    let _ = sender
+        .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
+        .await;
+
+    Ok(())
 }
 
 pub fn ai_routes() -> Router<AiState> {
@@ -873,8 +1196,8 @@ mod tests {
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["data"]["streaming"], true);
-        assert_eq!(json["data"]["chat"], false);
+        assert_eq!(json["data"]["streaming"], cfg!(feature = "llama"));
+        assert_eq!(json["data"]["chat"], cfg!(feature = "llama"));
     }
 
     #[tokio::test]
@@ -925,7 +1248,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ai_generate_stub() {
+    async fn test_ai_generate() {
         let app = ai_routes().with_state(test_state());
         let response = app
             .oneshot(
@@ -936,7 +1259,7 @@ mod tests {
                     .body(axum::body::Body::from(
                         serde_json::to_vec(&json!({
                             "prompt": "hello",
-                            "session_id": "test"
+                            "model_id": "nonexistent"
                         }))
                         .unwrap(),
                     ))
@@ -944,12 +1267,16 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
-        assert!(json["data"]["text"].is_string());
+        #[cfg(not(feature = "llama"))]
+        {
+            // Without llama backend, generate returns stub (OK)
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        #[cfg(feature = "llama")]
+        {
+            // With llama backend but no loaded model, returns model_not_found
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
     }
 
     #[tokio::test]
@@ -1304,6 +1631,26 @@ mod tests {
         assert_eq!(json["data"]["total_allocated_bytes"], 0);
         assert!(json["data"]["pool_stats"].is_object());
         assert_eq!(json["data"]["pool_stats"]["pool_consistent"], true);
+    }
+
+    #[tokio::test]
+    async fn test_ai_cancel_session() {
+        let state = test_state();
+        let app = ai_routes().with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/sessions/cancel")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({"session_id": "test-session"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

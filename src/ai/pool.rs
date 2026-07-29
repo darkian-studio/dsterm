@@ -203,12 +203,12 @@ fn extract_file_mtime(path: &str) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Runtime Handle (placeholder for M7)
+// 5. Runtime Handle (wraps llama.cpp backend when feature is enabled)
 // ---------------------------------------------------------------------------
 
 pub struct RuntimeHandle {
-    #[allow(dead_code)]
-    inner: (),
+    #[cfg(feature = "llama")]
+    pub model: Option<Arc<super::llama::LlamaModel>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +529,25 @@ impl ModelPoolInner {
             self.evict_for_memory(needed)?;
         }
 
+        // Initialize llama.cpp backend
+        let rt = {
+            #[cfg(feature = "llama")]
+            {
+                match super::llama::LlamaModel::load(path) {
+                    Ok(model) => RuntimeHandle {
+                        model: Some(Arc::new(model)),
+                    },
+                    Err(e) => {
+                        return Err(format!("Failed to initialize llama backend: {e}"));
+                    }
+                }
+            }
+            #[cfg(not(feature = "llama"))]
+            {
+                RuntimeHandle {}
+            }
+        };
+
         let pool_id = self.next_pool_id_str();
 
         // Cache file info
@@ -553,7 +572,7 @@ impl ModelPoolInner {
                 file_mtime: file_info.mtime,
                 memory_estimate: estimated,
             },
-            runtime: None,
+            runtime: Some(rt),
             lifecycle: ModelLifecycle {
                 state: LifecycleState::Loaded,
                 ref_count: 1,
