@@ -17,6 +17,7 @@ use tokio::sync::RwLock;
 
 use crate::ai::error::{self, AiError};
 use crate::ai::inspect;
+use crate::ai::pool::{ModelPoolInner, ModelPoolState, PoolConfig};
 
 fn ok_response(method: &str, data: Value) -> (StatusCode, Json<Value>) {
     (
@@ -163,6 +164,7 @@ pub struct AiState {
     pub registry: AiRegistry,
     pub supervisor: SupervisorState,
     pub model_registry: ModelRegistryState,
+    pub model_pool: ModelPoolState,
 }
 
 impl AiState {
@@ -171,6 +173,7 @@ impl AiState {
             registry: Arc::new(RwLock::new(Vec::new())),
             supervisor: Arc::new(RwLock::new(InferenceSupervisor::new())),
             model_registry: Arc::new(RwLock::new(ModelRegistryInner::load())),
+            model_pool: Arc::new(RwLock::new(ModelPoolInner::new(PoolConfig::default()))),
         }
     }
 }
@@ -205,14 +208,77 @@ async fn ai_inspect(body: Option<Json<Value>>) -> Result<impl IntoResponse, AiEr
     }
 }
 
-async fn ai_load(body: Option<Json<Value>>) -> impl IntoResponse {
-    let _ = body;
-    ok_response("inference.loadModel", json!({ "loaded": true }))
+async fn ai_load(
+    State(state): State<AiState>,
+    body: Option<Json<Value>>,
+) -> Result<impl IntoResponse, AiError> {
+    let body = body.ok_or_else(|| error::bad_request("request body is required"))?;
+
+    let path = body
+        .0
+        .get("path")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())
+        .map(String::from);
+
+    let id = body
+        .0
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|i| !i.is_empty())
+        .map(String::from);
+
+    let model_path = if let Some(p) = path {
+        p
+    } else if let Some(id) = id {
+        let guard = state.model_registry.read().await;
+        let model = guard.get(&id).cloned();
+        drop(guard);
+        match model {
+            Some(m) => m.local_path,
+            None => return Err(error::model_not_found(id)),
+        }
+    } else {
+        return Err(error::bad_request("either id or path is required"));
+    };
+
+    if !std::path::Path::new(&model_path).exists() {
+        return Err(error::file_not_found(&model_path));
+    }
+
+    let pool = state.model_pool.clone();
+    let mut guard = pool.write().await;
+    match guard.load(&model_path) {
+        Ok(model) => Ok(ok_response(
+            "inference.loadModel",
+            json!({ "loaded": true, "model": model, "ref_count": model.ref_count }),
+        )),
+        Err(e) => Err(error::internal_error(e)),
+    }
 }
 
-async fn ai_unload(body: Option<Json<Value>>) -> impl IntoResponse {
-    let _ = body;
-    ok_response("inference.unloadModel", json!({ "unloaded": true }))
+async fn ai_unload(
+    State(state): State<AiState>,
+    body: Option<Json<Value>>,
+) -> Result<impl IntoResponse, AiError> {
+    let body = body.ok_or_else(|| error::bad_request("request body is required"))?;
+    let id = body.0.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() {
+        return Err(error::bad_request("model id is required"));
+    }
+
+    let pool = state.model_pool.clone();
+    let mut guard = pool.write().await;
+    match guard.unload(id) {
+        Ok(fully_unloaded) => {
+            let ref_count = guard.get(id).map(|m| m.ref_count).unwrap_or(0);
+            Ok(ok_response(
+                "inference.unloadModel",
+                json!({ "unloaded": fully_unloaded, "ref_count": ref_count }),
+            ))
+        }
+        Err(_) => Err(error::model_not_found(id)),
+    }
 }
 
 async fn ai_list_models(State(state): State<AiState>) -> impl IntoResponse {
@@ -361,8 +427,11 @@ async fn ai_model_update_status(
     ))
 }
 
-async fn ai_loaded_models() -> impl IntoResponse {
-    ok_response("inference.loadedModels", json!({ "models": [] }))
+async fn ai_loaded_models(State(state): State<AiState>) -> impl IntoResponse {
+    let guard = state.model_pool.read().await;
+    let models = guard.list();
+    drop(guard);
+    ok_response("inference.loadedModels", json!({ "models": models }))
 }
 
 async fn ai_delete(body: Option<Json<Value>>) -> impl IntoResponse {
@@ -456,26 +525,38 @@ async fn ai_detokenize(body: Option<Json<Value>>) -> impl IntoResponse {
     ok_response("inference.detokenize", json!({ "text": "" }))
 }
 
-async fn ai_statistics() -> impl IntoResponse {
+async fn ai_statistics(State(state): State<AiState>) -> impl IntoResponse {
     let sessions_total = AI_SESSIONS_CREATED.load(Ordering::Relaxed);
+    let pool_guard = state.model_pool.read().await;
+    let models_loaded = pool_guard.models.len();
+    let total_ref_count: u32 = pool_guard.models.values().map(|m| m.ref_count).sum();
+    drop(pool_guard);
     ok_response(
         "inference.statistics",
         json!({
             "sessions_created_total": sessions_total,
-            "models_loaded": 0,
+            "models_loaded": models_loaded,
+            "active_references": total_ref_count,
             "requests_processed": 0,
             "tokens_generated": 0
         }),
     )
 }
 
-async fn ai_memory() -> impl IntoResponse {
+async fn ai_memory(State(state): State<AiState>) -> impl IntoResponse {
+    let guard = state.model_pool.read().await;
+    let stats = guard.stats();
+    let loaded_count = stats.loaded_count;
+    let total_allocated = stats.total_allocated_bytes;
+    let available = stats.available_bytes;
+    drop(guard);
     ok_response(
         "inference.memory",
         json!({
-            "resident_models": [],
-            "total_allocated_bytes": 0,
-            "available_bytes": 0
+            "resident_models": loaded_count,
+            "total_allocated_bytes": total_allocated,
+            "available_bytes": available,
+            "pool_stats": stats
         }),
     )
 }
@@ -529,6 +610,14 @@ async fn ai_diagnostics(State(state): State<AiState>) -> impl IntoResponse {
         .collect();
     drop(guard);
 
+    let pool_guard = state.model_pool.read().await;
+    let loaded_models: Vec<Value> = pool_guard.list().iter().map(|m| json!(m)).collect();
+    let pool_stats = pool_guard.stats();
+    let pool_loaded = pool_stats.loaded_count;
+    let pool_capacity = pool_stats.max_models;
+    let resident_memory = pool_stats.resident_memory_bytes;
+    drop(pool_guard);
+
     (
         StatusCode::OK,
         Json(json!({
@@ -539,12 +628,12 @@ async fn ai_diagnostics(State(state): State<AiState>) -> impl IntoResponse {
                 "sessions_created_total": sessions_total,
                 "active_sessions": 0,
                 "registered_models": model_details,
-                "loaded_models": [],
-                "resident_memory_bytes": 0,
+                "loaded_models": loaded_models,
+                "resident_memory_bytes": resident_memory,
                 "pool": {
-                    "enabled": false,
-                    "capacity": null,
-                    "loaded": 0
+                    "enabled": true,
+                    "capacity": pool_capacity,
+                    "loaded": pool_loaded
                 },
                 "gguf_support": {
                     "enabled": true,
@@ -722,7 +811,7 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "healthy");
         assert!(json["data"]["uptime_secs"].as_u64().is_some());
-        assert!(json["data"]["pool"]["enabled"] == false);
+        assert!(json["data"]["pool"]["enabled"] == true);
         assert!(json["data"]["loaded_models"].is_array());
         assert!(json["data"]["registered_models"].is_array());
         assert!(json["data"]["gguf_support"]["enabled"] == true);
@@ -962,7 +1051,8 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["data"]["gguf_support"]["enabled"], true);
         assert!(json["data"]["gguf_support"]["quantisations_supported"].is_array());
-        assert_eq!(json["data"]["pool"]["enabled"], false);
+        assert_eq!(json["data"]["pool"]["enabled"], true);
+        assert_eq!(json["data"]["pool"]["loaded"], 0);
         assert_eq!(json["data"]["resident_memory_bytes"], 0);
         assert!(json["data"]["loaded_models"].is_array());
         assert!(json["data"]["registered_models"].is_array());
@@ -1006,5 +1096,172 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_ai_load_requires_id_or_path() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/load")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["message"], "either id or path is required");
+    }
+
+    #[tokio::test]
+    async fn test_ai_load_model_not_found() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/load")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({"id": "nonexistent-model"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_ai_load_file_not_found() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/load")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({"path": "/nonexistent/model.gguf"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_ai_unload_model_not_loaded() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/unload")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({"id": "nonexistent-model"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_ai_unload_requires_id() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/unload")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_ai_loaded_models_empty() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ai/models/loaded")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["data"]["models"].is_array());
+        assert_eq!(json["data"]["models"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_ai_statistics_includes_pool() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ai/statistics")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["models_loaded"], 0);
+        assert_eq!(json["data"]["active_references"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_ai_memory_includes_pool() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ai/memory")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["resident_models"], 0);
+        assert_eq!(json["data"]["total_allocated_bytes"], 0);
+        assert!(json["data"]["pool_stats"].is_object());
     }
 }
