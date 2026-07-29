@@ -100,7 +100,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
     let mcp_registry: mcp_bridge::McpRegistry = Arc::new(RwLock::new(HashMap::new()));
     let agent_registry: agent_bridge::AgentRegistry = Arc::new(RwLock::new(HashMap::new()));
     let ast_registry = ast_bridge::new_registry();
-    let ai_registry: ai_bridge::AiRegistry = Arc::new(RwLock::new(Vec::new()));
+    let ai_state = ai_bridge::AiState::new();
     let web_provider: crate::web_routes::WebState =
         Arc::new(crate::providers::web::WebProvider::new());
 
@@ -181,7 +181,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .merge(mcp_bridge::mcp_routes().with_state(mcp_registry))
         .merge(ast_bridge::ast_routes().with_state(ast_registry))
         .merge(agent_bridge::agent_routes().with_state(agent_registry))
-        .merge(ai_bridge::ai_routes().with_state(ai_registry))
+        .merge(ai_bridge::ai_routes().with_state(ai_state))
         .merge(fs::fs_routes())
         .merge(sysmon::sysmon_routes())
         .merge(ports::ports_routes())

@@ -1,6 +1,6 @@
 use axum::extract::{
     ws::{Message, WebSocket, WebSocketUpgrade},
-    Query,
+    Query, State,
 };
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -20,6 +20,37 @@ pub struct AiSession {
 }
 
 pub type AiRegistry = Arc<RwLock<Vec<AiSession>>>;
+
+pub struct InferenceSupervisor {
+    pub pid: Option<u32>,
+    pub status: String,
+}
+
+impl InferenceSupervisor {
+    pub fn new() -> Self {
+        Self {
+            pid: None,
+            status: "idle".to_string(),
+        }
+    }
+}
+
+pub type SupervisorState = Arc<RwLock<InferenceSupervisor>>;
+
+#[derive(Clone)]
+pub struct AiState {
+    pub registry: AiRegistry,
+    pub supervisor: SupervisorState,
+}
+
+impl AiState {
+    pub fn new() -> Self {
+        Self {
+            registry: Arc::new(RwLock::new(Vec::new())),
+            supervisor: Arc::new(RwLock::new(InferenceSupervisor::new())),
+        }
+    }
+}
 
 static AI_SESSIONS_CREATED: AtomicU64 = AtomicU64::new(0);
 
@@ -107,7 +138,7 @@ async fn ai_delete(body: Option<Json<Value>>) -> impl IntoResponse {
 }
 
 async fn ai_create_session(
-    State(registry): State<AiRegistry>,
+    State(state): State<AiState>,
     body: Option<Json<Value>>,
 ) -> impl IntoResponse {
     let _ = body;
@@ -117,7 +148,7 @@ async fn ai_create_session(
         created_at: ts_secs(),
         metadata: json!({}),
     };
-    registry.write().await.push(session);
+    state.registry.write().await.push(session);
     AI_SESSIONS_CREATED.fetch_add(1, Ordering::Relaxed);
     (
         StatusCode::OK,
@@ -131,14 +162,14 @@ async fn ai_create_session(
 }
 
 async fn ai_release_session(
-    State(registry): State<AiRegistry>,
+    State(state): State<AiState>,
     body: Option<Json<Value>>,
 ) -> impl IntoResponse {
     let session_id = body
         .and_then(|b| b.0.get("session_id").cloned())
         .and_then(|v| v.as_str().map(String::from));
     if let Some(sid) = session_id {
-        registry.write().await.retain(|s| s.id != sid);
+        state.registry.write().await.retain(|s| s.id != sid);
     }
     (
         StatusCode::OK,
@@ -165,11 +196,12 @@ async fn ai_cancel_session(body: Option<Json<Value>>) -> impl IntoResponse {
 }
 
 async fn ai_session_state(
-    State(registry): State<AiRegistry>,
+    State(state): State<AiState>,
     Query(params): Query<Value>,
 ) -> impl IntoResponse {
     let session_id = params.get("session_id").and_then(|v| v.as_str());
-    let found = registry
+    let found = state
+        .registry
         .read()
         .await
         .iter()
@@ -341,11 +373,76 @@ async fn ai_diagnostics() -> impl IntoResponse {
     )
 }
 
+async fn supervisor_spawn(
+    State(state): State<AiState>,
+    body: Option<Json<Value>>,
+) -> impl IntoResponse {
+    let _ = body;
+    let mut sup = state.supervisor.write().await;
+    sup.status = "running".to_string();
+    sup.pid = None;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "method": "supervisor.spawn",
+            "data": { "pid": null as Option<u32>, "status": "running" },
+            "message": "stub: supervisor.spawn not yet implemented"
+        })),
+    )
+}
+
+async fn supervisor_stop(State(state): State<AiState>) -> impl IntoResponse {
+    let mut sup = state.supervisor.write().await;
+    sup.status = "stopped".to_string();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "method": "supervisor.stop",
+            "data": { "status": "stopped" },
+            "message": "stub: supervisor.stop not yet implemented"
+        })),
+    )
+}
+
+async fn supervisor_kill(State(state): State<AiState>) -> impl IntoResponse {
+    let mut sup = state.supervisor.write().await;
+    sup.status = "killed".to_string();
+    sup.pid = None;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "method": "supervisor.kill",
+            "data": { "status": "killed" },
+            "message": "stub: supervisor.kill not yet implemented"
+        })),
+    )
+}
+
+async fn supervisor_health(State(state): State<AiState>) -> impl IntoResponse {
+    let sup = state.supervisor.read().await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "method": "supervisor.health",
+            "data": {
+                "pid": sup.pid,
+                "status": sup.status,
+                "alive": false
+            },
+            "message": "stub: supervisor.health not yet implemented"
+        })),
+    )
+}
+
 async fn ai_generate_stream(
     ws: WebSocketUpgrade,
-    State(registry): State<AiRegistry>,
+    State(state): State<AiState>,
 ) -> impl IntoResponse {
-    let _ = registry;
+    let _ = state;
     ws.on_upgrade(handle_generate_stream)
 }
 
@@ -382,7 +479,7 @@ async fn handle_generate_stream(mut socket: WebSocket) {
     }
 }
 
-pub fn ai_routes() -> Router<AiRegistry> {
+pub fn ai_routes() -> Router<AiState> {
     Router::new()
         .route("/ai/inspect", post(ai_inspect))
         .route("/ai/load", post(ai_load))
@@ -405,6 +502,10 @@ pub fn ai_routes() -> Router<AiRegistry> {
         .route("/ai/capabilities", get(ai_capabilities))
         .route("/ai/diagnostics", get(ai_diagnostics))
         .route("/ai/generate-stream", get(ai_generate_stream))
+        .route("/ai/supervisor/spawn", post(supervisor_spawn))
+        .route("/ai/supervisor/stop", post(supervisor_stop))
+        .route("/ai/supervisor/kill", post(supervisor_kill))
+        .route("/ai/supervisor/health", get(supervisor_health))
 }
 
 #[cfg(test)]
@@ -413,9 +514,13 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    fn test_state() -> AiState {
+        AiState::new()
+    }
+
     #[tokio::test]
     async fn test_ai_health() {
-        let app = ai_routes().with_state(Arc::new(RwLock::new(Vec::new())));
+        let app = ai_routes().with_state(test_state());
         let response = app
             .oneshot(
                 Request::builder()
@@ -437,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ai_diagnostics() {
-        let app = ai_routes().with_state(Arc::new(RwLock::new(Vec::new())));
+        let app = ai_routes().with_state(test_state());
         let response = app
             .oneshot(
                 Request::builder()
@@ -459,7 +564,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ai_capabilities() {
-        let app = ai_routes().with_state(Arc::new(RwLock::new(Vec::new())));
+        let app = ai_routes().with_state(test_state());
         let response = app
             .oneshot(
                 Request::builder()
@@ -481,8 +586,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_ai_create_session() {
-        let registry: AiRegistry = Arc::new(RwLock::new(Vec::new()));
-        let app = ai_routes().with_state(registry.clone());
+        let state = test_state();
+        let app = ai_routes().with_state(state.clone());
         let response = app
             .oneshot(
                 Request::builder()
@@ -502,12 +607,12 @@ mod tests {
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert!(json["data"]["session_id"].as_str().is_some());
-        assert_eq!(registry.read().await.len(), 1);
+        assert_eq!(state.registry.read().await.len(), 1);
     }
 
     #[tokio::test]
     async fn test_ai_list_models() {
-        let app = ai_routes().with_state(Arc::new(RwLock::new(Vec::new())));
+        let app = ai_routes().with_state(test_state());
         let response = app
             .oneshot(
                 Request::builder()
@@ -528,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ai_generate_stub() {
-        let app = ai_routes().with_state(Arc::new(RwLock::new(Vec::new())));
+        let app = ai_routes().with_state(test_state());
         let response = app
             .oneshot(
                 Request::builder()
@@ -552,5 +657,79 @@ mod tests {
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert!(json["data"]["text"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_health() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ai/supervisor/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["status"], "idle");
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_spawn() {
+        let state = test_state();
+        let app = ai_routes().with_state(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/supervisor/spawn")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.supervisor.read().await.status, "running");
+    }
+
+    #[tokio::test]
+    async fn test_supervisor_kill() {
+        let state = test_state();
+        let app = ai_routes().with_state(state.clone());
+        let _ = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/supervisor/spawn")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/supervisor/kill")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.supervisor.read().await.status, "killed");
     }
 }
