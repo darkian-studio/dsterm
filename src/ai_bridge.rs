@@ -17,7 +17,9 @@ use tokio::sync::RwLock;
 
 use crate::ai::error::{self, AiError};
 use crate::ai::inspect;
-use crate::ai::pool::{ModelPoolInner, ModelPoolState, PoolConfig};
+use crate::ai::pool::{
+    LoadLockManager, LoadLockManagerState, ModelPoolInner, ModelPoolState, PoolConfig,
+};
 
 fn ok_response(method: &str, data: Value) -> (StatusCode, Json<Value>) {
     (
@@ -165,6 +167,7 @@ pub struct AiState {
     pub supervisor: SupervisorState,
     pub model_registry: ModelRegistryState,
     pub model_pool: ModelPoolState,
+    pub load_locks: LoadLockManagerState,
 }
 
 impl AiState {
@@ -174,6 +177,7 @@ impl AiState {
             supervisor: Arc::new(RwLock::new(InferenceSupervisor::new())),
             model_registry: Arc::new(RwLock::new(ModelRegistryInner::load())),
             model_pool: Arc::new(RwLock::new(ModelPoolInner::new(PoolConfig::default()))),
+            load_locks: Arc::new(LoadLockManager::new()),
         }
     }
 }
@@ -246,14 +250,25 @@ async fn ai_load(
         return Err(error::file_not_found(&model_path));
     }
 
+    // Acquire per-model load lock to prevent duplicate loads
+    let lock_key = format!("path:{}", model_path);
+    let _permit = state.load_locks.acquire(&lock_key).await;
+
     let pool = state.model_pool.clone();
     let mut guard = pool.write().await;
     match guard.load(&model_path) {
-        Ok(model) => Ok(ok_response(
-            "inference.loadModel",
-            json!({ "loaded": true, "model": model, "ref_count": model.ref_count }),
-        )),
-        Err(e) => Err(error::internal_error(e)),
+        Ok(model) => {
+            let view = model.to_view();
+            let ref_count = model.lifecycle.ref_count;
+            Ok(ok_response(
+                "inference.loadModel",
+                json!({ "loaded": true, "model": view, "ref_count": ref_count }),
+            ))
+        }
+        Err(e) => {
+            guard.record_load_failure(&e);
+            Err(error::internal_error(e))
+        }
     }
 }
 
@@ -269,15 +284,28 @@ async fn ai_unload(
 
     let pool = state.model_pool.clone();
     let mut guard = pool.write().await;
-    match guard.unload(id) {
+
+    // Resolve pool_id: try as direct pool_id, then as registry_id
+    let pool_id = if guard.get(id).is_some() {
+        id.to_string()
+    } else if let Some(model) = guard.get_by_registry_id(id) {
+        model.metadata.pool_id.clone()
+    } else {
+        return Err(error::model_not_found(id));
+    };
+
+    match guard.unload(&pool_id) {
         Ok(fully_unloaded) => {
-            let ref_count = guard.get(id).map(|m| m.ref_count).unwrap_or(0);
+            let ref_count = match guard.get(&pool_id) {
+                Some(m) => m.lifecycle.ref_count,
+                None => 0,
+            };
             Ok(ok_response(
                 "inference.unloadModel",
                 json!({ "unloaded": fully_unloaded, "ref_count": ref_count }),
             ))
         }
-        Err(_) => Err(error::model_not_found(id)),
+        Err(e) => Err(error::internal_error(e)),
     }
 }
 
@@ -528,15 +556,16 @@ async fn ai_detokenize(body: Option<Json<Value>>) -> impl IntoResponse {
 async fn ai_statistics(State(state): State<AiState>) -> impl IntoResponse {
     let sessions_total = AI_SESSIONS_CREATED.load(Ordering::Relaxed);
     let pool_guard = state.model_pool.read().await;
-    let models_loaded = pool_guard.models.len();
-    let total_ref_count: u32 = pool_guard.models.values().map(|m| m.ref_count).sum();
+    let stats = pool_guard.stats();
+    let pool_consistent = stats.pool_consistent;
     drop(pool_guard);
     ok_response(
         "inference.statistics",
         json!({
             "sessions_created_total": sessions_total,
-            "models_loaded": models_loaded,
-            "active_references": total_ref_count,
+            "models_loaded": stats.loaded_count,
+            "active_references": stats.total_ref_count,
+            "pool_consistent": pool_consistent,
             "requests_processed": 0,
             "tokens_generated": 0
         }),
@@ -546,19 +575,23 @@ async fn ai_statistics(State(state): State<AiState>) -> impl IntoResponse {
 async fn ai_memory(State(state): State<AiState>) -> impl IntoResponse {
     let guard = state.model_pool.read().await;
     let stats = guard.stats();
-    let loaded_count = stats.loaded_count;
-    let total_allocated = stats.total_allocated_bytes;
-    let available = stats.available_bytes;
     drop(guard);
     ok_response(
         "inference.memory",
         json!({
-            "resident_models": loaded_count,
-            "total_allocated_bytes": total_allocated,
-            "available_bytes": available,
+            "resident_models": stats.loaded_count,
+            "total_allocated_bytes": stats.memory.total_bytes,
+            "available_bytes": stats.available_bytes,
             "pool_stats": stats
         }),
     )
+}
+
+async fn ai_pool_health(State(state): State<AiState>) -> impl IntoResponse {
+    let guard = state.model_pool.read().await;
+    let health = guard.health();
+    drop(guard);
+    ok_response("inference.poolHealth", json!(health))
 }
 
 async fn ai_health() -> impl IntoResponse {
@@ -611,11 +644,12 @@ async fn ai_diagnostics(State(state): State<AiState>) -> impl IntoResponse {
     drop(guard);
 
     let pool_guard = state.model_pool.read().await;
-    let loaded_models: Vec<Value> = pool_guard.list().iter().map(|m| json!(m)).collect();
+    let loaded_models = pool_guard.list();
     let pool_stats = pool_guard.stats();
     let pool_loaded = pool_stats.loaded_count;
     let pool_capacity = pool_stats.max_models;
-    let resident_memory = pool_stats.resident_memory_bytes;
+    let resident_memory = pool_stats.memory.total_bytes;
+    let pool_consistent = pool_stats.pool_consistent;
     drop(pool_guard);
 
     (
@@ -630,6 +664,7 @@ async fn ai_diagnostics(State(state): State<AiState>) -> impl IntoResponse {
                 "registered_models": model_details,
                 "loaded_models": loaded_models,
                 "resident_memory_bytes": resident_memory,
+                "pool_consistent": pool_consistent,
                 "pool": {
                     "enabled": true,
                     "capacity": pool_capacity,
@@ -749,6 +784,7 @@ pub fn ai_routes() -> Router<AiState> {
         .route("/ai/detokenize", post(ai_detokenize))
         .route("/ai/statistics", get(ai_statistics))
         .route("/ai/memory", get(ai_memory))
+        .route("/ai/pool/health", get(ai_pool_health))
         .route("/ai/health", get(ai_health))
         .route("/ai/capabilities", get(ai_capabilities))
         .route("/ai/diagnostics", get(ai_diagnostics))
@@ -812,6 +848,7 @@ mod tests {
         assert_eq!(json["status"], "healthy");
         assert!(json["data"]["uptime_secs"].as_u64().is_some());
         assert!(json["data"]["pool"]["enabled"] == true);
+        assert_eq!(json["data"]["pool_consistent"], true);
         assert!(json["data"]["loaded_models"].is_array());
         assert!(json["data"]["registered_models"].is_array());
         assert!(json["data"]["gguf_support"]["enabled"] == true);
@@ -1054,6 +1091,7 @@ mod tests {
         assert_eq!(json["data"]["pool"]["enabled"], true);
         assert_eq!(json["data"]["pool"]["loaded"], 0);
         assert_eq!(json["data"]["resident_memory_bytes"], 0);
+        assert_eq!(json["data"]["pool_consistent"], true);
         assert!(json["data"]["loaded_models"].is_array());
         assert!(json["data"]["registered_models"].is_array());
     }
@@ -1240,6 +1278,7 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["data"]["models_loaded"], 0);
         assert_eq!(json["data"]["active_references"], 0);
+        assert_eq!(json["data"]["pool_consistent"], true);
     }
 
     #[tokio::test]
@@ -1263,5 +1302,28 @@ mod tests {
         assert_eq!(json["data"]["resident_models"], 0);
         assert_eq!(json["data"]["total_allocated_bytes"], 0);
         assert!(json["data"]["pool_stats"].is_object());
+        assert_eq!(json["data"]["pool_stats"]["pool_consistent"], true);
+    }
+
+    #[tokio::test]
+    async fn test_ai_pool_health() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ai/pool/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["healthy"], true);
+        assert_eq!(json["data"]["loaded"], 0);
     }
 }
