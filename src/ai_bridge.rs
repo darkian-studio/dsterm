@@ -204,7 +204,7 @@ async fn ai_session_state(
     let guard = state.registry.read().await;
     let found = guard
         .iter()
-        .find(|s| session_id.map_or(false, |sid| s.id == sid))
+        .find(|s| session_id.is_some_and(|sid| s.id == sid))
         .cloned();
     drop(guard);
     let data = found.as_ref().map(|s| {
