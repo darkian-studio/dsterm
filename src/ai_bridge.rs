@@ -16,7 +16,6 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::ai::error::{self, AiError};
-use crate::ai::gguf;
 use crate::ai::inspect;
 
 fn ok_response(method: &str, data: Value) -> (StatusCode, Json<Value>) {

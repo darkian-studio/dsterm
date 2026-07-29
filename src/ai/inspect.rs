@@ -38,6 +38,7 @@ pub fn metadata_to_json(meta: &GGUFMetadata) -> Value {
             "parameter_count": param_str,
             "parameter_count_raw": meta.computed_parameter_count.or(meta.parameter_count),
             "quantisation": meta.quantisation.as_deref().unwrap_or("unknown"),
+            "file_type": meta.file_type,
             "format_version": meta.version,
             "tensor_count": meta.tensor_count
         },

@@ -239,7 +239,7 @@ pub fn parse_gguf<P: AsRef<std::path::Path>>(path: P) -> Result<GGUFMetadata, GG
     }
 
     let version = read_u32_le(&mut cursor)?;
-    if version < 1 || version > 3 {
+    if !(1..=3).contains(&version) {
         return Err(GGUFError::UnsupportedVersion(version));
     }
 
@@ -768,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_invalid_magic() {
+    fn test_parse_nonexistent_file() {
         let result = parse_gguf("/nonexistent/file.gguf");
         assert!(result.is_err());
     }
