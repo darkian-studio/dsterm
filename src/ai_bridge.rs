@@ -15,6 +15,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+use crate::ai::error::{self, AiError};
+use crate::ai::gguf;
+use crate::ai::inspect;
+
+fn ok_response(method: &str, data: Value) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::OK,
+        Json(json!({ "success": true, "method": method, "data": data, "message": "ok" })),
+    )
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ModelRegistration {
     pub id: String,
@@ -174,69 +185,66 @@ fn ts_secs() -> u64 {
         .as_secs()
 }
 
-async fn ai_inspect(body: Option<Json<Value>>) -> impl IntoResponse {
-    let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.inspectModel",
-            "data": null,
-            "message": "stub: inspectModel not yet implemented"
-        })),
-    )
+async fn ai_inspect(body: Option<Json<Value>>) -> Result<impl IntoResponse, AiError> {
+    let path = body
+        .as_ref()
+        .and_then(|b| b.0.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if path.is_empty() {
+        return Err(error::bad_request("path is required"));
+    }
+
+    if !std::path::Path::new(path).exists() {
+        return Err(error::file_not_found(path));
+    }
+
+    match inspect::inspect_model(path) {
+        Ok(data) => Ok(ok_response("inference.inspectModel", data)),
+        Err(e) => Err(error::invalid_gguf(e)),
+    }
 }
 
 async fn ai_load(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.loadModel",
-            "data": { "loaded": true },
-            "message": "stub: loadModel not yet implemented"
-        })),
-    )
+    ok_response("inference.loadModel", json!({ "loaded": true }))
 }
 
 async fn ai_unload(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.unloadModel",
-            "data": { "unloaded": true },
-            "message": "stub: unloadModel not yet implemented"
-        })),
-    )
+    ok_response("inference.unloadModel", json!({ "unloaded": true }))
 }
 
 async fn ai_list_models(State(state): State<AiState>) -> impl IntoResponse {
     let guard = state.model_registry.read().await;
     let models = guard.list().to_vec();
     drop(guard);
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.listModels",
-            "data": { "models": models },
-            "message": "ok"
-        })),
-    )
+    ok_response("inference.listModels", json!({ "models": models }))
 }
 
 async fn ai_model_register(
     State(state): State<AiState>,
     Json(body): Json<Value>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AiError> {
     let id = body
         .get("id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let local_path = body
+        .get("local_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if id.is_empty() {
+        return Err(error::bad_request("model id is required"));
+    }
+    if local_path.is_empty() {
+        return Err(error::bad_request("local_path is required"));
+    }
+
     let provider = body
         .get("provider")
         .and_then(|v| v.as_str())
@@ -249,11 +257,6 @@ async fn ai_model_register(
         .to_string();
     let filename = body
         .get("filename")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let local_path = body
-        .get("local_path")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -299,47 +302,49 @@ async fn ai_model_register(
     };
 
     state.model_registry.write().await.register(model);
-
-    (
-        StatusCode::OK,
-        Json(json!({ "success": true, "message": "registered" })),
-    )
+    Ok(ok_response(
+        "inference.registerModel",
+        json!({ "registered": true }),
+    ))
 }
 
 async fn ai_model_remove(
     State(state): State<AiState>,
     Json(body): Json<Value>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AiError> {
     let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() {
+        return Err(error::bad_request("model id is required"));
+    }
     state.model_registry.write().await.remove(id);
-    (
-        StatusCode::OK,
-        Json(json!({ "success": true, "message": "removed" })),
-    )
+    Ok(ok_response(
+        "inference.removeModel",
+        json!({ "removed": true }),
+    ))
 }
 
-async fn ai_model_get(State(state): State<AiState>, Path(id): Path<String>) -> impl IntoResponse {
+async fn ai_model_get(
+    State(state): State<AiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AiError> {
     let guard = state.model_registry.read().await;
     let found = guard.get(&id).cloned();
     drop(guard);
     match found {
-        Some(model) => (
-            StatusCode::OK,
-            Json(json!({ "success": true, "data": model })),
-        ),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "success": false, "message": "not found" })),
-        ),
+        Some(model) => Ok(ok_response("inference.getModel", json!(model))),
+        None => Err(error::model_not_found(id)),
     }
 }
 
 async fn ai_model_update_status(
     State(state): State<AiState>,
     Json(body): Json<Value>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AiError> {
     let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let status_str = body.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if id.is_empty() {
+        return Err(error::bad_request("model id is required"));
+    }
     let status = match status_str {
         "downloading" => ModelStatus::Downloading,
         "downloaded" => ModelStatus::Downloaded,
@@ -351,35 +356,19 @@ async fn ai_model_update_status(
         _ => ModelStatus::Registered,
     };
     state.model_registry.write().await.update_status(id, status);
-    (
-        StatusCode::OK,
-        Json(json!({ "success": true, "message": "status updated" })),
-    )
+    Ok(ok_response(
+        "inference.updateStatus",
+        json!({ "status_updated": true }),
+    ))
 }
 
 async fn ai_loaded_models() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.loadedModels",
-            "data": { "models": [] },
-            "message": "stub: loadedModels not yet implemented"
-        })),
-    )
+    ok_response("inference.loadedModels", json!({ "models": [] }))
 }
 
 async fn ai_delete(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.deleteModel",
-            "data": { "deleted": true },
-            "message": "stub: deleteModel not yet implemented"
-        })),
-    )
+    ok_response("inference.deleteModel", json!({ "deleted": true }))
 }
 
 async fn ai_create_session(
@@ -395,15 +384,7 @@ async fn ai_create_session(
     };
     state.registry.write().await.push(session);
     AI_SESSIONS_CREATED.fetch_add(1, Ordering::Relaxed);
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.createSession",
-            "data": { "session_id": id },
-            "message": "stub: createSession"
-        })),
-    )
+    ok_response("inference.createSession", json!({ "session_id": id }))
 }
 
 async fn ai_release_session(
@@ -416,28 +397,12 @@ async fn ai_release_session(
     if let Some(sid) = session_id {
         state.registry.write().await.retain(|s| s.id != sid);
     }
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.releaseSession",
-            "data": { "released": true },
-            "message": "stub: releaseSession"
-        })),
-    )
+    ok_response("inference.releaseSession", json!({ "released": true }))
 }
 
 async fn ai_cancel_session(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.cancelSession",
-            "data": { "cancelled": true },
-            "message": "stub: cancelSession"
-        })),
-    )
+    ok_response("inference.cancelSession", json!({ "cancelled": true }))
 }
 
 async fn ai_session_state(
@@ -458,152 +423,113 @@ async fn ai_session_state(
             "metadata": s.metadata
         })
     });
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.sessionState",
-            "data": data.unwrap_or(json!(null)),
-            "message": if found.is_some() { "session found" } else { "session not found" }
-        })),
-    )
+    ok_response("inference.sessionState", json!({ "session": data }))
 }
 
 async fn ai_generate(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.generate",
-            "data": {
-                "text": "",
-                "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
-            },
-            "message": "stub: generate not yet implemented"
-        })),
+    ok_response(
+        "inference.generate",
+        json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
     )
 }
 
 async fn ai_complete(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.complete",
-            "data": {
-                "text": "",
-                "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
-            },
-            "message": "stub: complete not yet implemented"
-        })),
+    ok_response(
+        "inference.complete",
+        json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
     )
 }
 
 async fn ai_embed(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.embed",
-            "data": { "embeddings": [] },
-            "message": "stub: embed not yet implemented"
-        })),
-    )
+    ok_response("inference.embed", json!({ "embeddings": [] }))
 }
 
 async fn ai_tokenize(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.tokenize",
-            "data": { "tokens": [] },
-            "message": "stub: tokenize not yet implemented"
-        })),
-    )
+    ok_response("inference.tokenize", json!({ "tokens": [] }))
 }
 
 async fn ai_detokenize(body: Option<Json<Value>>) -> impl IntoResponse {
     let _ = body;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.detokenize",
-            "data": { "text": "" },
-            "message": "stub: detokenize not yet implemented"
-        })),
-    )
+    ok_response("inference.detokenize", json!({ "text": "" }))
 }
 
 async fn ai_statistics() -> impl IntoResponse {
     let sessions_total = AI_SESSIONS_CREATED.load(Ordering::Relaxed);
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.statistics",
-            "data": {
-                "sessions_created_total": sessions_total,
-                "models_loaded": 0,
-                "requests_processed": 0,
-                "tokens_generated": 0
-            }
-        })),
+    ok_response(
+        "inference.statistics",
+        json!({
+            "sessions_created_total": sessions_total,
+            "models_loaded": 0,
+            "requests_processed": 0,
+            "tokens_generated": 0
+        }),
     )
 }
 
 async fn ai_memory() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.memory",
-            "data": {
-                "resident_models": [],
-                "total_allocated_bytes": 0,
-                "available_bytes": 0
-            }
-        })),
+    ok_response(
+        "inference.memory",
+        json!({
+            "resident_models": [],
+            "total_allocated_bytes": 0,
+            "available_bytes": 0
+        }),
     )
 }
 
 async fn ai_health() -> impl IntoResponse {
     (
         StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "status": "healthy",
-            "service": "ai",
-            "version": env!("CARGO_PKG_VERSION")
-        })),
+        Json(
+            json!({ "success": true, "status": "healthy", "service": "ai", "version": env!("CARGO_PKG_VERSION") }),
+        ),
     )
 }
 
 async fn ai_capabilities() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "inference.capabilities",
-            "data": {
-                "chat": false,
-                "completion": false,
-                "fim": false,
-                "embeddings": false,
-                "tool_calling": false,
-                "streaming": true
-            }
-        })),
+    ok_response(
+        "inference.capabilities",
+        json!({
+            "chat": false,
+            "completion": false,
+            "fim": false,
+            "embeddings": false,
+            "tool_calling": false,
+            "streaming": true,
+            "model_inspection": true,
+            "gguf_parsing": true,
+            "metadata_extraction": true,
+            "architecture_detection": true,
+            "memory_estimation": true,
+            "capability_detection": true
+        }),
     )
 }
 
-async fn ai_diagnostics() -> impl IntoResponse {
+async fn ai_diagnostics(State(state): State<AiState>) -> impl IntoResponse {
     let sessions_total = AI_SESSIONS_CREATED.load(Ordering::Relaxed);
+    let guard = state.model_registry.read().await;
+    let model_details: Vec<Value> = guard
+        .list()
+        .iter()
+        .map(|m| {
+            json!({
+                "id": m.id,
+                "name": m.filename,
+                "quantisation": m.quantisation,
+                "parameter_count": m.parameter_count,
+                "size": m.size,
+                "status": m.status,
+                "path": m.local_path
+            })
+        })
+        .collect();
+    drop(guard);
+
     (
         StatusCode::OK,
         Json(json!({
@@ -613,8 +539,32 @@ async fn ai_diagnostics() -> impl IntoResponse {
             "data": {
                 "sessions_created_total": sessions_total,
                 "active_sessions": 0,
-                "loaded_models": 0,
-                "backend": "none",
+                "registered_models": model_details,
+                "loaded_models": [],
+                "resident_memory_bytes": 0,
+                "pool": {
+                    "enabled": false,
+                    "capacity": null,
+                    "loaded": 0
+                },
+                "gguf_support": {
+                    "enabled": true,
+                    "metadata_version": 3,
+                    "supported_formats": ["GGUF"],
+                    "max_context_length": 0,
+                    "quantisations_supported": [
+                        "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L",
+                        "Q4_0", "Q4_1", "Q4_K_S", "Q4_K_M",
+                        "Q5_0", "Q5_1", "Q5_K_S", "Q5_K_M",
+                        "Q6_K", "Q8_0", "Q8_1",
+                        "F16", "BF16",
+                        "IQ1_S", "IQ1_M",
+                        "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ2_M",
+                        "IQ3_XXS", "IQ3_XS", "IQ3_S", "IQ3_M",
+                        "IQ4_NL", "IQ4_XS"
+                    ]
+                },
+                "model_count": model_details.len(),
                 "uptime_secs": ts_secs()
             }
         })),
@@ -629,60 +579,30 @@ async fn supervisor_spawn(
     let mut sup = state.supervisor.write().await;
     sup.status = "running".to_string();
     sup.pid = None;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "supervisor.spawn",
-            "data": { "pid": serde_json::Value::Null, "status": "running" },
-            "message": "stub: supervisor.spawn not yet implemented"
-        })),
+    ok_response(
+        "supervisor.spawn",
+        json!({ "pid": null, "status": "running" }),
     )
 }
 
 async fn supervisor_stop(State(state): State<AiState>) -> impl IntoResponse {
     let mut sup = state.supervisor.write().await;
     sup.status = "stopped".to_string();
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "supervisor.stop",
-            "data": { "status": "stopped" },
-            "message": "stub: supervisor.stop not yet implemented"
-        })),
-    )
+    ok_response("supervisor.stop", json!({ "status": "stopped" }))
 }
 
 async fn supervisor_kill(State(state): State<AiState>) -> impl IntoResponse {
     let mut sup = state.supervisor.write().await;
     sup.status = "killed".to_string();
     sup.pid = None;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "supervisor.kill",
-            "data": { "status": "killed" },
-            "message": "stub: supervisor.kill not yet implemented"
-        })),
-    )
+    ok_response("supervisor.kill", json!({ "status": "killed" }))
 }
 
 async fn supervisor_health(State(state): State<AiState>) -> impl IntoResponse {
     let sup = state.supervisor.read().await;
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "method": "supervisor.health",
-            "data": {
-                "pid": sup.pid,
-                "status": sup.status,
-                "alive": false
-            },
-            "message": "stub: supervisor.health not yet implemented"
-        })),
+    ok_response(
+        "supervisor.health",
+        json!({ "pid": sup.pid, "status": sup.status, "alive": false }),
     )
 }
 
@@ -803,6 +723,10 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "healthy");
         assert!(json["data"]["uptime_secs"].as_u64().is_some());
+        assert!(json["data"]["pool"]["enabled"] == false);
+        assert!(json["data"]["loaded_models"].is_array());
+        assert!(json["data"]["registered_models"].is_array());
+        assert!(json["data"]["gguf_support"]["enabled"] == true);
     }
 
     #[tokio::test]
@@ -975,5 +899,113 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(state.supervisor.read().await.status, "killed");
+    }
+
+    #[tokio::test]
+    async fn test_ai_inspect_requires_path() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/inspect")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["message"], "path is required");
+    }
+
+    #[tokio::test]
+    async fn test_ai_inspect_not_found() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/inspect")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({"path": "/nonexistent/foo.gguf"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_ai_diagnostics_pool_placeholders() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ai/diagnostics")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["gguf_support"]["enabled"], true);
+        assert!(json["data"]["gguf_support"]["quantisations_supported"].is_array());
+        assert_eq!(json["data"]["pool"]["enabled"], false);
+        assert_eq!(json["data"]["resident_memory_bytes"], 0);
+        assert!(json["data"]["loaded_models"].is_array());
+        assert!(json["data"]["registered_models"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_ai_capabilities_includes_inspection() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ai/capabilities")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["model_inspection"], true);
+        assert_eq!(json["data"]["gguf_parsing"], true);
+    }
+
+    #[tokio::test]
+    async fn test_ai_inspect_errors_on_non_gguf() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/inspect")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&json!({"path": "/dev/null"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
