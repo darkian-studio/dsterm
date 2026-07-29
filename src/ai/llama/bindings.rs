@@ -1,6 +1,7 @@
 use std::ffi::c_char;
-use std::os::raw::{c_bool, c_float, c_int, c_uint};
+use std::os::raw::{c_float, c_int, c_uint};
 
+#[allow(non_camel_case_types)]
 pub type llama_token = i32;
 
 #[repr(C)]
@@ -9,10 +10,10 @@ pub struct llama_model_params {
     pub main_gpu: c_int,
     pub tensor_split: *const c_float,
     pub rpc_servers: *const c_char,
-    pub vocab_only: c_bool,
-    pub use_mmap: c_bool,
-    pub use_mlock: c_bool,
-    pub check_tensors: c_bool,
+    pub vocab_only: bool,
+    pub use_mmap: bool,
+    pub use_mlock: bool,
+    pub check_tensors: bool,
 }
 
 impl Default for llama_model_params {
@@ -41,9 +42,9 @@ pub struct llama_context_params {
     pub rope_scaling_type: c_int,
     pub pooling_type: c_int,
     pub attention_type: c_int,
-    pub offload_kqv: c_bool,
-    pub flash_attn: c_bool,
-    pub no_kv_offload: c_bool,
+    pub offload_kqv: bool,
+    pub flash_attn: bool,
+    pub no_kv_offload: bool,
     pub yarn_log_scale: c_float,
 }
 
@@ -67,6 +68,7 @@ impl Default for llama_context_params {
     }
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct llama_batch {
     pub n_tokens: c_int,

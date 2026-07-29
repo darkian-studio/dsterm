@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::ai::error::{self, AiError};
@@ -655,12 +654,17 @@ async fn ai_complete(
 ) -> Result<impl IntoResponse, AiError> {
     let body = body.ok_or_else(|| error::bad_request("body required"))?;
 
-    let prompt = body.0.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-    let model_id = body
-        .0
+    let body_value = body.0.clone();
+    let prompt = body_value
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let model_id = body_value
         .get("model_id")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
     if prompt.is_empty() {
         return Err(error::bad_request("prompt is required"));
@@ -671,7 +675,7 @@ async fn ai_complete(
 
     #[cfg(feature = "llama")]
     {
-        return ai_generate_real(state, body.0, prompt, model_id).await;
+        return ai_generate_real(state, body_value, &prompt, &model_id).await;
     }
 
     #[cfg(not(feature = "llama"))]
@@ -957,7 +961,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         let result = handle_generate_stream_llama(
             &mut sender,
             &mut receiver,
-            state,
+            state.clone(),
             &params,
             prompt,
             model_id,
@@ -1006,7 +1010,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
 #[cfg(feature = "llama")]
 async fn handle_generate_stream_llama(
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
-    receiver: &mut futures::stream::SplitStream<WebSocket>,
+    _receiver: &mut futures::stream::SplitStream<WebSocket>,
     state: AiState,
     params: &Value,
     prompt: &str,
@@ -1017,7 +1021,7 @@ async fn handle_generate_stream_llama(
     let loaded = pool
         .get(model_id)
         .or_else(|| pool.get_by_registry_id(model_id))
-        .map(|m| (m.runtime.as_ref().and_then(|r| r.model.clone())))
+        .map(|m| m.runtime.as_ref().and_then(|r| r.model.clone()))
         .ok_or_else(|| format!("model not found: {model_id}"))?;
 
     let llama_model = loaded.ok_or_else(|| format!("model {model_id} has no backend"))?;

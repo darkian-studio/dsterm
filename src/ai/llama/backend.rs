@@ -52,8 +52,7 @@ impl LlamaModel {
     pub fn load(path: &str) -> Result<Self, String> {
         let c_path = CString::new(path).map_err(|e| format!("Invalid model path: {e}"))?;
 
-        let params = llama_model_default_params();
-
+        let params = unsafe { llama_model_default_params() };
         let ptr = unsafe { llama_load_model_from_file(c_path.as_ptr(), params) };
         if ptr.is_null() {
             return Err(format!("llama_load_model_from_file failed: {path}"));
@@ -76,7 +75,7 @@ impl LlamaModel {
     }
 
     pub fn create_default_context(&self) -> Result<LlamaContext, String> {
-        self.create_context(llama_context_default_params())
+        self.create_context(unsafe { llama_context_default_params() })
     }
 
     pub fn ptr(&self) -> *mut std::ffi::c_void {
@@ -194,7 +193,7 @@ impl LlamaContext {
         config: &GenerateConfig,
         cancel: &AtomicBool,
     ) -> Result<GenerateResult, String> {
-        let tokens = self.tokenize(prompt, true)?;
+        let mut tokens = self.tokenize(prompt, true)?;
         if tokens.is_empty() {
             return Err("No tokens generated from prompt".to_string());
         }
@@ -213,10 +212,8 @@ impl LlamaContext {
         let batch = unsafe { llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
         let ret = unsafe { llama_decode(self.ptr.as_ptr(), batch) };
         if ret != 0 {
-            unsafe { llama_batch_free(batch) };
             return Err(format!("llama_decode prompt failed: {ret}"));
         }
-        unsafe { llama_batch_free(batch) };
 
         let mut n_past = tokens.len();
 
@@ -316,10 +313,8 @@ impl LlamaContext {
             let batch = unsafe { llama_batch_get_one(next_tokens.as_mut_ptr(), 1) };
             let ret = unsafe { llama_decode(self.ptr.as_ptr(), batch) };
             if ret != 0 {
-                unsafe { llama_batch_free(batch) };
                 return Err(format!("llama_decode failed: {ret}"));
             }
-            unsafe { llama_batch_free(batch) };
             n_past += 1;
         }
 

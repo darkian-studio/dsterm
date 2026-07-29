@@ -4,4 +4,4 @@ pub mod backend;
 pub mod bindings;
 
 #[cfg(feature = "llama")]
-pub use backend::{GenerateConfig, LlamaContext, LlamaModel};
+pub use backend::{GenerateConfig, LlamaModel};
