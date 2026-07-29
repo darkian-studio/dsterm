@@ -386,7 +386,7 @@ async fn supervisor_spawn(
         Json(json!({
             "success": true,
             "method": "supervisor.spawn",
-            "data": { "pid": null as Option<u32>, "status": "running" },
+            "data": { "pid": serde_json::Value::Null, "status": "running" },
             "message": "stub: supervisor.spawn not yet implemented"
         })),
     )
@@ -449,9 +449,6 @@ async fn ai_generate_stream(
 async fn handle_generate_stream(mut socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
 
-    let tick = tokio::time::interval(Duration::from_millis(50));
-    let mut tick = tokio::pin!(tick);
-
     let done = json!({
         "type": "done",
         "data": {
@@ -460,21 +457,15 @@ async fn handle_generate_stream(mut socket: WebSocket) {
         }
     });
 
-    loop {
-        tokio::select! {
-            _ = tick.as_mut().tick() => {
-                let _ = sender
-                    .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
-                    .await;
-                let _ = sender.send(Message::Close(None)).await;
-                break;
-            }
-            msg = receiver.next() => {
-                match msg {
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                    _ => {}
-                }
-            }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = sender
+        .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
+        .await;
+    let _ = sender.send(Message::Close(None)).await;
+
+    while let Some(msg) = receiver.next().await {
+        if matches!(msg, Ok(Message::Close(_)) | Err(_)) {
+            break;
         }
     }
 }
