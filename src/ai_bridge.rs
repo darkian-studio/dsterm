@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+#[derive(Clone)]
 pub struct AiSession {
     pub id: String,
     pub created_at: u64,
@@ -700,6 +701,7 @@ mod tests {
         let state = test_state();
         let app = ai_routes().with_state(state.clone());
         let _ = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
