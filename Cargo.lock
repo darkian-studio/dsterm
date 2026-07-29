@@ -456,7 +456,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dsterm"
-version = "1.6.6"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -467,6 +467,7 @@ dependencies = [
  "colored",
  "crypto_secretbox",
  "dashmap",
+ "ego-tree",
  "futures",
  "htmlescape",
  "libc",
@@ -488,6 +489,7 @@ dependencies = [
  "tokio-tungstenite 0.24.0",
  "tokio-util",
  "toml",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",

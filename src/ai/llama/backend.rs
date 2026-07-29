@@ -37,7 +37,9 @@ pub struct GenerateResult {
     pub text: String,
     pub prompt_tokens: i32,
     pub completion_tokens: i32,
+    #[allow(dead_code)]
     pub stopped_by_eos: bool,
+    #[allow(dead_code)]
     pub stopped_by_max_tokens: bool,
 }
 
@@ -74,10 +76,12 @@ impl LlamaModel {
         })
     }
 
+    #[allow(dead_code)]
     pub fn create_default_context(&self) -> Result<LlamaContext, String> {
         self.create_context(unsafe { llama_context_default_params() })
     }
 
+    #[allow(dead_code)]
     pub fn ptr(&self) -> *mut std::ffi::c_void {
         self.ptr.as_ptr()
     }
@@ -327,6 +331,7 @@ impl LlamaContext {
         })
     }
 
+    #[allow(dead_code)]
     pub fn kv_cache_clear(&mut self) {
         unsafe { llama_kv_cache_clear(self.ptr.as_ptr()) }
     }

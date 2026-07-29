@@ -144,6 +144,7 @@ extern "C" {
     pub fn llama_batch_get_one(tokens: *mut llama_token, n_tokens: c_int) -> llama_batch;
 
     #[link_name = "llama_batch_free"]
+    #[allow(dead_code)]
     pub fn llama_batch_free(batch: llama_batch);
 
     #[link_name = "llama_decode"]
@@ -197,5 +198,6 @@ extern "C" {
     pub fn llama_n_vocab(ctx: *mut std::ffi::c_void) -> c_int;
 
     #[link_name = "llama_kv_cache_clear"]
+    #[allow(dead_code)]
     pub fn llama_kv_cache_clear(ctx: *mut std::ffi::c_void);
 }
