@@ -31,6 +31,7 @@ pub enum ModelPoolStatus {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EvictionPolicy {
     Lru,
+    #[allow(dead_code)]
     Lfu,
 }
 
@@ -249,10 +250,12 @@ impl ModelPoolInner {
         }
     }
 
+    #[allow(dead_code)]
     pub fn unload_all(&mut self) {
         self.models.clear();
     }
 
+    #[allow(dead_code)]
     pub fn touch(&mut self, id: &str) -> bool {
         if let Some(model) = self.models.get_mut(id) {
             model.last_accessed_at = Self::now_secs();
