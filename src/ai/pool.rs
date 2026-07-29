@@ -68,6 +68,7 @@ impl MemoryBreakdown {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[allow(dead_code)]
 pub enum LifecycleState {
     NotLoaded,
     Inspecting,
@@ -77,6 +78,7 @@ pub enum LifecycleState {
     Error,
 }
 
+#[allow(dead_code)]
 impl LifecycleState {
     pub fn can_transition_to(&self, next: &LifecycleState) -> bool {
         use LifecycleState::*;
@@ -104,6 +106,7 @@ pub struct ModelLifecycle {
     pub error_message: Option<String>,
 }
 
+#[allow(dead_code)]
 impl ModelLifecycle {
     pub fn new() -> Self {
         Self {
@@ -214,6 +217,7 @@ pub struct RuntimeHandle {
 
 pub struct LoadedModel {
     pub metadata: LoadedModelMetadata,
+    #[allow(dead_code)]
     pub runtime: Option<RuntimeHandle>,
     pub lifecycle: ModelLifecycle,
 }
@@ -382,6 +386,7 @@ impl LoadLockManager {
             .clone()
     }
 
+    #[allow(dead_code)]
     pub async fn active_locks(&self) -> usize {
         let locks = self.locks.lock().await;
         locks.len()
@@ -418,6 +423,7 @@ impl ModelPoolInner {
         }
     }
 
+    #[allow(dead_code)]
     pub fn event_rx(&self) -> broadcast::Receiver<PoolEvent> {
         self.event_tx.subscribe()
     }
@@ -471,7 +477,7 @@ impl ModelPoolInner {
         let mut found = None;
         for model in self.models.values_mut() {
             if model.metadata.registry_id == registry_id {
-                model.lifecycle.acquire().map_err(|e| format!("{e}"))?;
+                model.lifecycle.acquire().map_err(|e| e.to_string())?;
                 model.lifecycle.last_accessed_at = now_secs();
                 let pool_id = model.metadata.pool_id.clone();
                 let ref_count = model.lifecycle.ref_count;
@@ -713,6 +719,7 @@ impl ModelPoolInner {
         }
     }
 
+    #[allow(dead_code)]
     pub fn verify(&mut self) -> bool {
         // Check no duplicate pool_ids
         let mut seen_pool = std::collections::HashSet::new();
@@ -946,8 +953,8 @@ mod tests {
 
         assert_eq!(lc.acquire().unwrap(), 1);
         assert_eq!(lc.acquire().unwrap(), 2);
-        assert_eq!(lc.release().unwrap(), false); // not fully released
-        assert_eq!(lc.release().unwrap(), true); // fully released
+        assert!(!lc.release().unwrap()); // not fully released
+        assert!(lc.release().unwrap()); // fully released
     }
 
     #[test]
@@ -1023,7 +1030,7 @@ mod tests {
         let result = pool.unload(&pid);
         assert!(result.is_ok());
         assert!(result.unwrap()); // fully released
-        assert!(pool.models.get(&pid).is_none());
+        assert!(!pool.models.contains_key(&pid));
     }
 
     #[test]
@@ -1086,8 +1093,8 @@ mod tests {
             make_model("pool://2", "reg://b", 200, 0, 2),
         );
         pool.evict(1).unwrap();
-        assert!(pool.models.get("pool://1").is_none()); // older, evicted
-        assert!(pool.models.get("pool://2").is_some());
+        assert!(!pool.models.contains_key("pool://1")); // older, evicted
+        assert!(pool.models.contains_key("pool://2"));
     }
 
     #[test]
@@ -1102,8 +1109,8 @@ mod tests {
             make_model("pool://2", "reg://b", 200, 0, 2),
         );
         pool.evict(1).unwrap();
-        assert!(pool.models.get("pool://1").is_some()); // referenced, kept
-        assert!(pool.models.get("pool://2").is_none()); // evicted
+        assert!(pool.models.contains_key("pool://1")); // referenced, kept
+        assert!(!pool.models.contains_key("pool://2")); // evicted
     }
 
     #[test]
@@ -1121,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_memory_breakdown_aggregate() {
-        let models = vec![
+        let models = [
             make_model("pool://1", "reg://a", 100, 1, 1),
             make_model("pool://2", "reg://b", 200, 1, 2),
         ];
