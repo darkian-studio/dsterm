@@ -1,4 +1,5 @@
 mod agent_bridge;
+mod ai_bridge;
 mod ast_bridge;
 mod config;
 mod dap_bridge;

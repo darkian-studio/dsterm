@@ -142,6 +142,46 @@ pub enum IncomingMsg {
         #[serde(rename = "wsId")]
         ws_id: String,
     },
+    #[serde(rename = "ai:inspect")]
+    AiInspect {
+        id: Option<String>,
+        path: Option<String>,
+    },
+    #[serde(rename = "ai:load")]
+    AiLoad {
+        id: Option<String>,
+        path: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    #[serde(rename = "ai:unload")]
+    AiUnload {
+        id: Option<String>,
+        model_id: String,
+    },
+    #[serde(rename = "ai:generate")]
+    AiGenerate {
+        id: Option<String>,
+        session_id: String,
+        prompt: String,
+    },
+    #[serde(rename = "ai:complete")]
+    AiComplete {
+        id: Option<String>,
+        prefix: String,
+        suffix: Option<String>,
+    },
+    #[serde(rename = "ai:embed")]
+    AiEmbed {
+        id: Option<String>,
+        texts: Vec<String>,
+    },
+    #[serde(rename = "ai:list")]
+    AiListModels { id: Option<String> },
+    #[serde(rename = "ai:health")]
+    AiHealth { id: Option<String> },
+    #[serde(rename = "ai:capabilities")]
+    AiCapabilities { id: Option<String> },
     #[serde(other)]
     Unknown,
 }
@@ -206,6 +246,25 @@ pub enum OutgoingMsg {
     },
     #[serde(rename = "sysmon:update")]
     SysmonUpdate { data: Value },
+    #[serde(rename = "ai:result")]
+    AiResult {
+        id: Option<String>,
+        #[serde(rename = "respTo")]
+        resp_to: Option<String>,
+        data: Value,
+    },
+    #[serde(rename = "ai:token")]
+    AiToken {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        token: String,
+    },
+    #[serde(rename = "ai:done")]
+    AiDone {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        usage: Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

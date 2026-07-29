@@ -161,6 +161,91 @@ pub async fn dispatch(msg: IncomingMsg, ctx: &ClientCtx, http: &reqwest::Client,
             )
             .await;
         }
+        IncomingMsg::AiInspect { id, path } => {
+            reply(
+                ctx,
+                id,
+                loopback::post_json(http, port, "/ai/inspect", &json!({ "path": path })).await,
+            )
+            .await;
+        }
+        IncomingMsg::AiListModels { id } => {
+            reply(ctx, id, loopback::get_json(http, port, "/ai/models").await).await;
+        }
+        IncomingMsg::AiHealth { id } => {
+            reply(ctx, id, loopback::get_json(http, port, "/ai/health").await).await;
+        }
+        IncomingMsg::AiCapabilities { id } => {
+            reply(
+                ctx,
+                id,
+                loopback::get_json(http, port, "/ai/capabilities").await,
+            )
+            .await;
+        }
+        IncomingMsg::AiGenerate {
+            id,
+            session_id,
+            prompt,
+        } => {
+            reply(
+                ctx,
+                id,
+                loopback::post_json(
+                    http,
+                    port,
+                    "/ai/generate",
+                    &json!({ "session_id": session_id, "prompt": prompt }),
+                )
+                .await,
+            )
+            .await;
+        }
+        IncomingMsg::AiComplete { id, prefix, suffix } => {
+            reply(
+                ctx,
+                id,
+                loopback::post_json(
+                    http,
+                    port,
+                    "/ai/complete",
+                    &json!({ "prefix": prefix, "suffix": suffix }),
+                )
+                .await,
+            )
+            .await;
+        }
+        IncomingMsg::AiEmbed { id, texts } => {
+            reply(
+                ctx,
+                id,
+                loopback::post_json(http, port, "/ai/embed", &json!({ "texts": texts })).await,
+            )
+            .await;
+        }
+        IncomingMsg::AiLoad { id, path, args } => {
+            reply(
+                ctx,
+                id,
+                loopback::post_json(
+                    http,
+                    port,
+                    "/ai/load",
+                    &json!({ "path": path, "args": args }),
+                )
+                .await,
+            )
+            .await;
+        }
+        IncomingMsg::AiUnload { id, model_id } => {
+            reply(
+                ctx,
+                id,
+                loopback::post_json(http, port, "/ai/unload", &json!({ "model_id": model_id }))
+                    .await,
+            )
+            .await;
+        }
         IncomingMsg::TerminalCreate { .. }
         | IncomingMsg::TerminalData { .. }
         | IncomingMsg::TerminalResize { .. }
