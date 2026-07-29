@@ -1,17 +1,125 @@
-use axum::extract::{
-    ws::{Message, WebSocket, WebSocketUpgrade},
-    Query, State,
-};
+use axum::extract::{Path, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ModelRegistration {
+    pub id: String,
+    pub provider: String,
+    pub repository: String,
+    pub filename: String,
+    pub revision: String,
+    pub local_path: String,
+    pub size: u64,
+    pub sha256: String,
+    pub quantisation: String,
+    pub parameter_count: String,
+    pub download_url: String,
+    pub installed_at: String,
+    pub status: ModelStatus,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelStatus {
+    Downloading,
+    Downloaded,
+    Verified,
+    Registered,
+    Loaded,
+    Failed,
+    Corrupted,
+}
+
+impl std::fmt::Display for ModelStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModelStatus::Downloading => write!(f, "downloading"),
+            ModelStatus::Downloaded => write!(f, "downloaded"),
+            ModelStatus::Verified => write!(f, "verified"),
+            ModelStatus::Registered => write!(f, "registered"),
+            ModelStatus::Loaded => write!(f, "loaded"),
+            ModelStatus::Failed => write!(f, "failed"),
+            ModelStatus::Corrupted => write!(f, "corrupted"),
+        }
+    }
+}
+
+pub struct ModelRegistryInner {
+    pub models: Vec<ModelRegistration>,
+    storage_path: PathBuf,
+}
+
+impl ModelRegistryInner {
+    fn storage_path() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        PathBuf::from(home).join(".darkian/ai_model_registry.json")
+    }
+
+    pub fn load() -> Self {
+        let path = Self::storage_path();
+        let models = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Self {
+            models,
+            storage_path: path,
+        }
+    }
+
+    fn save(&self) {
+        if let Some(parent) = self.storage_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(&self.models) {
+            let _ = std::fs::write(&self.storage_path, json);
+        }
+    }
+
+    pub fn register(&mut self, model: ModelRegistration) {
+        self.models.retain(|m| m.id != model.id);
+        self.models.push(model);
+        self.save();
+    }
+
+    pub fn remove(&mut self, id: &str) {
+        self.models.retain(|m| m.id != id);
+        self.save();
+    }
+
+    pub fn get(&self, id: &str) -> Option<&ModelRegistration> {
+        self.models.iter().find(|m| m.id == id)
+    }
+
+    pub fn list(&self) -> &[ModelRegistration] {
+        &self.models
+    }
+
+    pub fn update_status(&mut self, id: &str, status: ModelStatus) {
+        if let Some(model) = self.models.iter_mut().find(|m| m.id == id) {
+            model.status = status;
+            self.save();
+        }
+    }
+}
+
+pub type ModelRegistryState = Arc<RwLock<ModelRegistryInner>>;
 
 #[derive(Clone)]
 pub struct AiSession {
@@ -42,6 +150,7 @@ pub type SupervisorState = Arc<RwLock<InferenceSupervisor>>;
 pub struct AiState {
     pub registry: AiRegistry,
     pub supervisor: SupervisorState,
+    pub model_registry: ModelRegistryState,
 }
 
 impl AiState {
@@ -49,6 +158,7 @@ impl AiState {
         Self {
             registry: Arc::new(RwLock::new(Vec::new())),
             supervisor: Arc::new(RwLock::new(InferenceSupervisor::new())),
+            model_registry: Arc::new(RwLock::new(ModelRegistryInner::load())),
         }
     }
 }
@@ -101,16 +211,94 @@ async fn ai_unload(body: Option<Json<Value>>) -> impl IntoResponse {
     )
 }
 
-async fn ai_list_models() -> impl IntoResponse {
+async fn ai_list_models(
+    State(state): State<AiState>,
+) -> impl IntoResponse {
+    let guard = state.model_registry.read().await;
+    let models = guard.list().to_vec();
+    drop(guard);
     (
         StatusCode::OK,
         Json(json!({
             "success": true,
             "method": "inference.listModels",
-            "data": { "models": [] },
-            "message": "stub: listModels not yet implemented"
+            "data": { "models": models },
+            "message": "ok"
         })),
     )
+}
+
+async fn ai_model_register(
+    State(state): State<AiState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let provider = body.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let repository = body.get("repository").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let filename = body.get("filename").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let local_path = body.get("local_path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    let model = ModelRegistration {
+        id,
+        provider,
+        repository,
+        filename,
+        revision: body.get("revision").and_then(|v| v.as_str()).unwrap_or("latest").to_string(),
+        local_path,
+        size: body.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+        sha256: body.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        quantisation: body.get("quantisation").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        parameter_count: body.get("parameter_count").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        download_url: body.get("download_url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        installed_at: body.get("installed_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        status: ModelStatus::Registered,
+    };
+
+    state.model_registry.write().await.register(model);
+
+    (StatusCode::OK, Json(json!({ "success": true, "message": "registered" })))
+}
+
+async fn ai_model_remove(
+    State(state): State<AiState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    state.model_registry.write().await.remove(id);
+    (StatusCode::OK, Json(json!({ "success": true, "message": "removed" })))
+}
+
+async fn ai_model_get(
+    State(state): State<AiState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let guard = state.model_registry.read().await;
+    let found = guard.get(&id).cloned();
+    drop(guard);
+    match found {
+        Some(model) => (StatusCode::OK, Json(json!({ "success": true, "data": model }))),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "success": false, "message": "not found" }))),
+    }
+}
+
+async fn ai_model_update_status(
+    State(state): State<AiState>,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let status_str = body.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let status = match status_str {
+        "downloading" => ModelStatus::Downloading,
+        "downloaded" => ModelStatus::Downloaded,
+        "verified" => ModelStatus::Verified,
+        "registered" => ModelStatus::Registered,
+        "loaded" => ModelStatus::Loaded,
+        "failed" => ModelStatus::Failed,
+        "corrupted" => ModelStatus::Corrupted,
+        _ => ModelStatus::Registered,
+    };
+    state.model_registry.write().await.update_status(id, status);
+    (StatusCode::OK, Json(json!({ "success": true, "message": "status updated" })))
 }
 
 async fn ai_loaded_models() -> impl IntoResponse {
@@ -480,6 +668,10 @@ pub fn ai_routes() -> Router<AiState> {
         .route("/ai/load", post(ai_load))
         .route("/ai/unload", post(ai_unload))
         .route("/ai/models", get(ai_list_models))
+        .route("/ai/models/register", post(ai_model_register))
+        .route("/ai/models/remove", post(ai_model_remove))
+        .route("/ai/models/update-status", post(ai_model_update_status))
+        .route("/ai/models/{id}", get(ai_model_get))
         .route("/ai/models/loaded", get(ai_loaded_models))
         .route("/ai/delete", post(ai_delete))
         .route("/ai/sessions", post(ai_create_session))
