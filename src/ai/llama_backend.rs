@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::ai::backend_trait::*;
 use crate::ai::context_config::ContextConfig;
+use crate::ai::context_manager::InferenceContext;
 use crate::ai::inference_error::InferenceError;
 use crate::ai::llama::{self, backend::LlamaContext, LlamaModel};
 use crate::ai::sampler::{LlamaSampler, Sampler, SamplingConfig};
@@ -19,10 +20,23 @@ impl LlamaBackend {
     }
 }
 
+impl InferenceContext for LlamaContext {
+    fn n_ctx(&self) -> u32 {
+        LlamaContext::n_ctx(self) as u32
+    }
+}
+
 #[async_trait::async_trait]
 impl InferenceBackend for LlamaBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities::default()
+    }
+
+    fn create_context(&self, config: &ContextConfig) -> BackendResult<Box<dyn InferenceContext>> {
+        let params = config.to_llama_params();
+        let ctx = self.model.create_context(params)
+            .map_err(InferenceError::context_creation_failed)?;
+        Ok(Box::new(ctx))
     }
 
     async fn validate(&self, _ctx_config: &ContextConfig) -> BackendResult<()> {

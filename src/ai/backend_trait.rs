@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::ai::context_config::ContextConfig;
+use crate::ai::context_manager;
 use crate::ai::inference_error::InferenceError;
 use crate::ai::sampler::SamplingConfig;
 
@@ -37,6 +38,7 @@ impl Default for BackendCapabilities {
 #[async_trait::async_trait]
 pub trait InferenceBackend: Send + Sync {
     fn capabilities(&self) -> BackendCapabilities;
+    fn create_context(&self, config: &ContextConfig) -> BackendResult<Box<dyn context_manager::InferenceContext>>;
     async fn validate(&self, ctx_config: &ContextConfig) -> BackendResult<()>;
     async fn tokenize(&self, text: &str, add_bos: bool) -> BackendResult<Vec<i32>>;
     async fn detokenize(&self, token: i32) -> BackendResult<String>;

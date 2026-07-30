@@ -35,22 +35,13 @@ impl ContextConfig {
     pub fn validate(&self) -> Result<(), crate::ai::inference_error::InferenceError> {
         use crate::ai::inference_error::InferenceError;
         if self.n_ctx == 0 {
-            return Err(InferenceError::new(
-                "INVALID_CONTEXT_CONFIG",
-                "n_ctx must be > 0",
-            ));
+            return Err(InferenceError::Internal("n_ctx must be > 0".into()));
         }
         if self.n_batch == 0 {
-            return Err(InferenceError::new(
-                "INVALID_CONTEXT_CONFIG",
-                "n_batch must be > 0",
-            ));
+            return Err(InferenceError::Internal("n_batch must be > 0".into()));
         }
         if self.n_ubatch == 0 {
-            return Err(InferenceError::new(
-                "INVALID_CONTEXT_CONFIG",
-                "n_ubatch must be > 0",
-            ));
+            return Err(InferenceError::Internal("n_ubatch must be > 0".into()));
         }
         Ok(())
     }

@@ -578,20 +578,13 @@ async fn ai_chat(
         .get("n_ctx")
         .and_then(|v| v.as_u64())
         .unwrap_or(2048) as u32;
-    let chat_template = get_chat_template(&state, &model_id).await;
-    let prompt = crate::ai::chat_template::format_messages(messages, chat_template.as_deref());
-
-    if prompt.is_empty() {
-        return Err(error::bad_request("formatted prompt is empty"));
-    }
-
     if let Err(e) = crate::ai::chat_template::validate_context(messages, n_ctx) {
         return Err(error::bad_request(&e));
     }
 
     #[cfg(feature = "llama")]
     {
-        return ai_generate_real(state, body_value, &prompt, &model_id).await;
+        return ai_generate_shared(state, body_value, &model_id).await;
     }
 
     #[cfg(not(feature = "llama"))]
@@ -631,7 +624,7 @@ async fn ai_generate(
 
     #[cfg(feature = "llama")]
     {
-        return ai_generate_real(state, body_value, &prompt, &model_id).await;
+        return ai_generate_shared(state, body_value, &model_id).await;
     }
 
     #[cfg(not(feature = "llama"))]
@@ -644,13 +637,15 @@ async fn ai_generate(
     }
 }
 
+/// Run inference through the shared pipeline for HTTP endpoints.
+/// Extracts sampling params from the JSON body and executes via the Scheduler.
 #[cfg(feature = "llama")]
-async fn ai_generate_real(
+async fn ai_generate_shared(
     state: AiState,
     body: Value,
-    prompt: &str,
     model_id: &str,
 ) -> Result<impl IntoResponse, AiError> {
+    let req = crate::ai::inference_request::InferenceRequest::from_value(&body);
     let pool = state.model_pool.read().await;
     let loaded = pool
         .get(model_id)
@@ -663,57 +658,41 @@ async fn ai_generate_real(
         })
         .ok_or_else(|| error::model_not_found(model_id))?;
 
-    let (pool_id, backend) = loaded;
-    let llama_model =
-        backend.ok_or_else(|| error::internal_error(format!("model {pool_id} has no backend")))?;
+    let (_pool_id, llama_model) = loaded;
+    let model = llama_model
+        .ok_or_else(|| error::internal_error("model has no llama backend".into()))?;
     drop(pool);
 
-    let n_ctx = body.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
-    let mut ctx_params = unsafe { llama::bindings::llama_context_default_params() };
-    ctx_params.n_ctx = n_ctx;
-
-    let mut ctx = llama_model
-        .create_context(ctx_params)
-        .map_err(error::internal_error)?;
-
-    let config = llama::GenerateConfig {
-        max_tokens: body
-            .get("max_tokens")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(512) as i32,
-        temperature: body
-            .get("temperature")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.7) as f32,
-        top_p: body.get("top_p").and_then(|v| v.as_f64()).unwrap_or(0.9) as f32,
-        repeat_penalty: body
-            .get("repeat_penalty")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.1) as f32,
-        frequency_penalty: body
-            .get("frequency_penalty")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32,
-        presence_penalty: body
-            .get("presence_penalty")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32,
-    };
-
-    let result = ctx
-        .generate(prompt, &config)
-        .map_err(error::internal_error)?;
-
-    Ok(ok_response(
-        "inference.generate",
-        json!({
-            "text": result.text,
-            "usage": {
-                "prompt_tokens": result.prompt_tokens,
-                "completion_tokens": result.completion_tokens
-            }
-        }),
-    ))
+    let backend = Arc::new(LlamaBackend::new(model));
+    if body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let result = crate::ai::scheduler::ImmediateScheduler::execute_sync_stream(&req, backend)
+            .await
+            .map_err(|e| error::internal_error(e.message()))?;
+        Ok(ok_response(
+            "inference.generate",
+            json!({
+                "text": result.text,
+                "usage": {
+                    "prompt_tokens": result.prompt_tokens,
+                    "completion_tokens": result.completion_tokens
+                }
+            }),
+        ))
+    } else {
+        let result = crate::ai::scheduler::ImmediateScheduler::execute_sync(&req, backend)
+            .await
+            .map_err(|e| error::internal_error(e.message()))?;
+        Ok(ok_response(
+            "inference.generate",
+            json!({
+                "text": result.text,
+                "usage": {
+                    "prompt_tokens": result.prompt_tokens,
+                    "completion_tokens": result.completion_tokens
+                }
+            }),
+        ))
+    }
 }
 
 async fn ai_complete(
@@ -723,27 +702,34 @@ async fn ai_complete(
     let body = body.ok_or_else(|| error::bad_request("body required"))?;
 
     let body_value = body.0.clone();
-    let prompt = body_value
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+
     let model_id = body_value
         .get("model_id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    if prompt.is_empty() {
-        return Err(error::bad_request("prompt is required"));
-    }
-    if model_id.is_empty() {
-        return Err(error::bad_request("model_id is required"));
-    }
+    // If no model_id provided, use the most recently loaded model
+    let model_id = if model_id.is_empty() {
+        let guard = state.model_pool.read().await;
+        let first = guard.list().first().cloned();
+        drop(guard);
+        let m = first.ok_or_else(|| {
+            error::bad_request("no model loaded and no model_id provided")
+        })?;
+        m["metadata"]["pool_id"]
+            .as_str()
+            .ok_or_else(|| {
+                error::bad_request("loaded model has no pool_id")
+            })?
+            .to_string()
+    } else {
+        model_id
+    };
 
     #[cfg(feature = "llama")]
     {
-        return ai_generate_real(state, body_value, &prompt, &model_id).await;
+        return ai_generate_shared(state, body_value, &model_id).await;
     }
 
     #[cfg(not(feature = "llama"))]
@@ -827,7 +813,8 @@ async fn ai_capabilities() -> impl IntoResponse {
         json!({
             "chat": cfg!(feature = "llama"),
             "completion": cfg!(feature = "llama"),
-            "fim": false,
+            "fim": cfg!(feature = "llama"),
+        "fim_streaming": cfg!(feature = "llama"),
             "embeddings": false,
             "tool_calling": false,
             "streaming": cfg!(feature = "llama"),
@@ -997,10 +984,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
 
     // Support both "prompt" (legacy) and "messages" (new)
     let prompt = params.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-    let messages: Option<Vec<Value>> = params
-        .get("messages")
-        .and_then(|v| v.as_array())
-        .cloned();
+    let messages: Option<Vec<Value>> = params.get("messages").and_then(|v| v.as_array()).cloned();
 
     let model_id = params
         .get("model_id")
@@ -1012,8 +996,14 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         .unwrap_or("")
         .to_string();
 
+    let mode = params
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("chat")
+        .to_string();
+
     // Resolve prompt from messages if provided
-    let resolved_prompt = if !prompt.is_empty() {
+    let resolved_prompt = if mode == "fim" || !prompt.is_empty() {
         prompt.to_string()
     } else if let Some(ref msgs) = messages {
         let chat_template = get_chat_template(&state, model_id).await;
@@ -1074,6 +1064,9 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
             .insert(session_id.clone(), cancel.clone());
     }
 
+    // FIM priority: FIM requests run at higher priority for responsive editor
+    let priority = if mode == "fim" { 10i32 } else { 0i32 };
+
     // Start generation
     let result = run_generation(
         &mut sender,
@@ -1084,6 +1077,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         model_id,
         cancel.clone(),
         session_state.clone(),
+        priority,
     )
     .await;
 
@@ -1138,6 +1132,7 @@ async fn run_generation(
     model_id: &str,
     cancel: Arc<AtomicBool>,
     session_state: Arc<RwLock<SessionState>>,
+    _priority: i32,
 ) -> Result<(), String> {
     let start_time = Instant::now();
 
@@ -1153,8 +1148,7 @@ async fn run_generation(
                 (pool_id, backend)
             });
         if let Some((pool_id, backend)) = found {
-            let backend =
-                backend.ok_or_else(|| format!("model {model_id} has no backend"))?;
+            let backend = backend.ok_or_else(|| format!("model {model_id} has no backend"))?;
             let m = pool.models.get_mut(&pool_id).unwrap();
             m.lifecycle.acquire().map_err(|e| format!("acquire: {e}"))?;
             (backend, pool_id)
@@ -1402,6 +1396,7 @@ async fn run_generation(
     _model_id: &str,
     _cancel: Arc<AtomicBool>,
     _session_state: Arc<RwLock<SessionState>>,
+    _priority: i32,
 ) -> Result<(), String> {
     let _ = (
         _receiver,
@@ -1411,6 +1406,7 @@ async fn run_generation(
         _model_id,
         _cancel,
         _session_state,
+        _priority,
     );
     let _ = sender
         .send(Message::Text(

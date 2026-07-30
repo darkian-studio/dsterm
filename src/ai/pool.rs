@@ -171,6 +171,21 @@ impl ModelLifecycle {
 // 4. Model Metadata (static, from GGUF)
 // ---------------------------------------------------------------------------
 
+/// Standalone metadata that survives runtime recreation.
+/// The pool caches this so metadata is still available after `unload`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelMetadata {
+    pub registry_id: String,
+    pub model_hash: String,
+    pub path: String,
+    pub architecture: String,
+    pub quantisation: String,
+    pub parameter_count: Option<f64>,
+    pub file_size: u64,
+    pub file_mtime: u64,
+    pub memory_estimate: MemoryBreakdown,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct LoadedModelMetadata {
     pub registry_id: String,
@@ -183,6 +198,40 @@ pub struct LoadedModelMetadata {
     pub file_size: u64,
     pub file_mtime: u64,
     pub memory_estimate: MemoryBreakdown,
+}
+
+impl LoadedModelMetadata {
+    /// Extract the standalone `ModelMetadata` portion.
+    /// This can be stored in the metadata cache for reuse after runtime is dropped.
+    pub fn to_model_metadata(&self) -> ModelMetadata {
+        ModelMetadata {
+            registry_id: self.registry_id.clone(),
+            model_hash: self.model_hash.clone(),
+            path: self.path.clone(),
+            architecture: self.architecture.clone(),
+            quantisation: self.quantisation.clone(),
+            parameter_count: self.parameter_count,
+            file_size: self.file_size,
+            file_mtime: self.file_mtime,
+            memory_estimate: self.memory_estimate.clone(),
+        }
+    }
+
+    /// Reconstruct from a cached `ModelMetadata` and a current pool_id.
+    pub fn from_model_metadata(meta: &ModelMetadata, pool_id: String) -> Self {
+        Self {
+            registry_id: meta.registry_id.clone(),
+            pool_id,
+            model_hash: meta.model_hash.clone(),
+            path: meta.path.clone(),
+            architecture: meta.architecture.clone(),
+            quantisation: meta.quantisation.clone(),
+            parameter_count: meta.parameter_count,
+            file_size: meta.file_size,
+            file_mtime: meta.file_mtime,
+            memory_estimate: meta.memory_estimate.clone(),
+        }
+    }
 }
 
 fn compute_model_hash(meta: &Value) -> String {
@@ -406,6 +455,10 @@ pub struct ModelPoolInner {
     load_failures: u64,
     next_pool_id: u64,
     file_cache: HashMap<String, FileInfo>,
+    /// Metadata cache that survives runtime recreation.
+    /// When a model is fully unloaded its metadata is cached here
+    /// so that `ModelMetadata` is still available for reloads or queries.
+    metadata_cache: HashMap<String, ModelMetadata>,
 }
 
 impl ModelPoolInner {
@@ -420,6 +473,7 @@ impl ModelPoolInner {
             load_failures: 0,
             next_pool_id: 1,
             file_cache: HashMap::new(),
+            metadata_cache: HashMap::new(),
         }
     }
 
@@ -604,15 +658,15 @@ impl ModelPoolInner {
     }
 
     pub fn unload(&mut self, pool_id: &str) -> Result<bool, String> {
-        let (fully_released, new_ref, registry_id) = {
+        let (fully_released, new_ref, meta_cached) = {
             let model = self
                 .models
                 .get_mut(pool_id)
                 .ok_or_else(|| format!("Model not loaded: {pool_id}"))?;
             let fully_released = model.lifecycle.release()?;
             let new_ref = model.lifecycle.ref_count;
-            let registry_id = model.metadata.registry_id.clone();
-            (fully_released, new_ref, registry_id)
+            let meta_cached = model.metadata.to_model_metadata();
+            (fully_released, new_ref, meta_cached)
         };
 
         self.emit(PoolEvent::RefDecremented {
@@ -626,16 +680,48 @@ impl ModelPoolInner {
                 from: LifecycleState::Loaded,
                 to: LifecycleState::Unloading,
             });
+            // Cache metadata before removing the model entry.
+            // This ensures ModelMetadata survives runtime destruction.
+            self.metadata_cache
+                .insert(meta_cached.registry_id.clone(), meta_cached);
             self.models.remove(pool_id);
             self.emit(PoolEvent::ModelUnloaded {
                 pool_id: pool_id.to_string(),
-                registry_id,
+                registry_id: String::new(),
                 ref_count: 0,
             });
         }
 
         self.consistency_ok = true;
         Ok(fully_released)
+    }
+
+    /// Reload the runtime for an already-loaded model.
+    /// This destroys and recreates the llama.cpp backend without touching metadata.
+    /// Useful for runtime recovery without re-inspection.
+    pub fn reload_runtime(&mut self, pool_id: &str) -> Result<(), String> {
+        let model = self
+            .models
+            .get_mut(pool_id)
+            .ok_or_else(|| format!("Model not loaded: {pool_id}"))?;
+
+        let path = &model.metadata.path;
+        #[cfg(feature = "llama")]
+        {
+            let new_rt = match super::llama::LlamaModel::load(path) {
+                Ok(m) => RuntimeHandle {
+                    model: Some(Arc::new(m)),
+                },
+                Err(e) => return Err(format!("Failed to reload runtime: {e}")),
+            };
+            model.runtime = Some(new_rt);
+        }
+        #[cfg(not(feature = "llama"))]
+        {
+            let _ = path;
+            model.runtime = Some(RuntimeHandle {});
+        }
+        Ok(())
     }
 
     pub fn get(&self, pool_id: &str) -> Option<&LoadedModel> {
