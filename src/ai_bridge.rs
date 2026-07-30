@@ -1246,14 +1246,16 @@ async fn run_generation(
 
     let prompt_owned = prompt.to_string();
 
-    let join_handle = tokio::task::spawn_blocking(move || {
-        backend.generate_streaming(
-            &prompt_owned,
-            context_config,
-            sampling_config,
-            max_tokens,
-            sink,
-        )
+    let join_handle = tokio::spawn(async move {
+        backend
+            .generate_streaming(
+                &prompt_owned,
+                context_config,
+                sampling_config,
+                max_tokens,
+                sink,
+            )
+            .await
     });
 
     drop(tx);

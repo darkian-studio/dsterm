@@ -2,13 +2,13 @@
 
 ## Build / tooling rules
 
-- **On this machine (Termux/Android) `cargo build` / `cargo check` / `cargo test` /
-  `cargo clippy` hang indefinitely.** Only `cargo fmt` is safe.
+- **Never run any `cargo` commands except `cargo fmt`.**
   - Allowed: `cargo fmt`
-  - Forbidden (hangs): `cargo build`, `cargo check`, `cargo test`,
-    `cargo run`, `cargo clippy`, `cargo install`, etc.
-- On a normal desktop or CI runner these commands work fine.
-  Use CI to catch compilation errors — it runs `cargo clippy --all-targets
-  --all-features -- -D warnings` and `cargo test` on every push.
-- Verify changes by reading the code and reasoning about correctness.
-  Push to CI to confirm it compiles.
+  - Forbidden: `cargo build`, `cargo check`, `cargo test`, `cargo run`,
+    `cargo clippy`, `cargo install`, etc. Do not start these, and if one is
+    somehow running, terminate it immediately.
+- Verify changes by reading the code and reasoning about correctness, not by
+  compiling or executing the crate.
+
+> **Note:** The restriction above applies only on Windows — dsterm only compiles
+> on Linux. On a Linux machine you can run `cargo build`/`check`/etc. normally.
