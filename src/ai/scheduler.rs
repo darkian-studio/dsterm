@@ -5,28 +5,11 @@ use crate::ai::generation_handle::{GenerationHandle, GenerationHandleRef};
 use crate::ai::inference_error::InferenceError;
 use crate::ai::inference_request::InferenceRequest;
 
-pub type SchedulerResult<T> = Result<T, InferenceError>;
-
-#[async_trait::async_trait]
-pub trait Scheduler: Send + Sync {
-    async fn submit(
-        &self,
-        request: InferenceRequest,
-        backend: Arc<dyn super::backend_trait::InferenceBackend>,
-    ) -> SchedulerResult<GenerationHandleRef>;
-    async fn cancel(&self, id: &str) -> SchedulerResult<()>;
-    fn status(&self, id: &str) -> Option<GenerationHandleRef>;
-}
-
-pub struct ImmediateScheduler {
-    handles: tokio::sync::RwLock<std::collections::HashMap<String, GenerationHandleRef>>,
-}
+pub struct ImmediateScheduler;
 
 impl ImmediateScheduler {
     pub fn new() -> Self {
-        Self {
-            handles: tokio::sync::RwLock::new(std::collections::HashMap::new()),
-        }
+        Self
     }
 
     /// Run a generation synchronously (blocking) and return the output.
@@ -34,7 +17,7 @@ impl ImmediateScheduler {
     pub async fn execute_sync(
         request: &InferenceRequest,
         backend: Arc<dyn InferenceBackend>,
-    ) -> SchedulerResult<GenerateOutput> {
+    ) -> Result<GenerateOutput, InferenceError> {
         let config = request.to_context_config();
         let sampling = request.to_sampling_config();
         let prompt = request.resolved_prompt(None);
@@ -76,7 +59,7 @@ impl ImmediateScheduler {
     pub async fn execute_sync_stream(
         request: &InferenceRequest,
         backend: Arc<dyn InferenceBackend>,
-    ) -> SchedulerResult<GenerateOutput> {
+    ) -> Result<GenerateOutput, InferenceError> {
         let config = request.to_context_config();
         let sampling = request.to_sampling_config();
         let prompt = request.resolved_prompt(None);
@@ -114,43 +97,6 @@ impl ImmediateScheduler {
             }
         }
     }
-
-    async fn execute_generation(
-        handle: GenerationHandleRef,
-        request: InferenceRequest,
-        backend: Arc<dyn super::backend_trait::InferenceBackend>,
-    ) -> SchedulerResult<()> {
-        handle.set_generating();
-        let config = request.to_context_config();
-        let sampling = request.to_sampling_config();
-        let prompt = request.resolved_prompt(None);
-        let _ctx = backend.create_context(&config)?;
-
-        let result = if request.stream {
-            let cancel_flag = handle.cancel_flag();
-            let handle_clone = handle.clone();
-            let sink = Box::new(crate::ai::scheduler::ImmediateSink {
-                handle: handle_clone,
-                cancel: cancel_flag,
-            });
-            backend
-                .generate_streaming(&prompt, config, sampling, request.max_tokens, sink)
-                .await
-        } else {
-            backend
-                .generate(&prompt, config, sampling, request.max_tokens)
-                .await
-        };
-
-        match result {
-            Ok(_) => handle.set_completed(),
-            Err(e) => {
-                handle.set_failed();
-                return Err(e);
-            }
-        }
-        Ok(())
-    }
 }
 
 pub struct ImmediateSink {
@@ -174,51 +120,5 @@ impl super::backend_trait::TokenSink for ImmediateSink {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-#[async_trait::async_trait]
-impl Scheduler for ImmediateScheduler {
-    async fn submit(
-        &self,
-        request: InferenceRequest,
-        backend: Arc<dyn super::backend_trait::InferenceBackend>,
-    ) -> SchedulerResult<GenerationHandleRef> {
-        let id = uuid::Uuid::new_v4().to_string();
-        let handle = Arc::new(GenerationHandle::new(id.clone(), request.model_id.clone()));
-
-        self.handles
-            .write()
-            .await
-            .insert(id.clone(), handle.clone());
-
-        let h = handle.clone();
-        let req = request;
-        let bk = backend;
-        tokio::spawn(async move {
-            let _ = Self::execute_generation(h, req, bk).await;
-        });
-
-        Ok(handle)
-    }
-
-    async fn cancel(&self, id: &str) -> SchedulerResult<()> {
-        let handle = {
-            let guard = self.handles.read().await;
-            guard.get(id).cloned()
-        };
-        if let Some(h) = handle {
-            h.cancel();
-            Ok(())
-        } else {
-            Err(InferenceError::Internal(format!(
-                "generation not found: {id}"
-            )))
-        }
-    }
-
-    fn status(&self, id: &str) -> Option<GenerationHandleRef> {
-        let guard = self.handles.try_read().ok()?;
-        guard.get(id).cloned()
     }
 }

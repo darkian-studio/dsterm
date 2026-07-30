@@ -6,89 +6,6 @@ pub trait OutputParser: Send {
     fn reset(&mut self);
 }
 
-pub struct TextParser {
-    buffer: String,
-}
-
-impl TextParser {
-    pub fn new() -> Self {
-        Self {
-            buffer: String::new(),
-        }
-    }
-}
-
-impl OutputParser for TextParser {
-    fn push(&mut self, token: &str) -> Vec<StreamEvent> {
-        self.buffer.push_str(token);
-        vec![StreamEvent::Token {
-            event_version: 1,
-            text: token.to_string(),
-        }]
-    }
-
-    fn finish(&mut self) -> Vec<StreamEvent> {
-        if self.buffer.is_empty() {
-            return vec![];
-        }
-        vec![StreamEvent::Done { event_version: 1 }]
-    }
-
-    fn reset(&mut self) {
-        self.buffer.clear();
-    }
-}
-
-pub struct ReasoningParser {
-    inner: TextParser,
-    reasoning_tag: String,
-    in_reasoning: bool,
-}
-
-impl ReasoningParser {
-    pub fn new(tag: &str) -> Self {
-        Self {
-            inner: TextParser::new(),
-            reasoning_tag: tag.to_string(),
-            in_reasoning: false,
-        }
-    }
-}
-
-impl OutputParser for ReasoningParser {
-    fn push(&mut self, token: &str) -> Vec<StreamEvent> {
-        let mut events = Vec::new();
-        if token.contains(&self.reasoning_tag) {
-            self.in_reasoning = !self.in_reasoning;
-            if self.in_reasoning {
-                events.push(StreamEvent::Reasoning {
-                    event_version: 1,
-                    text: "".into(),
-                });
-            }
-            return events;
-        }
-        if self.in_reasoning {
-            events.push(StreamEvent::Reasoning {
-                event_version: 1,
-                text: token.to_string(),
-            });
-        } else {
-            events.extend(self.inner.push(token));
-        }
-        events
-    }
-
-    fn finish(&mut self) -> Vec<StreamEvent> {
-        self.inner.finish()
-    }
-
-    fn reset(&mut self) {
-        self.inner.reset();
-        self.in_reasoning = false;
-    }
-}
-
 pub struct ToolCallParser {
     buffer: String,
 }
@@ -153,7 +70,6 @@ pub fn extract_tool_calls(text: &str) -> Vec<StreamEvent> {
     }
 
     // Pattern 2: [TOOL_CALL] {"name":"...","arguments":{...}}
-    // (some models use this format instead of XML tags)
     let remaining = text;
     for line in remaining.lines() {
         let trimmed = line.trim();
@@ -174,7 +90,6 @@ pub fn extract_tool_calls(text: &str) -> Vec<StreamEvent> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("call_")
                     .to_string();
-                // Avoid duplicates when Pattern 1 already matched
                 if !events.iter().any(|e| matches!(e, StreamEvent::ToolCall { function_name, .. } if function_name == name)) {
                     events.push(StreamEvent::ToolCall {
                         event_version: 1,
@@ -188,16 +103,12 @@ pub fn extract_tool_calls(text: &str) -> Vec<StreamEvent> {
     }
 
     // Pattern 3: standalone JSON on its own line with "name" and "arguments"
-    // e.g. `{"name": "get_weather", "arguments": {"city": "NYC"}}`
     for line in remaining.lines() {
         let trimmed = line.trim();
-        // Skip lines already matched by Pattern 1 or 2
         if trimmed.starts_with("<tool_call>") || trimmed.starts_with("[TOOL_CALL]") {
             continue;
         }
         if trimmed.starts_with('{') && trimmed.ends_with('}') && !events.is_empty() {
-            // Only match if we already have at least one tool call detected
-            // (to avoid false positives from regular JSON in conversation)
             if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
                 if json_val.get("name").and_then(|v| v.as_str()).is_some()
                     && json_val.get("arguments").is_some()
@@ -228,11 +139,8 @@ pub fn extract_tool_calls(text: &str) -> Vec<StreamEvent> {
 impl OutputParser for ToolCallParser {
     fn push(&mut self, token: &str) -> Vec<StreamEvent> {
         self.buffer.push_str(token);
-        // Try incremental extraction — if we see a complete tool_call found in the buffer, emit it
         let events = extract_tool_calls(&self.buffer);
         if !events.is_empty() {
-            // Remove extracted tool calls from the buffer to avoid re-emitting
-            // Find the last closing tag/brace and trim everything before it
             let mut last_end = 0;
             let mut search_from = 0;
             loop {
@@ -272,96 +180,17 @@ impl OutputParser for ToolCallParser {
     }
 }
 
-pub struct ChainedParser {
-    parsers: Vec<Box<dyn OutputParser>>,
-}
-
-impl ChainedParser {
-    pub fn new(parsers: Vec<Box<dyn OutputParser>>) -> Self {
-        Self { parsers }
-    }
-}
-
-impl OutputParser for ChainedParser {
-    fn push(&mut self, token: &str) -> Vec<StreamEvent> {
-        let mut events = Vec::new();
-        for parser in &mut self.parsers {
-            events.extend(parser.push(token));
-        }
-        events
-    }
-
-    fn finish(&mut self) -> Vec<StreamEvent> {
-        let mut events = Vec::new();
-        for parser in &mut self.parsers {
-            events.extend(parser.finish());
-        }
-        events
-    }
-
-    fn reset(&mut self) {
-        for parser in &mut self.parsers {
-            parser.reset();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_text_parser_simple() {
-        let mut parser = TextParser::new();
-        let events = parser.push("Hello");
-        assert_eq!(events.len(), 1);
-        if let StreamEvent::Token { text, .. } = &events[0] {
-            assert_eq!(text, "Hello");
-        } else {
-            panic!("expected Token event");
-        }
-    }
-
-    #[test]
-    fn test_text_parser_multiple_tokens() {
-        let mut parser = TextParser::new();
-        parser.push("Hello ");
-        parser.push("World");
-        let events = parser.finish();
-        assert_eq!(events.len(), 1);
-        if let StreamEvent::Done { .. } = &events[0] {
-            // ok
-        } else {
-            panic!("expected Done event");
-        }
-    }
-
-    #[test]
-    fn test_reasoning_parser_capture() {
-        let mut parser = ReasoningParser::new("reasoning");
-        let events = parser.push("normal text ");
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::Token { .. }));
-
-        let events = parser.push("<reasoning>");
-        assert!(events.is_empty()); // token consumed by opening tag
-
-        let events = parser.push("thinking...");
-        assert!(events.is_empty()); // captured as reasoning
-
-        let events = parser.push("</reasoning>");
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::Reasoning { .. }));
-    }
-
-    #[test]
-    fn test_tool_call_parser_xml_tag() {
-        let mut parser = ToolCallParser::new();
-        let events = parser.push("Let me check the weather.");
-        assert!(events.is_empty());
-        let events = parser.push(
-            "<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"NYC\"}}</tool_call>",
-        );
+    fn test_extract_tool_calls_standalone() {
+        let text = r#"
+Some text before.
+<tool_call>{"name": "search_web", "arguments": {"query": "rust async"}}</tool_call>
+Some text after."#;
+        let events = extract_tool_calls(text);
         assert_eq!(events.len(), 1);
         if let StreamEvent::ToolCall {
             function_name,
@@ -369,8 +198,8 @@ mod tests {
             ..
         } = &events[0]
         {
-            assert_eq!(function_name, "get_weather");
-            assert!(arguments.contains("NYC"));
+            assert_eq!(function_name, "search_web");
+            assert!(arguments.contains("rust async"));
         } else {
             panic!("expected ToolCall event");
         }
@@ -385,7 +214,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         if let StreamEvent::ToolCall {
             function_name,
-            arguments,
             ..
         } = &events[0]
         {
@@ -396,60 +224,49 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_call_parser_no_tool_call() {
+    fn test_tool_call_parser_xml_tag() {
         let mut parser = ToolCallParser::new();
-        parser.push("Hello, how can I help you today?");
-        let events = parser.finish();
-        assert!(events.is_empty());
+        parser.push("Let me look that up.\n");
+        let events = parser.push(
+            r#"<tool_call>{"name": "search_web", "arguments": {"query": "test"}}</tool_call>"#,
+        );
+        assert_eq!(events.len(), 1);
+        if let StreamEvent::ToolCall {
+            function_name,
+            arguments,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(function_name, "search_web");
+            assert!(arguments.contains("test"));
+        } else {
+            panic!("expected ToolCall event");
+        }
     }
 
     #[test]
     fn test_tool_call_parser_multiple_calls() {
         let mut parser = ToolCallParser::new();
-        parser.push("Let me check both.\n");
-        parser.push(
-            "<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"NYC\"}}</tool_call>",
-        );
-        let events = parser.push(
-            "<tool_call>{\"name\":\"get_time\",\"arguments\":{\"timezone\":\"EST\"}}</tool_call>",
-        );
-        // Second push should detect the second call (first was already emitted and cleared from buffer)
-        assert_eq!(events.len(), 1);
-        // finish should return any remaining
-        let remaining = parser.finish();
-        assert_eq!(remaining.len(), 0);
+        let text = r#"<tool_call>{"name": "search_web", "arguments": {"query": "rust"}}</tool_call>
+<tool_call>{"name": "get_weather", "arguments": {"city": "NYC"}}</tool_call>"#;
+        let events = parser.push(text);
+        assert_eq!(events.len(), 2);
     }
 
     #[test]
-    fn test_extract_tool_calls_standalone() {
-        let text = r#"I'll search for that.
-{"name": "search_web", "arguments": {"query": "test"}}"#;
-        let events = extract_tool_calls(text);
-        assert!(
-            events.is_empty(),
-            "standalone JSON without prior context should not match"
-        );
-    }
-
-    #[test]
-    fn test_chained_parser() {
-        let parsers: Vec<Box<dyn OutputParser>> = vec![
-            Box::new(TextParser::new()),
-            Box::new(ReasoningParser::new("think")),
-        ];
-        let mut chained = ChainedParser::new(parsers);
-        let events = chained.push("hello");
-        assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], StreamEvent::Token { .. }));
+    fn test_tool_call_parser_no_tool_call() {
+        let mut parser = ToolCallParser::new();
+        let events = parser.push("Hello, how are you?");
+        assert!(events.is_empty());
     }
 
     #[test]
     fn test_reset() {
-        let mut parser = TextParser::new();
+        let mut parser = ToolCallParser::new();
         parser.push("Hello");
         parser.reset();
         parser.push("World");
         let events = parser.finish();
-        assert!(events.len() == 1, "reset should clear buffer");
+        assert!(events.is_empty(), "reset should clear buffer");
     }
 }

@@ -5,17 +5,12 @@ pub enum InferenceError {
     ModelNotLoaded(String),
     ModelBusy(String),
     Cancelled,
-    OutOfMemory(String),
-    InvalidPrompt(String),
-    InvalidTemplate(String),
-    InvalidSampling(String),
     BackendUnavailable(String),
     UnsupportedCapability(String),
     ContextOverflow { ctx: usize, needed: usize },
     ContextCreationFailed(String),
     TokenizationFailed(String),
     DecodeFailed(String),
-    SamplingFailed(String),
     Timeout { operation: String, secs: u64 },
     Internal(String),
 }
@@ -26,17 +21,12 @@ impl InferenceError {
             Self::ModelNotLoaded(_) => "MODEL_NOT_LOADED",
             Self::ModelBusy(_) => "MODEL_BUSY",
             Self::Cancelled => "CANCELLED",
-            Self::OutOfMemory(_) => "OUT_OF_MEMORY",
-            Self::InvalidPrompt(_) => "INVALID_PROMPT",
-            Self::InvalidTemplate(_) => "INVALID_TEMPLATE",
-            Self::InvalidSampling(_) => "INVALID_SAMPLING",
             Self::BackendUnavailable(_) => "BACKEND_UNAVAILABLE",
             Self::UnsupportedCapability(_) => "UNSUPPORTED_CAPABILITY",
             Self::ContextOverflow { .. } => "CONTEXT_OVERFLOW",
             Self::ContextCreationFailed(_) => "CONTEXT_CREATION_FAILED",
             Self::TokenizationFailed(_) => "TOKENIZATION_FAILED",
             Self::DecodeFailed(_) => "DECODE_FAILED",
-            Self::SamplingFailed(_) => "SAMPLING_FAILED",
             Self::Timeout { .. } => "TIMEOUT",
             Self::Internal(_) => "INTERNAL_ERROR",
         }
@@ -47,10 +37,6 @@ impl InferenceError {
             Self::ModelNotLoaded(id) => format!("model not loaded: {id}"),
             Self::ModelBusy(id) => format!("model busy: {id}"),
             Self::Cancelled => "generation cancelled".into(),
-            Self::OutOfMemory(detail) => format!("out of memory: {detail}"),
-            Self::InvalidPrompt(detail) => format!("invalid prompt: {detail}"),
-            Self::InvalidTemplate(detail) => format!("invalid template: {detail}"),
-            Self::InvalidSampling(detail) => format!("invalid sampling config: {detail}"),
             Self::BackendUnavailable(detail) => format!("backend unavailable: {detail}"),
             Self::UnsupportedCapability(cap) => format!("unsupported capability: {cap}"),
             Self::ContextOverflow { ctx, needed } => {
@@ -59,7 +45,6 @@ impl InferenceError {
             Self::ContextCreationFailed(detail) => format!("context creation failed: {detail}"),
             Self::TokenizationFailed(detail) => format!("tokenization failed: {detail}"),
             Self::DecodeFailed(detail) => format!("decoding failed: {detail}"),
-            Self::SamplingFailed(detail) => format!("sampling failed: {detail}"),
             Self::Timeout { operation, secs } => {
                 format!("{operation} timed out after {secs}s")
             }
@@ -98,10 +83,7 @@ impl InferenceError {
     pub fn recoverable(&self) -> bool {
         matches!(
             self,
-            Self::Cancelled
-                | Self::ModelBusy(_)
-                | Self::Timeout { .. }
-                | Self::BackendUnavailable(_)
+            Self::Cancelled | Self::ModelBusy(_) | Self::Timeout { .. } | Self::BackendUnavailable(_)
         )
     }
 }

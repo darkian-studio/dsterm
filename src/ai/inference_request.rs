@@ -234,34 +234,6 @@ impl InferenceRequest {
     }
 
     /// Build from a chat endpoint body that always contains `messages`.
-    pub fn from_chat_body(body: &Value) -> Self {
-        let mut req = Self::from_value(body);
-        req.mode = InferenceMode::Chat;
-        if body
-            .get("messages")
-            .and_then(|v| v.as_array())
-            .map_or(true, |a| a.is_empty())
-        {
-            let text = body.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-            if !text.is_empty() {
-                req.messages = vec![InferenceMessage {
-                    role: "user".into(),
-                    content: text.to_string(),
-                    tool_call_id: None,
-                    tool_calls: None,
-                }];
-            }
-        }
-        req
-    }
-
-    /// Build from a completion body (flat prompt or prefix/suffix).
-    pub fn from_complete_body(body: &Value) -> Self {
-        let mut req = Self::from_value(body);
-        req.mode = InferenceMode::Completion;
-        req
-    }
-
     pub fn resolved_prompt(&self, template: Option<&str>) -> String {
         self.resolved_prompt_fim(template, None)
     }
@@ -391,6 +363,7 @@ Do not add any other text before or after the tool call."#,
             offload_kqv: false,
             rope_scaling_type: 0,
             no_kv_offload: false,
+            pooling_type: 0,
         }
     }
 }
@@ -509,22 +482,4 @@ mod tests {
         assert_eq!(cc.n_batch, 256);
     }
 
-    #[test]
-    fn test_from_chat_body() {
-        let body = json!({
-            "messages": [{"role": "user", "content": "hello"}],
-            "temperature": 0.3,
-        });
-        let req = InferenceRequest::from_chat_body(&body);
-        assert_eq!(req.messages.len(), 1);
-        assert!((req.temperature - 0.3).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_from_chat_body_fallback_prompt() {
-        let body = json!({"prompt": "bare text"});
-        let req = InferenceRequest::from_chat_body(&body);
-        assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].role, "user");
-    }
 }

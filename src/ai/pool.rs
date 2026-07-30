@@ -1000,7 +1000,7 @@ mod tests {
                 overhead_bytes: 0,
                 total_bytes: mem,
             },
-            capabilities: super::gguf::ModelCapabilities {
+            capabilities: crate::ai::gguf::ModelCapabilities {
                 chat: true,
                 completion: true,
                 fim: false,
