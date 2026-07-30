@@ -68,6 +68,10 @@ pub struct InferenceRequest {
     pub n_threads: i32,
     #[serde(default)]
     pub tools: Vec<ToolCallData>,
+    /// Model architecture (e.g. "llama", "qwen2", "deepseek2").
+    /// Used for template selection. Set by the backend after model resolution.
+    #[serde(default)]
+    pub architecture: String,
     #[serde(default)]
     pub metadata: Value,
     #[serde(default)]
@@ -168,6 +172,7 @@ impl InferenceRequest {
             n_batch: body.get("n_batch").and_then(|v| v.as_u64()).unwrap_or(512) as u32,
             n_threads: body.get("n_threads").and_then(|v| v.as_i64()).unwrap_or(-1) as i32,
             tools: Vec::new(),
+            architecture: body.get("architecture").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             metadata: json!({}),
             stream: body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
         }
@@ -199,12 +204,22 @@ impl InferenceRequest {
     }
 
     pub fn resolved_prompt(&self, template: Option<&str>) -> String {
+        self.resolved_prompt_fim(template, None)
+    }
+
+    pub fn resolved_prompt_fim(&self, template: Option<&str>, arch: Option<&str>) -> String {
         match self.mode {
             InferenceMode::Fim => {
                 if !self.prompt.is_empty() {
                     self.prompt.clone()
                 } else {
-                    format!("{}<FIM>{}", self.prefix, self.suffix)
+                    let a = arch.unwrap_or(&self.architecture);
+                    let fim_tmpl = if a.is_empty() {
+                        Box::new(super::fim_template::CodestralFimTemplate) as Box<dyn super::fim_template::FimTemplate>
+                    } else {
+                        super::fim_template::for_architecture(a)
+                    };
+                    fim_tmpl.build_prompt(&self.prefix, &self.suffix)
                 }
             }
             InferenceMode::Completion => {

@@ -1,6 +1,7 @@
 pub mod backend_trait;
 pub mod capability_registry;
 pub mod chat_template;
+pub mod fim_template;
 pub mod context_config;
 pub mod context_manager;
 pub mod error;

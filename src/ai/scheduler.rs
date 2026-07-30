@@ -46,7 +46,8 @@ impl ImmediateScheduler {
             request.model_id.clone(),
         ));
 
-        handle.set_running();
+        config.validate()?;
+        handle.set_allocating_context();
 
         let cancel_flag = handle.cancel_flag();
         let _sink = Box::new(ImmediateSink {
@@ -54,6 +55,7 @@ impl ImmediateScheduler {
             cancel: cancel_flag,
         });
 
+        handle.set_generating();
         let result = backend
             .generate(&prompt, config, sampling, request.max_tokens)
             .await;
@@ -86,7 +88,7 @@ impl ImmediateScheduler {
             request.model_id.clone(),
         ));
 
-        handle.set_running();
+        handle.set_allocating_context();
 
         let cancel_flag = handle.cancel_flag();
         let sink = Box::new(ImmediateSink {
@@ -94,9 +96,12 @@ impl ImmediateScheduler {
             cancel: cancel_flag.clone(),
         });
 
+        handle.set_generating();
         let result = backend
             .generate_streaming(&prompt, config, sampling, request.max_tokens, sink)
             .await;
+
+        handle.set_streaming();
 
         match result {
             Ok(output) => {
@@ -115,7 +120,7 @@ impl ImmediateScheduler {
         request: InferenceRequest,
         backend: Arc<dyn super::backend_trait::InferenceBackend>,
     ) -> SchedulerResult<()> {
-        handle.set_running();
+        handle.set_generating();
         let config = request.to_context_config();
         let sampling = request.to_sampling_config();
         let prompt = request.resolved_prompt(None);

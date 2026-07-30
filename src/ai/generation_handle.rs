@@ -1,13 +1,17 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerationStatus {
     Pending,
-    Running,
-    Cancelling,
+    Queued,
+    LoadingModel,
+    AllocatingContext,
+    Generating,
+    Streaming,
     Completed,
+    Cancelled,
     Failed,
 }
 
@@ -16,7 +20,10 @@ pub struct GenerationHandle {
     cancel_flag: Arc<AtomicBool>,
     status: Arc<std::sync::Mutex<GenerationStatus>>,
     start_time: Instant,
+    first_token_latency_ms: AtomicU64,
     tokens_generated: Arc<AtomicU32>,
+    prompt_tokens: AtomicU32,
+    context_create_latency_ms: AtomicU64,
     model_id: String,
 }
 
@@ -27,7 +34,10 @@ impl GenerationHandle {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             status: Arc::new(std::sync::Mutex::new(GenerationStatus::Pending)),
             start_time: Instant::now(),
+            first_token_latency_ms: AtomicU64::new(0),
             tokens_generated: Arc::new(AtomicU32::new(0)),
+            prompt_tokens: AtomicU32::new(0),
+            context_create_latency_ms: AtomicU64::new(0),
             model_id,
         }
     }
@@ -43,8 +53,10 @@ impl GenerationHandle {
     pub fn cancel(&self) {
         self.cancel_flag.store(true, Ordering::SeqCst);
         if let Ok(mut status) = self.status.lock() {
-            if *status == GenerationStatus::Running {
-                *status = GenerationStatus::Cancelling;
+            if *status == GenerationStatus::Generating
+                || *status == GenerationStatus::Streaming
+            {
+                *status = GenerationStatus::Cancelled;
             }
         }
     }
@@ -53,24 +65,43 @@ impl GenerationHandle {
         self.cancel_flag.load(Ordering::Relaxed)
     }
 
-    pub fn set_running(&self) {
+    pub fn set_status(&self, new_status: GenerationStatus) {
         if let Ok(mut status) = self.status.lock() {
-            if *status == GenerationStatus::Pending {
-                *status = GenerationStatus::Running;
-            }
+            *status = new_status;
         }
+    }
+
+    pub fn set_queued(&self) {
+        self.set_status(GenerationStatus::Queued);
+    }
+
+    pub fn set_loading_model(&self) {
+        self.set_status(GenerationStatus::LoadingModel);
+    }
+
+    pub fn set_allocating_context(&self) {
+        self.set_status(GenerationStatus::AllocatingContext);
+    }
+
+    pub fn set_generating(&self) {
+        self.set_status(GenerationStatus::Generating);
+    }
+
+    pub fn set_streaming(&self) {
+        self.set_status(GenerationStatus::Streaming);
     }
 
     pub fn set_completed(&self) {
-        if let Ok(mut status) = self.status.lock() {
-            *status = GenerationStatus::Completed;
-        }
+        self.set_status(GenerationStatus::Completed);
     }
 
     pub fn set_failed(&self) {
-        if let Ok(mut status) = self.status.lock() {
-            *status = GenerationStatus::Failed;
-        }
+        self.set_status(GenerationStatus::Failed);
+    }
+
+    pub fn set_cancelled(&self) {
+        self.cancel_flag.store(true, Ordering::SeqCst);
+        self.set_status(GenerationStatus::Cancelled);
     }
 
     pub fn status(&self) -> GenerationStatus {
@@ -78,6 +109,9 @@ impl GenerationHandle {
     }
 
     pub fn record_token(&self) {
+        self.first_token_latency_ms
+            .compare_exchange(0, self.start_time.elapsed().as_millis() as u64, Ordering::Relaxed, Ordering::Relaxed)
+            .ok();
         self.tokens_generated.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -85,8 +119,51 @@ impl GenerationHandle {
         self.tokens_generated.load(Ordering::Relaxed)
     }
 
+    pub fn set_prompt_tokens(&self, n: u32) {
+        self.prompt_tokens.store(n, Ordering::Relaxed);
+    }
+
+    pub fn prompt_tokens(&self) -> u32 {
+        self.prompt_tokens.load(Ordering::Relaxed)
+    }
+
+    pub fn set_context_created(&self) {
+        self.context_create_latency_ms
+            .store(self.start_time.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    pub fn first_token_ms(&self) -> u64 {
+        self.first_token_latency_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn context_create_ms(&self) -> u64 {
+        self.context_create_latency_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn tokens_per_second(&self) -> f64 {
+        let elapsed = self.elapsed_secs();
+        if elapsed > 0.0 {
+            self.tokens_generated.load(Ordering::Relaxed) as f64 / elapsed
+        } else {
+            0.0
+        }
+    }
+
     pub fn elapsed_secs(&self) -> f64 {
         self.start_time.elapsed().as_secs_f64()
+    }
+
+    pub fn generation_stats(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "model_id": self.model_id,
+            "status": format!("{:?}", self.status()),
+            "prompt_tokens": self.prompt_tokens(),
+            "completion_tokens": self.tokens_generated(),
+            "tokens_per_second": self.tokens_per_second(),
+            "first_token_ms": self.first_token_ms(),
+            "elapsed_secs": self.elapsed_secs(),
+        })
     }
 
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
@@ -115,8 +192,8 @@ mod tests {
         let h = GenerationHandle::new("test-2".into(), "model-y".into());
         assert_eq!(h.status(), GenerationStatus::Pending);
 
-        h.set_running();
-        assert_eq!(h.status(), GenerationStatus::Running);
+        h.set_generating();
+        assert_eq!(h.status(), GenerationStatus::Generating);
 
         h.set_completed();
         assert_eq!(h.status(), GenerationStatus::Completed);
@@ -125,16 +202,16 @@ mod tests {
     #[test]
     fn test_cancel() {
         let h = GenerationHandle::new("test-3".into(), "model-z".into());
-        h.set_running();
+        h.set_generating();
         h.cancel();
         assert!(h.is_cancelled());
-        assert_eq!(h.status(), GenerationStatus::Cancelling);
+        assert_eq!(h.status(), GenerationStatus::Cancelled);
     }
 
     #[test]
     fn test_failed() {
         let h = GenerationHandle::new("test-4".into(), "model-w".into());
-        h.set_running();
+        h.set_generating();
         h.set_failed();
         assert_eq!(h.status(), GenerationStatus::Failed);
     }

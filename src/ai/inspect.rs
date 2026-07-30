@@ -77,7 +77,9 @@ pub fn metadata_to_json(meta: &GGUFMetadata) -> Value {
             "completion": capabilities.completion,
             "fim": capabilities.fim,
             "embeddings": capabilities.embeddings,
-            "tool_calling": capabilities.tool_calling
+            "tool_calling": capabilities.tool_calling,
+            "reasoning": capabilities.reasoning,
+            "vision": capabilities.vision
         },
         "tokenizer": {
             "tokenizer_model": meta.tokenizer_model.as_deref().unwrap_or("unknown"),

@@ -22,12 +22,18 @@ impl OutputParser for TextParser {
     fn push(&mut self, token: &str) -> Vec<StreamEvent> {
         self.buffer.push_str(token);
         vec![StreamEvent::Token {
+            event_version: 1,
             text: token.to_string(),
         }]
     }
 
     fn finish(&mut self) -> Vec<StreamEvent> {
-        vec![]
+        if self.buffer.is_empty() {
+            return vec![];
+        }
+        vec![StreamEvent::Done {
+            event_version: 1,
+        }]
     }
 
     fn reset(&mut self) {
@@ -58,6 +64,7 @@ impl OutputParser for ReasoningParser {
             self.in_reasoning = !self.in_reasoning;
             if self.in_reasoning {
                 events.push(StreamEvent::Reasoning {
+                    event_version: 1,
                     text: "".into(),
                 });
             }
@@ -65,6 +72,7 @@ impl OutputParser for ReasoningParser {
         }
         if self.in_reasoning {
             events.push(StreamEvent::Reasoning {
+                event_version: 1,
                 text: token.to_string(),
             });
         } else {
@@ -169,7 +177,7 @@ mod tests {
         parser.push("World");
         let events = parser.finish();
         assert_eq!(events.len(), 1);
-        if let StreamEvent::Done = &events[0] {
+        if let StreamEvent::Done { .. } = &events[0] {
             // ok
         } else {
             panic!("expected Done event");

@@ -645,7 +645,7 @@ async fn ai_generate_shared(
     body: Value,
     model_id: &str,
 ) -> Result<impl IntoResponse, AiError> {
-    let req = crate::ai::inference_request::InferenceRequest::from_value(&body);
+    let mut req = crate::ai::inference_request::InferenceRequest::from_value(&body);
     let pool = state.model_pool.read().await;
     let loaded = pool
         .get(model_id)
@@ -653,14 +653,16 @@ async fn ai_generate_shared(
         .map(|m| {
             (
                 m.metadata.pool_id.clone(),
+                m.metadata.architecture.clone(),
                 m.runtime.as_ref().and_then(|r| r.model.clone()),
             )
         })
         .ok_or_else(|| error::model_not_found(model_id))?;
 
-    let (_pool_id, llama_model) = loaded;
+    let (_pool_id, arch, llama_model) = loaded;
     let model = llama_model
         .ok_or_else(|| error::internal_error("model has no llama backend".into()))?;
+    req.architecture = arch;
     drop(pool);
 
     let backend = Arc::new(LlamaBackend::new(model));
@@ -982,10 +984,6 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         }
     };
 
-    // Support both "prompt" (legacy) and "messages" (new)
-    let prompt = params.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-    let messages: Option<Vec<Value>> = params.get("messages").and_then(|v| v.as_array()).cloned();
-
     let model_id = params
         .get("model_id")
         .and_then(|v| v.as_str())
@@ -1002,42 +1000,22 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         .unwrap_or("chat")
         .to_string();
 
-    // Resolve prompt from messages if provided
-    let resolved_prompt = if mode == "fim" || !prompt.is_empty() {
-        prompt.to_string()
-    } else if let Some(ref msgs) = messages {
-        let chat_template = get_chat_template(&state, model_id).await;
-        crate::ai::chat_template::format_messages(msgs, chat_template.as_deref())
-    } else {
-        String::new()
-    };
-
-    if resolved_prompt.is_empty() {
+    // Validate that prompt or messages are present (will be resolved by run_generation via InferenceRequest)
+    let has_prompt = params.get("prompt").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty());
+    let has_messages = params.get("messages").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty());
+    let has_prefix_suffix = params.get("prefix").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+        || params.get("suffix").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty());
+    if !has_prompt && !has_messages && !has_prefix_suffix {
         let _ = sender
             .send(Message::Text(
                 serde_json::to_string(&GenerationEvent::Error {
-                    message: "prompt or messages required".into(),
+                    message: "prompt, messages, or prefix/suffix required".into(),
                 })
                 .unwrap()
                 .into(),
             ))
             .await;
         return;
-    }
-
-    // Validate context if messages provided
-    if let Some(ref msgs) = messages {
-        let n_ctx = params.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
-        if let Err(e) = crate::ai::chat_template::validate_context(msgs, n_ctx) {
-            let _ = sender
-                .send(Message::Text(
-                    serde_json::to_string(&GenerationEvent::Error { message: e })
-                        .unwrap()
-                        .into(),
-                ))
-                .await;
-            return;
-        }
     }
 
     // Session setup
@@ -1073,7 +1051,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         &mut receiver,
         state.clone(),
         &params,
-        &resolved_prompt,
+        "",
         model_id,
         cancel.clone(),
         session_state.clone(),
@@ -1128,30 +1106,32 @@ async fn run_generation(
     receiver: &mut futures::stream::SplitStream<WebSocket>,
     state: AiState,
     params: &Value,
-    prompt: &str,
+    _prompt: &str,
     model_id: &str,
     cancel: Arc<AtomicBool>,
     session_state: Arc<RwLock<SessionState>>,
     _priority: i32,
 ) -> Result<(), String> {
     let start_time = Instant::now();
+    let req = crate::ai::inference_request::InferenceRequest::from_value(params);
 
     // Auto-load & pool acquire
-    let (llama_model, pool_id) = {
+    let (llama_model, pool_id, arch) = {
         let mut pool = state.model_pool.write().await;
         let found = pool
             .get(model_id)
             .or_else(|| pool.get_by_registry_id(model_id))
             .map(|m| {
                 let pool_id = m.metadata.pool_id.clone();
+                let arch = m.metadata.architecture.clone();
                 let backend = m.runtime.as_ref().and_then(|r| r.model.clone());
-                (pool_id, backend)
+                (pool_id, arch, backend)
             });
-        if let Some((pool_id, backend)) = found {
+        if let Some((pool_id, arch, backend)) = found {
             let backend = backend.ok_or_else(|| format!("model {model_id} has no backend"))?;
             let m = pool.models.get_mut(&pool_id).unwrap();
             m.lifecycle.acquire().map_err(|e| format!("acquire: {e}"))?;
-            (backend, pool_id)
+            (backend, pool_id, arch)
         } else {
             drop(pool);
             let registry = state.model_registry.read().await;
@@ -1166,12 +1146,13 @@ async fn run_generation(
                 .get_by_registry_id(model_id)
                 .ok_or_else(|| format!("model not loaded after auto-load: {model_id}"))?;
             let pool_id = m.metadata.pool_id.clone();
+            let arch = m.metadata.architecture.clone();
             let backend = m
                 .runtime
                 .as_ref()
                 .and_then(|r| r.model.clone())
                 .ok_or_else(|| format!("model {model_id} has no backend"))?;
-            (backend, pool_id)
+            (backend, pool_id, arch)
         }
     };
 
@@ -1187,50 +1168,10 @@ async fn run_generation(
         ))
         .await;
 
-    let context_config = ContextConfig {
-        n_ctx: params.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32,
-        n_batch: params
-            .get("n_batch")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(512) as u32,
-        n_ubatch: 512,
-        n_threads: params
-            .get("n_threads")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(4) as i32,
-        n_threads_batch: 4,
-        flash_attn: false,
-        offload_kqv: false,
-        rope_scaling_type: 0,
-        no_kv_offload: false,
-    };
-
-    let sampling_config = SamplingConfig {
-        temperature: params
-            .get("temperature")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.7) as f32,
-        top_p: params.get("top_p").and_then(|v| v.as_f64()).unwrap_or(0.9) as f32,
-        top_k: params.get("top_k").and_then(|v| v.as_i64()).unwrap_or(40) as i32,
-        min_p: 0.05,
-        repeat_penalty: params
-            .get("repeat_penalty")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.1) as f32,
-        frequency_penalty: params
-            .get("frequency_penalty")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32,
-        presence_penalty: params
-            .get("presence_penalty")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32,
-    };
-
-    let max_tokens = params
-        .get("max_tokens")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(512) as i32;
+    let context_config = req.to_context_config();
+    let sampling_config = req.to_sampling_config();
+    let max_tokens = req.max_tokens;
+    let prompt = req.resolved_prompt_fim(None, Some(&arch));
 
     let backend = LlamaBackend::new(llama_model);
 

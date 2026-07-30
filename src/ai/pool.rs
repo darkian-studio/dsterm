@@ -184,6 +184,7 @@ pub struct ModelMetadata {
     pub file_size: u64,
     pub file_mtime: u64,
     pub memory_estimate: MemoryBreakdown,
+    pub capabilities: super::gguf::ModelCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +199,7 @@ pub struct LoadedModelMetadata {
     pub file_size: u64,
     pub file_mtime: u64,
     pub memory_estimate: MemoryBreakdown,
+    pub capabilities: super::gguf::ModelCapabilities,
 }
 
 impl LoadedModelMetadata {
@@ -214,6 +216,7 @@ impl LoadedModelMetadata {
             file_size: self.file_size,
             file_mtime: self.file_mtime,
             memory_estimate: self.memory_estimate.clone(),
+            capabilities: self.capabilities.clone(),
         }
     }
 
@@ -230,6 +233,7 @@ impl LoadedModelMetadata {
             file_size: meta.file_size,
             file_mtime: meta.file_mtime,
             memory_estimate: meta.memory_estimate.clone(),
+            capabilities: meta.capabilities.clone(),
         }
     }
 }
@@ -607,6 +611,8 @@ impl ModelPoolInner {
         // Cache file info
         self.file_cache.insert(path.to_string(), file_info.clone());
 
+        let capabilities = super::gguf::ModelCapabilities::from_json(&meta["capabilities"]);
+
         let model = LoadedModel {
             metadata: LoadedModelMetadata {
                 registry_id: registry_id.clone(),
@@ -625,6 +631,7 @@ impl ModelPoolInner {
                 file_size: meta["model"]["file_size"].as_u64().unwrap_or(0),
                 file_mtime: file_info.mtime,
                 memory_estimate: estimated,
+                capabilities,
             },
             runtime: Some(rt),
             lifecycle: ModelLifecycle {
@@ -992,6 +999,15 @@ mod tests {
                 runtime_buffers_bytes: 0,
                 overhead_bytes: 0,
                 total_bytes: mem,
+            },
+            capabilities: super::gguf::ModelCapabilities {
+                chat: true,
+                completion: true,
+                fim: false,
+                embeddings: false,
+                tool_calling: true,
+                reasoning: false,
+                vision: false,
             },
         }
     }

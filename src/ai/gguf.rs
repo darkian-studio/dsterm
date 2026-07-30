@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
@@ -619,6 +620,9 @@ pub fn detect_capabilities(meta: &GGUFMetadata) -> ModelCapabilities {
                 | "phi3"
                 | "command-r"
         );
+    let reasoning = has_chat_template
+        && matches!(arch.as_str(), "deepseek2" | "qwen2");
+    let vision = matches!(arch.as_str(), "llava" | "llava-llama" | "qwen2-vl");
 
     ModelCapabilities {
         chat,
@@ -626,16 +630,34 @@ pub fn detect_capabilities(meta: &GGUFMetadata) -> ModelCapabilities {
         fim,
         embeddings,
         tool_calling,
+        reasoning,
+        vision,
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ModelCapabilities {
     pub chat: bool,
     pub completion: bool,
     pub fim: bool,
     pub embeddings: bool,
     pub tool_calling: bool,
+    pub reasoning: bool,
+    pub vision: bool,
+}
+
+impl ModelCapabilities {
+    pub fn from_json(val: &serde_json::Value) -> Self {
+        Self {
+            chat: val["chat"].as_bool().unwrap_or(false),
+            completion: val["completion"].as_bool().unwrap_or(true),
+            fim: val["fim"].as_bool().unwrap_or(false),
+            embeddings: val["embeddings"].as_bool().unwrap_or(false),
+            tool_calling: val["tool_calling"].as_bool().unwrap_or(false),
+            reasoning: val["reasoning"].as_bool().unwrap_or(false),
+            vision: val["vision"].as_bool().unwrap_or(false),
+        }
+    }
 }
 
 pub fn format_file_size(bytes: u64) -> String {
