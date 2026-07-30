@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::ai::stream_event::StreamEvent;
 
 pub trait OutputParser: Send {
@@ -143,19 +145,15 @@ impl OutputParser for ToolCallParser {
         if !events.is_empty() {
             let mut last_end = 0;
             let mut search_from = 0;
-            loop {
-                if let Some(start) = self.buffer[search_from..].find("<tool_call>") {
-                    let abs_start = search_from + start;
-                    let after_start = abs_start + "<tool_call>".len();
-                    if let Some(end) = self.buffer[after_start..].find("</tool_call>") {
-                        let abs_end = after_start + end + "</tool_call>".len();
-                        if abs_end > last_end {
-                            last_end = abs_end;
-                        }
-                        search_from = abs_end;
-                    } else {
-                        break;
+            while let Some(start) = self.buffer[search_from..].find("<tool_call>") {
+                let abs_start = search_from + start;
+                let after_start = abs_start + "<tool_call>".len();
+                if let Some(end) = self.buffer[after_start..].find("</tool_call>") {
+                    let abs_end = after_start + end + "</tool_call>".len();
+                    if abs_end > last_end {
+                        last_end = abs_end;
                     }
+                    search_from = abs_end;
                 } else {
                     break;
                 }

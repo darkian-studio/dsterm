@@ -221,6 +221,7 @@ impl LoadedModelMetadata {
     }
 
     /// Reconstruct from a cached `ModelMetadata` and a current pool_id.
+    #[allow(dead_code)]
     pub fn from_model_metadata(meta: &ModelMetadata, pool_id: String) -> Self {
         Self {
             registry_id: meta.registry_id.clone(),
@@ -706,6 +707,7 @@ impl ModelPoolInner {
     /// Reload the runtime for an already-loaded model.
     /// This destroys and recreates the llama.cpp backend without touching metadata.
     /// Useful for runtime recovery without re-inspection.
+    #[allow(dead_code)]
     pub fn reload_runtime(&mut self, pool_id: &str) -> Result<(), String> {
         let model = self
             .models

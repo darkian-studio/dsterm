@@ -20,13 +20,9 @@ use tokio::sync::RwLock;
 
 #[cfg(feature = "llama")]
 use crate::ai::backend_trait::{InferenceBackend, TokenSink};
-#[cfg(feature = "llama")]
-use crate::ai::context_config::ContextConfig;
 use crate::ai::error::{self, AiError};
 use crate::ai::generation_event::{GenerationEvent, SessionState};
 use crate::ai::inspect;
-#[cfg(feature = "llama")]
-use crate::ai::llama;
 #[cfg(feature = "llama")]
 use crate::ai::llama_backend::LlamaBackend;
 #[cfg(feature = "llama")]
@@ -34,9 +30,6 @@ use crate::ai::output_parser::OutputParser;
 use crate::ai::pool::{
     LoadLockManager, LoadLockManagerState, ModelPoolInner, ModelPoolState, PoolConfig,
 };
-#[cfg(feature = "llama")]
-use crate::ai::sampler::SamplingConfig;
-
 fn ok_response(method: &str, data: Value) -> (StatusCode, Json<Value>) {
     (
         StatusCode::OK,
@@ -663,7 +656,7 @@ async fn ai_generate_shared(
 
     let (_pool_id, arch, llama_model) = loaded;
     let model =
-        llama_model.ok_or_else(|| error::internal_error("model has no llama backend".into()))?;
+        llama_model.ok_or_else(|| error::internal_error("model has no llama backend"))?;
     req.architecture = arch;
     drop(pool);
 
@@ -794,7 +787,7 @@ async fn ai_embed(
 
         let (_pool_id, llama_model) = loaded;
         let model = llama_model
-            .ok_or_else(|| error::internal_error("model has no llama backend".into()))?;
+            .ok_or_else(|| error::internal_error("model has no llama backend"))?;
         drop(pool);
 
         let backend = Arc::new(LlamaBackend::new(model));
@@ -1161,21 +1154,6 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
             break;
         }
     }
-}
-
-async fn get_chat_template(_state: &AiState, model_id: &str) -> Option<String> {
-    let models_dir =
-        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
-            .join(".darkian/models");
-    let gguf_path = models_dir.join(format!("{model_id}.gguf"));
-    if gguf_path.exists() {
-        if let Ok(meta) = crate::ai::inspect::inspect_model(gguf_path.to_str().unwrap()) {
-            return meta["tokenizer"]["chat_template"]
-                .as_str()
-                .map(|s| s.to_string());
-        }
-    }
-    None
 }
 
 #[cfg(feature = "llama")]

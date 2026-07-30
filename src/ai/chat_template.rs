@@ -1,7 +1,8 @@
+#![allow(dead_code)]
+
 use crate::ai::inference_request::InferenceMessage;
 use serde_json::Value;
 
-/// A chat template implementation for a specific model architecture.
 pub trait ChatTemplate: Send + Sync {
     fn build(&self, messages: &[InferenceMessage]) -> String;
 }
@@ -389,8 +390,10 @@ mod tests {
     #[test]
     fn test_architecture_selection() {
         assert!(
-            for_architecture("llama-3-8b").as_ref() as *const _
-                != for_architecture("qwen2-7b").as_ref() as *const _
+            !std::ptr::eq(
+                for_architecture("llama-3-8b").as_ref(),
+                for_architecture("qwen2-7b").as_ref(),
+            )
         );
     }
 }

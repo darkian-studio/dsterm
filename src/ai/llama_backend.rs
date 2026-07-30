@@ -291,7 +291,7 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
     let mut results: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
 
     for text in texts {
-        let tokens = ctx
+        let mut tokens = ctx
             .tokenize(text, true)
             .map_err(InferenceError::tokenization_failed)?;
 

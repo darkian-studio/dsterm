@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub trait FimTemplate: Send + Sync {
     fn build_prompt(&self, prefix: &str, suffix: &str) -> String;
     fn stop_sequences(&self) -> Vec<String>;

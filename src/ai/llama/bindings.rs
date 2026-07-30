@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::ffi::c_char;
 use std::os::raw::{c_float, c_int, c_uint};
 

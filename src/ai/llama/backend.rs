@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::ffi::CString;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};

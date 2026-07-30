@@ -124,7 +124,7 @@ impl InferenceRequest {
         } else if body
             .get("messages")
             .and_then(|v| v.as_array())
-            .map_or(false, |a| !a.is_empty())
+            .is_some_and(|a| !a.is_empty())
         {
             InferenceMode::Chat
         } else {
