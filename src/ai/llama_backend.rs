@@ -7,6 +7,7 @@ use crate::ai::backend_trait::*;
 use crate::ai::context_config::ContextConfig;
 use crate::ai::context_manager::InferenceContext;
 use crate::ai::inference_error::InferenceError;
+use crate::ai::llama::bindings::*;
 use crate::ai::llama::{self, backend::LlamaContext, LlamaModel};
 use crate::ai::sampler::{LlamaSampler, Sampler, SamplingConfig};
 
@@ -34,7 +35,9 @@ impl InferenceBackend for LlamaBackend {
 
     fn create_context(&self, config: &ContextConfig) -> BackendResult<Box<dyn InferenceContext>> {
         let params = config.to_llama_params();
-        let ctx = self.model.create_context(params)
+        let ctx = self
+            .model
+            .create_context(params)
             .map_err(InferenceError::context_creation_failed)?;
         Ok(Box::new(ctx))
     }
@@ -117,6 +120,15 @@ impl InferenceBackend for LlamaBackend {
             .await
             .map_err(|e| InferenceError::backend_failure(format!("task failed: {e}")))?;
         inner
+    }
+
+    async fn embed(&self, texts: &[String]) -> BackendResult<Vec<Vec<f32>>> {
+        let model = self.model.clone();
+        let texts = texts.to_vec();
+        let handle = tokio::task::spawn_blocking(move || run_embedding(model, &texts));
+        handle
+            .await
+            .map_err(|e| InferenceError::backend_failure(format!("task failed: {e}")))?
     }
 }
 
@@ -251,4 +263,63 @@ fn run_generation(
         stopped_by_eos,
         stopped_by_max_tokens: stopped_by_max,
     })
+}
+
+fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<Vec<f32>>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Create context with mean pooling for embeddings
+    let mut ctx_params = unsafe { llama_context_default_params() };
+    ctx_params.n_ctx = 512;
+    ctx_params.n_batch = 512;
+    ctx_params.n_ubatch = 512;
+    ctx_params.pooling_type = 1; // LLAMA_POOLING_TYPE_MEAN
+    let mut ctx = model
+        .create_context(ctx_params)
+        .map_err(InferenceError::context_creation_failed)?;
+
+    let n_embd = unsafe { llama_n_embd(model.ptr()) };
+    if n_embd <= 0 {
+        return Err(InferenceError::new(
+            "EMBEDDING_ERROR",
+            "model does not support embeddings (n_embd <= 0)",
+        ));
+    }
+
+    let mut results: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+
+    for text in texts {
+        let tokens = ctx
+            .tokenize(text, true)
+            .map_err(InferenceError::tokenization_failed)?;
+
+        if tokens.is_empty() {
+            results.push(vec![0.0; n_embd as usize]);
+            continue;
+        }
+
+        let batch =
+            unsafe { llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
+        let ret = unsafe { llama_decode(ctx.ptr_mut(), batch) };
+        if ret != 0 {
+            return Err(InferenceError::decode_failed(format!(
+                "embedding decode: {ret}"
+            )));
+        }
+
+        let embeddings = unsafe { llama_get_embeddings(ctx.ptr_mut()) };
+        if embeddings.is_null() {
+            return Err(InferenceError::new(
+                "EMBEDDING_ERROR",
+                "llama_get_embeddings returned null",
+            ));
+        }
+
+        let embd_slice = unsafe { std::slice::from_raw_parts(embeddings, n_embd as usize) };
+        results.push(embd_slice.to_vec());
+    }
+
+    Ok(results)
 }

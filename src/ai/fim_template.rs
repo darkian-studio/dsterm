@@ -101,7 +101,10 @@ mod tests {
     #[test]
     fn test_qwen() {
         let t = QwenFimTemplate;
-        assert_eq!(t.build_prompt("a", "b"), "<|fim_prefix|>a<|fim_suffix|>b<|fim_middle|>");
+        assert_eq!(
+            t.build_prompt("a", "b"),
+            "<|fim_prefix|>a<|fim_suffix|>b<|fim_middle|>"
+        );
     }
 
     #[test]

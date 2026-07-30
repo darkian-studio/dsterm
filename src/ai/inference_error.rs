@@ -67,6 +67,34 @@ impl InferenceError {
         }
     }
 
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Internal(format!("[{}] {}", code, message.into()))
+    }
+
+    pub fn backend_failure(message: impl Into<String>) -> Self {
+        Self::BackendUnavailable(message.into())
+    }
+
+    pub fn context_creation_failed(message: impl Into<String>) -> Self {
+        Self::ContextCreationFailed(message.into())
+    }
+
+    pub fn tokenization_failed(message: impl Into<String>) -> Self {
+        Self::TokenizationFailed(message.into())
+    }
+
+    pub fn decode_failed(message: impl Into<String>) -> Self {
+        Self::DecodeFailed(message.into())
+    }
+
+    pub fn max_context_exceeded(ctx: usize, needed: usize) -> Self {
+        Self::ContextOverflow { ctx, needed }
+    }
+
+    pub fn cancelled() -> Self {
+        Self::Cancelled
+    }
+
     pub fn recoverable(&self) -> bool {
         matches!(
             self,

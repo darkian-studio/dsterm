@@ -31,9 +31,7 @@ impl OutputParser for TextParser {
         if self.buffer.is_empty() {
             return vec![];
         }
-        vec![StreamEvent::Done {
-            event_version: 1,
-        }]
+        vec![StreamEvent::Done { event_version: 1 }]
     }
 
     fn reset(&mut self) {
@@ -361,9 +359,16 @@ mod tests {
         let mut parser = ToolCallParser::new();
         let events = parser.push("Let me check the weather.");
         assert!(events.is_empty());
-        let events = parser.push("<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"NYC\"}}</tool_call>");
+        let events = parser.push(
+            "<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"NYC\"}}</tool_call>",
+        );
         assert_eq!(events.len(), 1);
-        if let StreamEvent::ToolCall { function_name, arguments, .. } = &events[0] {
+        if let StreamEvent::ToolCall {
+            function_name,
+            arguments,
+            ..
+        } = &events[0]
+        {
             assert_eq!(function_name, "get_weather");
             assert!(arguments.contains("NYC"));
         } else {
@@ -375,9 +380,15 @@ mod tests {
     fn test_tool_call_parser_marker_format() {
         let mut parser = ToolCallParser::new();
         parser.push("I'll look that up for you.\n");
-        let events = parser.push("[TOOL_CALL] {\"name\":\"search_web\",\"arguments\":{\"query\":\"rust async\"}}");
+        let events = parser
+            .push("[TOOL_CALL] {\"name\":\"search_web\",\"arguments\":{\"query\":\"rust async\"}}");
         assert_eq!(events.len(), 1);
-        if let StreamEvent::ToolCall { function_name, arguments, .. } = &events[0] {
+        if let StreamEvent::ToolCall {
+            function_name,
+            arguments,
+            ..
+        } = &events[0]
+        {
             assert_eq!(function_name, "search_web");
         } else {
             panic!("expected ToolCall event");
@@ -396,8 +407,12 @@ mod tests {
     fn test_tool_call_parser_multiple_calls() {
         let mut parser = ToolCallParser::new();
         parser.push("Let me check both.\n");
-        parser.push("<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"NYC\"}}</tool_call>");
-        let events = parser.push("<tool_call>{\"name\":\"get_time\",\"arguments\":{\"timezone\":\"EST\"}}</tool_call>");
+        parser.push(
+            "<tool_call>{\"name\":\"get_weather\",\"arguments\":{\"city\":\"NYC\"}}</tool_call>",
+        );
+        let events = parser.push(
+            "<tool_call>{\"name\":\"get_time\",\"arguments\":{\"timezone\":\"EST\"}}</tool_call>",
+        );
         // Second push should detect the second call (first was already emitted and cleared from buffer)
         assert_eq!(events.len(), 1);
         // finish should return any remaining
@@ -410,7 +425,10 @@ mod tests {
         let text = r#"I'll search for that.
 {"name": "search_web", "arguments": {"query": "test"}}"#;
         let events = extract_tool_calls(text);
-        assert!(events.is_empty(), "standalone JSON without prior context should not match");
+        assert!(
+            events.is_empty(),
+            "standalone JSON without prior context should not match"
+        );
     }
 
     #[test]

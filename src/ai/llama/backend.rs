@@ -85,6 +85,10 @@ impl LlamaModel {
     pub fn ptr(&self) -> *mut std::ffi::c_void {
         self.ptr.as_ptr()
     }
+
+    pub fn n_embd(&self) -> i32 {
+        unsafe { llama_n_embd(self.ptr.as_ptr()) }
+    }
 }
 
 impl Drop for LlamaModel {

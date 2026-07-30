@@ -185,12 +185,12 @@ impl Scheduler for ImmediateScheduler {
         backend: Arc<dyn super::backend_trait::InferenceBackend>,
     ) -> SchedulerResult<GenerationHandleRef> {
         let id = uuid::Uuid::new_v4().to_string();
-        let handle = Arc::new(GenerationHandle::new(
-            id.clone(),
-            request.model_id.clone(),
-        ));
+        let handle = Arc::new(GenerationHandle::new(id.clone(), request.model_id.clone()));
 
-        self.handles.write().await.insert(id.clone(), handle.clone());
+        self.handles
+            .write()
+            .await
+            .insert(id.clone(), handle.clone());
 
         let h = handle.clone();
         let req = request;

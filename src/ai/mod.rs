@@ -1,10 +1,10 @@
 pub mod backend_trait;
 pub mod capability_registry;
 pub mod chat_template;
-pub mod fim_template;
 pub mod context_config;
 pub mod context_manager;
 pub mod error;
+pub mod fim_template;
 pub mod generation_event;
 pub mod generation_handle;
 #[cfg(feature = "llama")]

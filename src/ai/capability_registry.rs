@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use serde::Serialize;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilityRegistry {
@@ -46,6 +46,7 @@ impl CapabilityRegistry {
             reg.register("thinking");
             reg.register("fim_streaming");
             reg.register("tool_calling");
+            reg.register("embeddings");
         }
         reg.register("model_inspection");
         reg.register("gguf_parsing");

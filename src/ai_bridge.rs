@@ -22,8 +22,6 @@ use tokio::sync::RwLock;
 use crate::ai::backend_trait::{InferenceBackend, TokenSink};
 #[cfg(feature = "llama")]
 use crate::ai::context_config::ContextConfig;
-#[cfg(feature = "llama")]
-use crate::ai::output_parser::OutputParser;
 use crate::ai::error::{self, AiError};
 use crate::ai::generation_event::{GenerationEvent, SessionState};
 use crate::ai::inspect;
@@ -31,6 +29,8 @@ use crate::ai::inspect;
 use crate::ai::llama;
 #[cfg(feature = "llama")]
 use crate::ai::llama_backend::LlamaBackend;
+#[cfg(feature = "llama")]
+use crate::ai::output_parser::OutputParser;
 use crate::ai::pool::{
     LoadLockManager, LoadLockManagerState, ModelPoolInner, ModelPoolState, PoolConfig,
 };
@@ -662,13 +662,17 @@ async fn ai_generate_shared(
         .ok_or_else(|| error::model_not_found(model_id))?;
 
     let (_pool_id, arch, llama_model) = loaded;
-    let model = llama_model
-        .ok_or_else(|| error::internal_error("model has no llama backend".into()))?;
+    let model =
+        llama_model.ok_or_else(|| error::internal_error("model has no llama backend".into()))?;
     req.architecture = arch;
     drop(pool);
 
     let backend = Arc::new(LlamaBackend::new(model));
-    if body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         let result = crate::ai::scheduler::ImmediateScheduler::execute_sync_stream(&req, backend)
             .await
             .map_err(|e| error::internal_error(e.message()))?;
@@ -718,14 +722,11 @@ async fn ai_complete(
         let guard = state.model_pool.read().await;
         let first = guard.list().first().cloned();
         drop(guard);
-        let m = first.ok_or_else(|| {
-            error::bad_request("no model loaded and no model_id provided")
-        })?;
+        let m =
+            first.ok_or_else(|| error::bad_request("no model loaded and no model_id provided"))?;
         m["metadata"]["pool_id"]
             .as_str()
-            .ok_or_else(|| {
-                error::bad_request("loaded model has no pool_id")
-            })?
+            .ok_or_else(|| error::bad_request("loaded model has no pool_id"))?
             .to_string()
     } else {
         model_id
@@ -746,9 +747,73 @@ async fn ai_complete(
     }
 }
 
-async fn ai_embed(body: Option<Json<Value>>) -> impl IntoResponse {
-    let _ = body;
-    ok_response("inference.embed", json!({ "embeddings": [] }))
+async fn ai_embed(
+    State(state): State<AiState>,
+    body: Option<Json<Value>>,
+) -> Result<impl IntoResponse, AiError> {
+    let body = body.ok_or_else(|| error::bad_request("body required"))?;
+    let body_value = body.0.clone();
+
+    let texts = body_value
+        .get("texts")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| error::bad_request("texts array required"))?;
+
+    let text_strings: Vec<String> = texts
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+
+    if text_strings.is_empty() {
+        return Ok(ok_response("inference.embed", json!({ "embeddings": [] })));
+    }
+
+    let model_id = body_value
+        .get("model_id")
+        .or_else(|| body_value.get("model"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if model_id.is_empty() {
+        return Err(error::bad_request("model_id or model is required"));
+    }
+
+    #[cfg(feature = "llama")]
+    {
+        let pool = state.model_pool.read().await;
+        let loaded = pool
+            .get(model_id)
+            .or_else(|| pool.get_by_registry_id(model_id))
+            .map(|m| {
+                (
+                    m.metadata.pool_id.clone(),
+                    m.runtime.as_ref().and_then(|r| r.model.clone()),
+                )
+            })
+            .ok_or_else(|| error::model_not_found(model_id))?;
+
+        let (_pool_id, llama_model) = loaded;
+        let model = llama_model
+            .ok_or_else(|| error::internal_error("model has no llama backend".into()))?;
+        drop(pool);
+
+        let backend = Arc::new(LlamaBackend::new(model));
+        let embeddings = backend
+            .embed(&text_strings)
+            .await
+            .map_err(|e| error::internal_error(e.message()))?;
+
+        Ok(ok_response(
+            "inference.embed",
+            json!({ "embeddings": embeddings }),
+        ))
+    }
+
+    #[cfg(not(feature = "llama"))]
+    {
+        let _ = (state, model_id);
+        Ok(ok_response("inference.embed", json!({ "embeddings": [] })))
+    }
 }
 
 async fn ai_tokenize(body: Option<Json<Value>>) -> impl IntoResponse {
@@ -819,7 +884,7 @@ async fn ai_capabilities() -> impl IntoResponse {
             "completion": cfg!(feature = "llama"),
             "fim": cfg!(feature = "llama"),
         "fim_streaming": cfg!(feature = "llama"),
-            "embeddings": false,
+            "embeddings": cfg!(feature = "llama"),
             "tool_calling": cfg!(feature = "llama"),
             "streaming": cfg!(feature = "llama"),
             "model_inspection": true,
@@ -1003,10 +1068,22 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         .to_string();
 
     // Validate that prompt or messages are present (will be resolved by run_generation via InferenceRequest)
-    let has_prompt = params.get("prompt").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty());
-    let has_messages = params.get("messages").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty());
-    let has_prefix_suffix = params.get("prefix").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
-        || params.get("suffix").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty());
+    let has_prompt = params
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty());
+    let has_messages = params
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty());
+    let has_prefix_suffix = params
+        .get("prefix")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+        || params
+            .get("suffix")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty());
     if !has_prompt && !has_messages && !has_prefix_suffix {
         let _ = sender
             .send(Message::Text(
@@ -1294,7 +1371,10 @@ async fn run_generation(
     let final_tool_calls = crate::ai::output_parser::extract_tool_calls(&output.text);
     for tc_event in &final_tool_calls {
         if let crate::ai::stream_event::StreamEvent::ToolCall {
-            id, function_name, arguments, ..
+            id,
+            function_name,
+            arguments,
+            ..
         } = tc_event
         {
             let _ = sender
@@ -1396,7 +1476,10 @@ struct GenerationWsSink {
 impl GenerationWsSink {
     fn send_tool_call(&mut self, event: &crate::ai::stream_event::StreamEvent) {
         if let crate::ai::stream_event::StreamEvent::ToolCall {
-            id, function_name, arguments, ..
+            id,
+            function_name,
+            arguments,
+            ..
         } = event
         {
             let tc = GenerationEvent::ToolCall {

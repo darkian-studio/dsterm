@@ -53,9 +53,7 @@ impl GenerationHandle {
     pub fn cancel(&self) {
         self.cancel_flag.store(true, Ordering::SeqCst);
         if let Ok(mut status) = self.status.lock() {
-            if *status == GenerationStatus::Generating
-                || *status == GenerationStatus::Streaming
-            {
+            if *status == GenerationStatus::Generating || *status == GenerationStatus::Streaming {
                 *status = GenerationStatus::Cancelled;
             }
         }
@@ -105,12 +103,20 @@ impl GenerationHandle {
     }
 
     pub fn status(&self) -> GenerationStatus {
-        self.status.lock().map(|s| *s).unwrap_or(GenerationStatus::Failed)
+        self.status
+            .lock()
+            .map(|s| *s)
+            .unwrap_or(GenerationStatus::Failed)
     }
 
     pub fn record_token(&self) {
         self.first_token_latency_ms
-            .compare_exchange(0, self.start_time.elapsed().as_millis() as u64, Ordering::Relaxed, Ordering::Relaxed)
+            .compare_exchange(
+                0,
+                self.start_time.elapsed().as_millis() as u64,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
             .ok();
         self.tokens_generated.fetch_add(1, Ordering::Relaxed);
     }
@@ -128,8 +134,10 @@ impl GenerationHandle {
     }
 
     pub fn set_context_created(&self) {
-        self.context_create_latency_ms
-            .store(self.start_time.elapsed().as_millis() as u64, Ordering::Relaxed);
+        self.context_create_latency_ms.store(
+            self.start_time.elapsed().as_millis() as u64,
+            Ordering::Relaxed,
+        );
     }
 
     pub fn first_token_ms(&self) -> u64 {

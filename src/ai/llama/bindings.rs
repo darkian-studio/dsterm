@@ -216,4 +216,16 @@ extern "C" {
         p: c_float,
         min_keep: usize,
     );
+
+    #[link_name = "llama_get_embeddings"]
+    pub fn llama_get_embeddings(ctx: *mut std::ffi::c_void) -> *mut c_float;
+
+    #[link_name = "llama_n_embd"]
+    pub fn llama_n_embd(model: *mut std::ffi::c_void) -> c_int;
+
+    #[link_name = "llama_pooling_type"]
+    pub fn llama_pooling_type(ctx: *mut std::ffi::c_void) -> c_int;
+
+    #[link_name = "llama_set_pooling_type"]
+    pub fn llama_set_pooling_type(ctx: *mut std::ffi::c_void, pooling_type: c_int) -> c_int;
 }

@@ -168,10 +168,7 @@ impl ChatTemplate for FallbackTemplate {
                     buf.push_str("\n\n");
                 }
                 "tool" => {
-                    let name = msg
-                        .tool_call_id
-                        .as_deref()
-                        .unwrap_or("tool");
+                    let name = msg.tool_call_id.as_deref().unwrap_or("tool");
                     buf.push_str(&format!("Tool ({name}): {}\n\n", msg.content));
                 }
                 _ => {
@@ -391,7 +388,9 @@ mod tests {
 
     #[test]
     fn test_architecture_selection() {
-        assert!(for_architecture("llama-3-8b").as_ref() as *const _ !=
-                for_architecture("qwen2-7b").as_ref() as *const _);
+        assert!(
+            for_architecture("llama-3-8b").as_ref() as *const _
+                != for_architecture("qwen2-7b").as_ref() as *const _
+        );
     }
 }

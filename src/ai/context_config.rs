@@ -13,6 +13,7 @@ pub struct ContextConfig {
     pub offload_kqv: bool,
     pub rope_scaling_type: i32,
     pub no_kv_offload: bool,
+    pub pooling_type: i32,
 }
 
 impl Default for ContextConfig {
@@ -27,6 +28,7 @@ impl Default for ContextConfig {
             offload_kqv: true,
             rope_scaling_type: 0,
             no_kv_offload: false,
+            pooling_type: 0,
         }
     }
 }
@@ -58,6 +60,7 @@ impl ContextConfig {
         p.offload_kqv = self.offload_kqv;
         p.rope_scaling_type = self.rope_scaling_type;
         p.no_kv_offload = self.no_kv_offload;
+        p.pooling_type = self.pooling_type;
         p
     }
 }

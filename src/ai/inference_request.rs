@@ -92,7 +92,10 @@ impl InferenceRequest {
         InferenceMessage {
             role: msg["role"].as_str().unwrap_or("user").to_string(),
             content: msg["content"].as_str().unwrap_or("").to_string(),
-            tool_call_id: msg.get("tool_call_id").and_then(|v| v.as_str()).map(String::from),
+            tool_call_id: msg
+                .get("tool_call_id")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             tool_calls: msg.get("tool_calls").and_then(|v| {
                 v.as_array().map(|arr| {
                     arr.iter()
@@ -118,7 +121,11 @@ impl InferenceRequest {
     pub fn from_value(body: &Value) -> Self {
         let mode = if body.get("prefix").is_some() || body.get("suffix").is_some() {
             InferenceMode::Fim
-        } else if body.get("messages").and_then(|v| v.as_array()).map_or(false, |a| !a.is_empty()) {
+        } else if body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .map_or(false, |a| !a.is_empty())
+        {
             InferenceMode::Chat
         } else {
             InferenceMode::Completion
@@ -162,15 +169,34 @@ impl InferenceRequest {
             prompt,
             prefix,
             suffix,
-            temperature: body.get("temperature").and_then(|v| v.as_f64()).unwrap_or(0.7) as f32,
-            max_tokens: body.get("max_tokens").and_then(|v| v.as_i64()).unwrap_or(512) as i32,
+            temperature: body
+                .get("temperature")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.7) as f32,
+            max_tokens: body
+                .get("max_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(512) as i32,
             top_p: body.get("top_p").and_then(|v| v.as_f64()).unwrap_or(0.9) as f32,
             top_k: body.get("top_k").and_then(|v| v.as_i64()).unwrap_or(40) as i32,
             min_p: body.get("min_p").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-            repeat_penalty: body.get("repeat_penalty").and_then(|v| v.as_f64()).unwrap_or(1.1) as f32,
-            frequency_penalty: body.get("frequency_penalty").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-            presence_penalty: body.get("presence_penalty").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-            session_id: body.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            repeat_penalty: body
+                .get("repeat_penalty")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.1) as f32,
+            frequency_penalty: body
+                .get("frequency_penalty")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32,
+            presence_penalty: body
+                .get("presence_penalty")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32,
+            session_id: body
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             priority: body.get("priority").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
             n_ctx: body.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32,
             n_batch: body.get("n_batch").and_then(|v| v.as_u64()).unwrap_or(512) as u32,
@@ -194,9 +220,16 @@ impl InferenceRequest {
                         .collect()
                 })
                 .unwrap_or_default(),
-            architecture: body.get("architecture").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            architecture: body
+                .get("architecture")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             metadata: json!({}),
-            stream: body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
+            stream: body
+                .get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         }
     }
 
@@ -204,7 +237,11 @@ impl InferenceRequest {
     pub fn from_chat_body(body: &Value) -> Self {
         let mut req = Self::from_value(body);
         req.mode = InferenceMode::Chat;
-        if body.get("messages").and_then(|v| v.as_array()).map_or(true, |a| a.is_empty()) {
+        if body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .map_or(true, |a| a.is_empty())
+        {
             let text = body.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
             if !text.is_empty() {
                 req.messages = vec![InferenceMessage {
@@ -237,7 +274,8 @@ impl InferenceRequest {
                 } else {
                     let a = arch.unwrap_or(&self.architecture);
                     let fim_tmpl = if a.is_empty() {
-                        Box::new(super::fim_template::CodestralFimTemplate) as Box<dyn super::fim_template::FimTemplate>
+                        Box::new(super::fim_template::CodestralFimTemplate)
+                            as Box<dyn super::fim_template::FimTemplate>
                     } else {
                         super::fim_template::for_architecture(a)
                     };
@@ -264,19 +302,10 @@ impl InferenceRequest {
                     .iter()
                     .map(|m| {
                         let mut map = serde_json::Map::new();
-                        map.insert(
-                            "role".to_string(),
-                            Value::String(m.role.clone()),
-                        );
-                        map.insert(
-                            "content".to_string(),
-                            Value::String(m.content.clone()),
-                        );
+                        map.insert("role".to_string(), Value::String(m.role.clone()));
+                        map.insert("content".to_string(), Value::String(m.content.clone()));
                         if let Some(ref id) = m.tool_call_id {
-                            map.insert(
-                                "tool_call_id".to_string(),
-                                Value::String(id.clone()),
-                            );
+                            map.insert("tool_call_id".to_string(), Value::String(id.clone()));
                         }
                         Value::Object(map)
                     })

@@ -620,8 +620,7 @@ pub fn detect_capabilities(meta: &GGUFMetadata) -> ModelCapabilities {
                 | "phi3"
                 | "command-r"
         );
-    let reasoning = has_chat_template
-        && matches!(arch.as_str(), "deepseek2" | "qwen2");
+    let reasoning = has_chat_template && matches!(arch.as_str(), "deepseek2" | "qwen2");
     let vision = matches!(arch.as_str(), "llava" | "llava-llama" | "qwen2-vl");
 
     ModelCapabilities {

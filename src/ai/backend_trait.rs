@@ -38,7 +38,10 @@ impl Default for BackendCapabilities {
 #[async_trait::async_trait]
 pub trait InferenceBackend: Send + Sync {
     fn capabilities(&self) -> BackendCapabilities;
-    fn create_context(&self, config: &ContextConfig) -> BackendResult<Box<dyn context_manager::InferenceContext>>;
+    fn create_context(
+        &self,
+        config: &ContextConfig,
+    ) -> BackendResult<Box<dyn context_manager::InferenceContext>>;
     async fn validate(&self, ctx_config: &ContextConfig) -> BackendResult<()>;
     async fn tokenize(&self, text: &str, add_bos: bool) -> BackendResult<Vec<i32>>;
     async fn detokenize(&self, token: i32) -> BackendResult<String>;
@@ -57,6 +60,7 @@ pub trait InferenceBackend: Send + Sync {
         max_tokens: i32,
         sink: Box<dyn TokenSink + Send>,
     ) -> BackendResult<GenerateOutput>;
+    async fn embed(&self, texts: &[String]) -> BackendResult<Vec<Vec<f32>>>;
 }
 
 pub trait TokenSink {
