@@ -259,7 +259,7 @@ impl InferenceRequest {
                 if !self.prompt.is_empty() {
                     return self.prompt.clone();
                 }
-                let messages_json: Vec<Value> = self
+                let mut messages_json: Vec<Value> = self
                     .messages
                     .iter()
                     .map(|m| {
@@ -281,6 +281,55 @@ impl InferenceRequest {
                         Value::Object(map)
                     })
                     .collect();
+
+                // Inject tool definitions as a system message so the model
+                // knows which tools are available. The message describes each
+                // tool's JSON schema and instructs the model to use
+                // <tool_call> XML syntax (matching ToolCallParser).
+                if !self.tool_definitions.is_empty() {
+                    let tool_list: Vec<Value> = self
+                        .tool_definitions
+                        .iter()
+                        .map(|def| {
+                            let name = def
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let description = def
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let parameters = def
+                                .get("parameters")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+                            json!({
+                                "name": name,
+                                "description": description,
+                                "parameters": parameters
+                            })
+                        })
+                        .collect();
+
+                    let tools_json = serde_json::to_string(&tool_list).unwrap_or_default();
+                    let tool_msg = format!(
+                        r#"You have access to the following tools:
+
+{}
+
+To call a tool, respond with EXACTLY:
+<tool_call>{{"name": "tool_name", "arguments": {{...}}}}</tool_call>
+
+Do not add any other text before or after the tool call."#,
+                        tools_json
+                    );
+
+                    let mut tool_system = serde_json::Map::new();
+                    tool_system.insert("role".to_string(), Value::String("system".into()));
+                    tool_system.insert("content".to_string(), Value::String(tool_msg));
+                    messages_json.insert(0, Value::Object(tool_system));
+                }
+
                 super::chat_template::format_messages(&messages_json, template)
             }
         }
