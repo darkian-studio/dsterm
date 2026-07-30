@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+#[cfg(feature = "llama")]
 use std::time::Instant;
+
 use tokio::sync::RwLock;
 
 #[cfg(feature = "llama")]
@@ -998,7 +1000,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     let messages: Option<Vec<Value>> = params
         .get("messages")
         .and_then(|v| v.as_array())
-        .map(|a| a.clone());
+        .cloned();
 
     let model_id = params
         .get("model_id")
@@ -1014,7 +1016,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     let resolved_prompt = if !prompt.is_empty() {
         prompt.to_string()
     } else if let Some(ref msgs) = messages {
-        let chat_template = get_chat_template(&state, &model_id).await;
+        let chat_template = get_chat_template(&state, model_id).await;
         crate::ai::chat_template::format_messages(msgs, chat_template.as_deref())
     } else {
         String::new()
@@ -1079,7 +1081,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         state.clone(),
         &params,
         &resolved_prompt,
-        &model_id,
+        model_id,
         cancel.clone(),
         session_state.clone(),
     )
@@ -1126,6 +1128,7 @@ async fn get_chat_template(_state: &AiState, model_id: &str) -> Option<String> {
 }
 
 #[cfg(feature = "llama")]
+#[allow(clippy::too_many_arguments)]
 async fn run_generation(
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
     receiver: &mut futures::stream::SplitStream<WebSocket>,
@@ -1141,16 +1144,18 @@ async fn run_generation(
     // Auto-load & pool acquire
     let (llama_model, pool_id) = {
         let mut pool = state.model_pool.write().await;
-        if let Some(m) = pool
+        let found = pool
             .get(model_id)
             .or_else(|| pool.get_by_registry_id(model_id))
-        {
-            let pool_id = m.metadata.pool_id.clone();
-            let backend = m
-                .runtime
-                .as_ref()
-                .and_then(|r| r.model.clone())
-                .ok_or_else(|| format!("model {model_id} has no backend"))?;
+            .map(|m| {
+                let pool_id = m.metadata.pool_id.clone();
+                let backend = m.runtime.as_ref().and_then(|r| r.model.clone());
+                (pool_id, backend)
+            });
+        if let Some((pool_id, backend)) = found {
+            let backend =
+                backend.ok_or_else(|| format!("model {model_id} has no backend"))?;
+            let m = pool.models.get_mut(&pool_id).unwrap();
             m.lifecycle.acquire().map_err(|e| format!("acquire: {e}"))?;
             (backend, pool_id)
         } else {
