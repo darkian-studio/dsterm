@@ -1,6 +1,7 @@
 pub mod backend_trait;
 pub mod context_config;
 pub mod error;
+#[cfg(feature = "llama")]
 pub mod generation_session;
 pub mod gguf;
 pub mod inference_error;
