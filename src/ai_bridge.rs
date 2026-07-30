@@ -1406,12 +1406,14 @@ async fn run_generation(
     Ok(())
 }
 
+#[cfg(feature = "llama")]
 struct GenerationWsSink {
     tx: tokio::sync::mpsc::Sender<GenerationEvent>,
     cancel: Arc<AtomicBool>,
     first_token: std::sync::atomic::AtomicBool,
 }
 
+#[cfg(feature = "llama")]
 impl TokenSink for GenerationWsSink {
     fn on_token(&mut self, token: &str) -> Result<(), String> {
         if self.cancel.load(Ordering::Relaxed) {

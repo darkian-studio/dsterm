@@ -17,7 +17,6 @@ pub enum GenerationEvent {
     },
     ToolCall {
         id: String,
-        r#type: String,
         function_name: String,
         arguments: String,
     },
