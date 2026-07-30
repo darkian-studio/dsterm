@@ -13,15 +13,25 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 
+#[cfg(feature = "llama")]
+use crate::ai::backend_trait::TokenSink;
+#[cfg(feature = "llama")]
+use crate::ai::context_config::ContextConfig;
 use crate::ai::error::{self, AiError};
+use crate::ai::generation_event::{GenerationEvent, SessionState};
 use crate::ai::inspect;
 #[cfg(feature = "llama")]
 use crate::ai::llama;
+#[cfg(feature = "llama")]
+use crate::ai::llama_backend::LlamaBackend;
 use crate::ai::pool::{
     LoadLockManager, LoadLockManagerState, ModelPoolInner, ModelPoolState, PoolConfig,
 };
+#[cfg(feature = "llama")]
+use crate::ai::sampler::SamplingConfig;
 
 fn ok_response(method: &str, data: Value) -> (StatusCode, Json<Value>) {
     (
@@ -541,6 +551,57 @@ async fn ai_session_state(
     ok_response("inference.sessionState", json!({ "session": data }))
 }
 
+async fn ai_chat(
+    State(state): State<AiState>,
+    body: Option<Json<Value>>,
+) -> Result<impl IntoResponse, AiError> {
+    let body = body.ok_or_else(|| error::bad_request("body required"))?;
+    let body_value = body.0.clone();
+
+    let messages = body_value
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| error::bad_request("messages array required"))?;
+    let model_id = body_value
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if model_id.is_empty() {
+        return Err(error::bad_request("model is required"));
+    }
+
+    let n_ctx = body_value
+        .get("n_ctx")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2048) as u32;
+    let chat_template = get_chat_template(&state, &model_id).await;
+    let prompt = crate::ai::chat_template::format_messages(messages, chat_template.as_deref());
+
+    if prompt.is_empty() {
+        return Err(error::bad_request("formatted prompt is empty"));
+    }
+
+    if let Err(e) = crate::ai::chat_template::validate_context(messages, n_ctx) {
+        return Err(error::bad_request(&e));
+    }
+
+    #[cfg(feature = "llama")]
+    {
+        return ai_generate_real(state, body_value, &prompt, &model_id).await;
+    }
+
+    #[cfg(not(feature = "llama"))]
+    {
+        let _ = (state, model_id);
+        Ok(ok_response(
+            "inference.chat",
+            json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
+        ))
+    }
+}
+
 async fn ai_generate(
     State(state): State<AiState>,
     body: Option<Json<Value>>,
@@ -774,7 +835,9 @@ async fn ai_capabilities() -> impl IntoResponse {
             "architecture_detection": true,
             "memory_estimation": true,
             "capability_detection": true,
-            "llama_backend": cfg!(feature = "llama")
+            "llama_backend": cfg!(feature = "llama"),
+            "per_token_streaming": cfg!(feature = "llama"),
+            "thinking": cfg!(feature = "llama")
         }),
     )
 }
@@ -895,6 +958,7 @@ async fn ai_generate_stream(
 async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     let (mut sender, mut receiver) = socket.split();
     let cancel = Arc::new(AtomicBool::new(false));
+    let session_state = Arc::new(RwLock::new(SessionState::Idle));
 
     // Wait for first message with generation params
     let msg = match receiver.next().await {
@@ -902,9 +966,9 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         _ => {
             let _ = sender
                 .send(Message::Text(
-                    serde_json::to_string(
-                        &json!({"type": "error", "data": {"message": "expected text message"}}),
-                    )
+                    serde_json::to_string(&GenerationEvent::Error {
+                        message: "expected text message".into(),
+                    })
                     .unwrap()
                     .into(),
                 ))
@@ -918,9 +982,9 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         Err(_) => {
             let _ = sender
                 .send(Message::Text(
-                    serde_json::to_string(
-                        &json!({"type": "error", "data": {"message": "invalid JSON"}}),
-                    )
+                    serde_json::to_string(&GenerationEvent::Error {
+                        message: "invalid JSON".into(),
+                    })
                     .unwrap()
                     .into(),
                 ))
@@ -929,7 +993,13 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         }
     };
 
+    // Support both "prompt" (legacy) and "messages" (new)
     let prompt = params.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    let messages: Option<Vec<Value>> = params
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|a| a.clone());
+
     let model_id = params
         .get("model_id")
         .and_then(|v| v.as_str())
@@ -937,14 +1007,25 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     let session_id = params
         .get("session_id")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
-    if prompt.is_empty() {
+    // Resolve prompt from messages if provided
+    let resolved_prompt = if !prompt.is_empty() {
+        prompt.to_string()
+    } else if let Some(ref msgs) = messages {
+        let chat_template = get_chat_template(&state, &model_id).await;
+        crate::ai::chat_template::format_messages(msgs, chat_template.as_deref())
+    } else {
+        String::new()
+    };
+
+    if resolved_prompt.is_empty() {
         let _ = sender
             .send(Message::Text(
-                serde_json::to_string(
-                    &json!({"type": "error", "data": {"message": "prompt is required"}}),
-                )
+                serde_json::to_string(&GenerationEvent::Error {
+                    message: "prompt or messages required".into(),
+                })
                 .unwrap()
                 .into(),
             ))
@@ -952,56 +1033,73 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         return;
     }
 
-    // Register cancel token if session_id provided
-    if !session_id.is_empty() {
-        state
-            .cancel_tokens
-            .write()
-            .await
-            .insert(session_id.to_string(), cancel.clone());
-    }
-
-    #[cfg(feature = "llama")]
-    {
-        let result = handle_generate_stream_llama(
-            &mut sender,
-            &mut receiver,
-            state.clone(),
-            &params,
-            prompt,
-            model_id,
-            cancel.clone(),
-        )
-        .await;
-        if let Err(e) = result {
+    // Validate context if messages provided
+    if let Some(ref msgs) = messages {
+        let n_ctx = params.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
+        if let Err(e) = crate::ai::chat_template::validate_context(msgs, n_ctx) {
             let _ = sender
                 .send(Message::Text(
-                    serde_json::to_string(&json!({"type": "error", "data": {"message": e}}))
+                    serde_json::to_string(&GenerationEvent::Error { message: e })
                         .unwrap()
                         .into(),
                 ))
                 .await;
+            return;
         }
     }
 
-    #[cfg(not(feature = "llama"))]
-    {
-        let _ = (state.clone(), model_id);
-        let done = json!({
-            "type": "done",
-            "data": {
-                "text": "",
-                "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
-            }
-        });
-        let _ = sender
-            .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
-            .await;
+    // Session setup
+    if !session_id.is_empty() {
+        let mut ssl = session_state.write().await;
+        if !ssl.can_transition_to(SessionState::Generating) {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(&GenerationEvent::Error {
+                        message: "session is closed or already generating".into(),
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await;
+            return;
+        }
+        *ssl = SessionState::Generating;
+
+        state
+            .cancel_tokens
+            .write()
+            .await
+            .insert(session_id.clone(), cancel.clone());
     }
 
-    // Cleanup cancel token
+    // Start generation
+    let result = run_generation(
+        &mut sender,
+        &mut receiver,
+        state.clone(),
+        &params,
+        &resolved_prompt,
+        &model_id,
+        cancel.clone(),
+        session_state.clone(),
+    )
+    .await;
+
+    // Cleanup
     if !session_id.is_empty() {
-        state.cancel_tokens.write().await.remove(session_id);
+        state.cancel_tokens.write().await.remove(&session_id);
+        let mut ssl = session_state.write().await;
+        *ssl = SessionState::Idle;
+    }
+
+    if let Err(e) = result {
+        let _ = sender
+            .send(Message::Text(
+                serde_json::to_string(&GenerationEvent::Error { message: e })
+                    .unwrap()
+                    .into(),
+            ))
+            .await;
     }
 
     let _ = sender.send(Message::Close(None)).await;
@@ -1012,44 +1110,110 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     }
 }
 
+async fn get_chat_template(state: &AiState, model_id: &str) -> Option<String> {
+    let models_dir =
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
+            .join(".darkian/models");
+    let gguf_path = models_dir.join(format!("{model_id}.gguf"));
+    if gguf_path.exists() {
+        if let Ok(meta) = crate::ai::inspect::inspect_model(gguf_path.to_str().unwrap()) {
+            return meta["tokenizer"]["chat_template"]
+                .as_str()
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
+
 #[cfg(feature = "llama")]
-async fn handle_generate_stream_llama(
+async fn run_generation(
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
-    _receiver: &mut futures::stream::SplitStream<WebSocket>,
+    receiver: &mut futures::stream::SplitStream<WebSocket>,
     state: AiState,
     params: &Value,
     prompt: &str,
     model_id: &str,
     cancel: Arc<AtomicBool>,
+    session_state: Arc<RwLock<SessionState>>,
 ) -> Result<(), String> {
-    let pool = state.model_pool.read().await;
-    let loaded = pool
-        .get(model_id)
-        .or_else(|| pool.get_by_registry_id(model_id))
-        .map(|m| m.runtime.as_ref().and_then(|r| r.model.clone()))
-        .ok_or_else(|| format!("model not found: {model_id}"))?;
+    let start_time = Instant::now();
 
-    let llama_model = loaded.ok_or_else(|| format!("model {model_id} has no backend"))?;
-    drop(pool);
+    // Auto-load & pool acquire
+    let (llama_model, pool_id) = {
+        let mut pool = state.model_pool.write().await;
+        if let Some(m) = pool
+            .get(model_id)
+            .or_else(|| pool.get_by_registry_id(model_id))
+        {
+            let pool_id = m.metadata.pool_id.clone();
+            let backend = m
+                .runtime
+                .as_ref()
+                .and_then(|r| r.model.clone())
+                .ok_or_else(|| format!("model {model_id} has no backend"))?;
+            m.lifecycle.acquire().map_err(|e| format!("acquire: {e}"))?;
+            (backend, pool_id)
+        } else {
+            drop(pool);
+            let registry = state.model_registry.read().await;
+            let local_path = registry
+                .get(model_id)
+                .map(|m| m.local_path.clone())
+                .ok_or_else(|| format!("model not found in registry: {model_id}"))?;
+            drop(registry);
+            let mut pool = state.model_pool.write().await;
+            pool.load(&local_path)?;
+            let m = pool
+                .get_by_registry_id(model_id)
+                .ok_or_else(|| format!("model not loaded after auto-load: {model_id}"))?;
+            let pool_id = m.metadata.pool_id.clone();
+            let backend = m
+                .runtime
+                .as_ref()
+                .and_then(|r| r.model.clone())
+                .ok_or_else(|| format!("model {model_id} has no backend"))?;
+            (backend, pool_id)
+        }
+    };
 
-    let n_ctx = params.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32;
-    let mut ctx_params = unsafe { llama::bindings::llama_context_default_params() };
-    ctx_params.n_ctx = n_ctx;
+    // Send protocol frame
+    let protocol = GenerationEvent::Protocol {
+        protocol_version: 1,
+        backend: "llama".into(),
+        model: model_id.to_string(),
+    };
+    let _ = sender
+        .send(Message::Text(
+            serde_json::to_string(&protocol).unwrap().into(),
+        ))
+        .await;
 
-    let mut ctx = llama_model
-        .create_context(ctx_params)
-        .map_err(|e| format!("failed to create context: {e}"))?;
-
-    let config = llama::GenerateConfig {
-        max_tokens: params
-            .get("max_tokens")
+    let context_config = ContextConfig {
+        n_ctx: params.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32,
+        n_batch: params
+            .get("n_batch")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(512) as u32,
+        n_ubatch: 512,
+        n_threads: params
+            .get("n_threads")
             .and_then(|v| v.as_i64())
-            .unwrap_or(512) as i32,
+            .unwrap_or(4) as i32,
+        n_threads_batch: 4,
+        flash_attn: false,
+        offload_kqv: false,
+        rope_scaling_type: 0,
+        no_kv_offload: false,
+    };
+
+    let sampling_config = SamplingConfig {
         temperature: params
             .get("temperature")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.7) as f32,
         top_p: params.get("top_p").and_then(|v| v.as_f64()).unwrap_or(0.9) as f32,
+        top_k: params.get("top_k").and_then(|v| v.as_i64()).unwrap_or(40) as i32,
+        min_p: 0.05,
         repeat_penalty: params
             .get("repeat_penalty")
             .and_then(|v| v.as_f64())
@@ -1064,34 +1228,212 @@ async fn handle_generate_stream_llama(
             .unwrap_or(0.0) as f32,
     };
 
-    // Tokenize prompt first to get token count for streaming
-    let prompt_tokens = ctx
-        .tokenize(prompt, true)
-        .map_err(|e| format!("tokenize failed: {e}"))?;
-    let prompt_token_count = prompt_tokens.len() as i32;
+    let max_tokens = params
+        .get("max_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(512) as i32;
 
-    // Run generation with cancel checking
-    let result = ctx
-        .generate_with_cancel(prompt, &config, &cancel)
-        .map_err(|e| format!("generation failed: {e}"))?;
+    let backend = LlamaBackend::new(llama_model);
 
-    // Build the completed output with all tokens
-    let done = json!({
-        "type": "done",
-        "data": {
-            "text": result.text,
-            "usage": {
-                "prompt_tokens": prompt_token_count,
-                "completion_tokens": result.completion_tokens
-            }
-        }
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<GenerationEvent>(128);
+
+    let sink_tx = tx.clone();
+    let sink = Box::new(GenerationWsSink {
+        tx: sink_tx,
+        cancel: cancel.clone(),
+        first_token: std::sync::atomic::AtomicBool::new(false),
     });
 
-    let _ = sender
-        .send(Message::Text(serde_json::to_string(&done).unwrap().into()))
-        .await;
+    let prompt_owned = prompt.to_string();
+
+    let join_handle = tokio::task::spawn_blocking(move || {
+        backend.generate_streaming(
+            &prompt_owned,
+            context_config,
+            sampling_config,
+            max_tokens,
+            sink,
+        )
+    });
+
+    drop(tx);
+
+    let mut generation_done = false;
+    let mut first_token_time: Option<Instant> = None;
+
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Some(GenerationEvent::Text { text }) => {
+                        if first_token_time.is_none() {
+                            first_token_time = Some(Instant::now());
+                        }
+                        let json = serde_json::to_string(&GenerationEvent::Text {
+                            text,
+                        }).unwrap();
+                        if sender.send(Message::Text(json.into())).await.is_err() {
+                            cancel.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                    Some(e @ (GenerationEvent::Usage { .. }
+                             | GenerationEvent::Done
+                             | GenerationEvent::Error { .. }
+                             | GenerationEvent::Reasoning { .. })) => {
+                        let json = serde_json::to_string(&e).unwrap();
+                        let _ = sender.send(Message::Text(json.into())).await;
+                        if matches!(e, GenerationEvent::Done | GenerationEvent::Error { .. }) {
+                            generation_done = matches!(e, GenerationEvent::Done);
+                            break;
+                        }
+                    }
+                    Some(_) => {}
+                    None => {
+                        generation_done = true;
+                        break;
+                    }
+                }
+            }
+            ws_msg = receiver.next() => {
+                match ws_msg {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+                        cancel.store(true, Ordering::Relaxed);
+                        {
+                            let mut s = session_state.write().await;
+                            if *s == SessionState::Generating {
+                                *s = SessionState::Cancelling;
+                            }
+                        }
+                        break;
+                    }
+                    Some(Ok(Message::Ping(data))) => {
+                        let _ = sender.send(Message::Pong(data)).await;
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(cmd) = serde_json::from_str::<Value>(&text) {
+                            if cmd.get("type").and_then(|v| v.as_str()) == Some("cancel") {
+                                cancel.store(true, Ordering::Relaxed);
+                                {
+                                    let mut s = session_state.write().await;
+                                    if *s == SessionState::Generating {
+                                        *s = SessionState::Cancelling;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let output = match join_handle.await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => {
+            if generation_done {
+                return Err(format!("generation failed: {e}"));
+            }
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(format!("task failed: {e}"));
+        }
+    };
+
+    if generation_done {
+        let elapsed = start_time.elapsed();
+        let ttft = first_token_time
+            .map(|t| t.duration_since(start_time).as_millis() as u64)
+            .unwrap_or(0);
+        let tps = if elapsed.as_secs_f64() > 0.0 {
+            output.completion_tokens as f64 / elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+
+        let usage = GenerationEvent::Usage {
+            prompt_tokens: output.prompt_tokens,
+            completion_tokens: output.completion_tokens,
+            total_tokens: output.prompt_tokens + output.completion_tokens,
+            tokens_per_second: tps,
+            first_token_ms: ttft,
+            generation_ms: elapsed.as_millis() as u64,
+        };
+        let _ = sender
+            .send(Message::Text(serde_json::to_string(&usage).unwrap().into()))
+            .await;
+
+        let _ = sender
+            .send(Message::Text(
+                serde_json::to_string(&GenerationEvent::Done)
+                    .unwrap()
+                    .into(),
+            ))
+            .await;
+    }
+
+    // Pool release
+    {
+        let mut pool = state.model_pool.write().await;
+        let _ = pool.unload(&pool_id);
+    }
 
     Ok(())
+}
+
+#[cfg(not(feature = "llama"))]
+async fn run_generation(
+    sender: &mut futures::stream::SplitSink<WebSocket, Message>,
+    _receiver: &mut futures::stream::SplitStream<WebSocket>,
+    _state: AiState,
+    _params: &Value,
+    _prompt: &str,
+    _model_id: &str,
+    _cancel: Arc<AtomicBool>,
+    _session_state: Arc<RwLock<SessionState>>,
+) -> Result<(), String> {
+    let _ = sender
+        .send(Message::Text(
+            serde_json::to_string(&GenerationEvent::Done)
+                .unwrap()
+                .into(),
+        ))
+        .await;
+    Ok(())
+}
+
+struct GenerationWsSink {
+    tx: tokio::sync::mpsc::Sender<GenerationEvent>,
+    cancel: Arc<AtomicBool>,
+    first_token: std::sync::atomic::AtomicBool,
+}
+
+impl TokenSink for GenerationWsSink {
+    fn on_token(&mut self, token: &str) -> Result<(), String> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        self.first_token.store(true, Ordering::Relaxed);
+        let event = GenerationEvent::Text {
+            text: token.to_string(),
+        };
+        self.tx.try_send(event).map_err(|e| format!("send: {e}"))
+    }
+
+    fn on_error(&mut self, err: &str) {
+        let event = GenerationEvent::Error {
+            message: err.to_string(),
+        };
+        let _ = self.tx.try_send(event);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
 }
 
 pub fn ai_routes() -> Router<AiState> {
@@ -1110,6 +1452,7 @@ pub fn ai_routes() -> Router<AiState> {
         .route("/ai/sessions/release", post(ai_release_session))
         .route("/ai/sessions/cancel", post(ai_cancel_session))
         .route("/ai/sessions/state", get(ai_session_state))
+        .route("/ai/chat", post(ai_chat))
         .route("/ai/generate", post(ai_generate))
         .route("/ai/complete", post(ai_complete))
         .route("/ai/embed", post(ai_embed))

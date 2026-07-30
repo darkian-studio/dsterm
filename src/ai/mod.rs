@@ -1,6 +1,8 @@
 pub mod backend_trait;
+pub mod chat_template;
 pub mod context_config;
 pub mod error;
+pub mod generation_event;
 #[cfg(feature = "llama")]
 pub mod generation_session;
 pub mod gguf;
