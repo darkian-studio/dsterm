@@ -17,7 +17,7 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 
 #[cfg(feature = "llama")]
-use crate::ai::backend_trait::TokenSink;
+use crate::ai::backend_trait::{InferenceBackend, TokenSink};
 #[cfg(feature = "llama")]
 use crate::ai::context_config::ContextConfig;
 use crate::ai::error::{self, AiError};
@@ -1110,7 +1110,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     }
 }
 
-async fn get_chat_template(state: &AiState, model_id: &str) -> Option<String> {
+async fn get_chat_template(_state: &AiState, model_id: &str) -> Option<String> {
     let models_dir =
         std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
             .join(".darkian/models");
@@ -1396,6 +1396,15 @@ async fn run_generation(
     _cancel: Arc<AtomicBool>,
     _session_state: Arc<RwLock<SessionState>>,
 ) -> Result<(), String> {
+    let _ = (
+        _receiver,
+        _state,
+        _params,
+        _prompt,
+        _model_id,
+        _cancel,
+        _session_state,
+    );
     let _ = sender
         .send(Message::Text(
             serde_json::to_string(&GenerationEvent::Done)

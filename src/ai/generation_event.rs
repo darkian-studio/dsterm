@@ -1,5 +1,4 @@
 use serde::Serialize;
-use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

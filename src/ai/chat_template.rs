@@ -47,7 +47,7 @@ fn render_for_loop(template: &str, messages: &[Value]) -> Result<String, String>
     for msg in messages {
         let role = msg["role"].as_str().unwrap_or("user");
         let content = msg["content"].as_str().unwrap_or("");
-        let mut line = body_template
+        let line = body_template
             .replace("{{ message.role }}", role)
             .replace("{{ message.content }}", content)
             .replace("{{ msg.role }}", role)
