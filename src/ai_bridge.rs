@@ -22,6 +22,8 @@ use tokio::sync::RwLock;
 use crate::ai::backend_trait::{InferenceBackend, TokenSink};
 #[cfg(feature = "llama")]
 use crate::ai::context_config::ContextConfig;
+#[cfg(feature = "llama")]
+use crate::ai::output_parser::OutputParser;
 use crate::ai::error::{self, AiError};
 use crate::ai::generation_event::{GenerationEvent, SessionState};
 use crate::ai::inspect;
@@ -818,7 +820,7 @@ async fn ai_capabilities() -> impl IntoResponse {
             "fim": cfg!(feature = "llama"),
         "fim_streaming": cfg!(feature = "llama"),
             "embeddings": false,
-            "tool_calling": false,
+            "tool_calling": cfg!(feature = "llama"),
             "streaming": cfg!(feature = "llama"),
             "model_inspection": true,
             "gguf_parsing": true,
@@ -1182,6 +1184,7 @@ async fn run_generation(
         tx: sink_tx,
         cancel: cancel.clone(),
         first_token: std::sync::atomic::AtomicBool::new(false),
+        tool_parser: crate::ai::output_parser::ToolCallParser::new(),
     });
 
     let prompt_owned = prompt.to_string();
@@ -1222,7 +1225,8 @@ async fn run_generation(
                     Some(e @ (GenerationEvent::Usage { .. }
                              | GenerationEvent::Done
                              | GenerationEvent::Error { .. }
-                             | GenerationEvent::Reasoning { .. })) => {
+                             | GenerationEvent::Reasoning { .. }
+                             | GenerationEvent::ToolCall { .. })) => {
                         let json = serde_json::to_string(&e).unwrap();
                         let _ = sender.send(Message::Text(json.into())).await;
                         if matches!(e, GenerationEvent::Done | GenerationEvent::Error { .. }) {
@@ -1285,6 +1289,27 @@ async fn run_generation(
             return Err(format!("task failed: {e}"));
         }
     };
+
+    // Scan completed output for any tool calls not yet extracted during streaming
+    let final_tool_calls = crate::ai::output_parser::extract_tool_calls(&output.text);
+    for tc_event in &final_tool_calls {
+        if let crate::ai::stream_event::StreamEvent::ToolCall {
+            id, function_name, arguments, ..
+        } = tc_event
+        {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(&GenerationEvent::ToolCall {
+                        id: id.clone(),
+                        function_name: function_name.clone(),
+                        arguments: arguments.clone(),
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await;
+        }
+    }
 
     if generation_done {
         let elapsed = start_time.elapsed();
@@ -1364,6 +1389,24 @@ struct GenerationWsSink {
     tx: tokio::sync::mpsc::Sender<GenerationEvent>,
     cancel: Arc<AtomicBool>,
     first_token: std::sync::atomic::AtomicBool,
+    tool_parser: crate::ai::output_parser::ToolCallParser,
+}
+
+#[cfg(feature = "llama")]
+impl GenerationWsSink {
+    fn send_tool_call(&mut self, event: &crate::ai::stream_event::StreamEvent) {
+        if let crate::ai::stream_event::StreamEvent::ToolCall {
+            id, function_name, arguments, ..
+        } = event
+        {
+            let tc = GenerationEvent::ToolCall {
+                id: id.clone(),
+                function_name: function_name.clone(),
+                arguments: arguments.clone(),
+            };
+            let _ = self.tx.try_send(tc);
+        }
+    }
 }
 
 #[cfg(feature = "llama")]
@@ -1373,6 +1416,14 @@ impl TokenSink for GenerationWsSink {
             return Err("cancelled".into());
         }
         self.first_token.store(true, Ordering::Relaxed);
+
+        // Feed token to tool call parser — it extracts tool calls from the raw output
+        let tool_events = self.tool_parser.push(token);
+        for event in &tool_events {
+            self.send_tool_call(event);
+        }
+
+        // Always forward the raw token as text for the client
         let event = GenerationEvent::Text {
             text: token.to_string(),
         };

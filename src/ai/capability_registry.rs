@@ -45,6 +45,7 @@ impl CapabilityRegistry {
             reg.register("per_token_streaming");
             reg.register("thinking");
             reg.register("fim_streaming");
+            reg.register("tool_calling");
         }
         reg.register("model_inspection");
         reg.register("gguf_parsing");

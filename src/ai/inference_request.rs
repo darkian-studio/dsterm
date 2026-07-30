@@ -68,6 +68,10 @@ pub struct InferenceRequest {
     pub n_threads: i32,
     #[serde(default)]
     pub tools: Vec<ToolCallData>,
+    /// Tool definitions in OpenAI-compatible JSON schema format.
+    /// Passed from the client so the model knows what tools are available.
+    #[serde(default)]
+    pub tool_definitions: Vec<serde_json::Value>,
     /// Model architecture (e.g. "llama", "qwen2", "deepseek2").
     /// Used for template selection. Set by the backend after model resolution.
     #[serde(default)]
@@ -172,6 +176,24 @@ impl InferenceRequest {
             n_batch: body.get("n_batch").and_then(|v| v.as_u64()).unwrap_or(512) as u32,
             n_threads: body.get("n_threads").and_then(|v| v.as_i64()).unwrap_or(-1) as i32,
             tools: Vec::new(),
+            tool_definitions: body
+                .get("tool_definitions")
+                .or_else(|| body.get("tools"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|tc| {
+                            // Accept both {"function": {...}} and direct tool schemas
+                            let obj = tc.get("function").unwrap_or(tc);
+                            if obj.get("name").and_then(|v| v.as_str()).is_some() {
+                                Some(obj.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             architecture: body.get("architecture").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             metadata: json!({}),
             stream: body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
