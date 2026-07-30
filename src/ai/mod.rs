@@ -6,6 +6,7 @@ pub mod gguf;
 pub mod inference_error;
 pub mod inspect;
 pub mod llama;
+#[cfg(feature = "llama")]
 pub mod llama_backend;
 pub mod metrics;
 pub mod pool;
