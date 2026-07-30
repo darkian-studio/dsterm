@@ -200,4 +200,20 @@ extern "C" {
     #[link_name = "llama_kv_cache_clear"]
     #[allow(dead_code)]
     pub fn llama_kv_cache_clear(ctx: *mut std::ffi::c_void);
+
+    #[link_name = "llama_sample_top_k"]
+    pub fn llama_sample_top_k(
+        ctx: *mut std::ffi::c_void,
+        candidates: *mut llama_token_data_array,
+        k: c_int,
+        min_keep: usize,
+    );
+
+    #[link_name = "llama_sample_min_p"]
+    pub fn llama_sample_min_p(
+        ctx: *mut std::ffi::c_void,
+        candidates: *mut llama_token_data_array,
+        p: c_float,
+        min_keep: usize,
+    );
 }

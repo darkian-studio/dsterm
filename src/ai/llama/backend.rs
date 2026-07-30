@@ -332,6 +332,15 @@ impl LlamaContext {
     }
 
     #[allow(dead_code)]
+    pub fn ctx_ptr(&self) -> *mut std::ffi::c_void {
+        self.ptr.as_ptr()
+    }
+
+    pub fn ptr_mut(&mut self) -> *mut std::ffi::c_void {
+        self.ptr.as_ptr()
+    }
+
+    #[allow(dead_code)]
     pub fn kv_cache_clear(&mut self) {
         unsafe { llama_kv_cache_clear(self.ptr.as_ptr()) }
     }
