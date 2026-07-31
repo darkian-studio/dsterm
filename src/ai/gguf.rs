@@ -1028,7 +1028,7 @@ mod tests {
 
         // tensor info section ends here; pad to 32 and append data
         let info_end = buf.len() as u64;
-        let data_start = (info_end + 31) / 32 * 32;
+        let data_start = info_end.div_ceil(32);
         buf.extend_from_slice(&vec![0u8; (data_start - info_end) as usize]);
         buf.extend_from_slice(&[0u8; 96]); // 48 + 48 bytes of F32 data
         (buf, data_start)
