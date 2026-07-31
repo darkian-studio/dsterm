@@ -210,11 +210,7 @@ Some text after."#;
         let events = parser
             .push("[TOOL_CALL] {\"name\":\"search_web\",\"arguments\":{\"query\":\"rust async\"}}");
         assert_eq!(events.len(), 1);
-        if let StreamEvent::ToolCall {
-            function_name,
-            ..
-        } = &events[0]
-        {
+        if let StreamEvent::ToolCall { function_name, .. } = &events[0] {
             assert_eq!(function_name, "search_web");
         } else {
             panic!("expected ToolCall event");

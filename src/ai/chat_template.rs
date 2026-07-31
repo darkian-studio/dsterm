@@ -389,11 +389,9 @@ mod tests {
 
     #[test]
     fn test_architecture_selection() {
-        assert!(
-            !std::ptr::eq(
-                for_architecture("llama-3-8b").as_ref(),
-                for_architecture("qwen2-7b").as_ref(),
-            )
-        );
+        assert!(!std::ptr::eq(
+            for_architecture("llama-3-8b").as_ref(),
+            for_architecture("qwen2-7b").as_ref(),
+        ));
     }
 }

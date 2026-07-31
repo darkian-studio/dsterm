@@ -481,5 +481,4 @@ mod tests {
         assert_eq!(cc.n_ctx, 4096);
         assert_eq!(cc.n_batch, 256);
     }
-
 }

@@ -88,7 +88,7 @@ pub struct ModelRegistryInner {
 impl ModelRegistryInner {
     fn storage_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(home).join(".darkian/ai_model_registry.json")
+        PathBuf::from(home).join(".ds/ai_model_registry.json")
     }
 
     pub fn load() -> Self {
@@ -655,8 +655,7 @@ async fn ai_generate_shared(
         .ok_or_else(|| error::model_not_found(model_id))?;
 
     let (_pool_id, arch, llama_model) = loaded;
-    let model =
-        llama_model.ok_or_else(|| error::internal_error("model has no llama backend"))?;
+    let model = llama_model.ok_or_else(|| error::internal_error("model has no llama backend"))?;
     req.architecture = arch;
     drop(pool);
 
@@ -786,8 +785,8 @@ async fn ai_embed(
             .ok_or_else(|| error::model_not_found(model_id))?;
 
         let (_pool_id, llama_model) = loaded;
-        let model = llama_model
-            .ok_or_else(|| error::internal_error("model has no llama backend"))?;
+        let model =
+            llama_model.ok_or_else(|| error::internal_error("model has no llama backend"))?;
         drop(pool);
 
         let backend = Arc::new(LlamaBackend::new(model));

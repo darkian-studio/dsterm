@@ -85,7 +85,10 @@ impl InferenceError {
     pub fn recoverable(&self) -> bool {
         matches!(
             self,
-            Self::Cancelled | Self::ModelBusy(_) | Self::Timeout { .. } | Self::BackendUnavailable(_)
+            Self::Cancelled
+                | Self::ModelBusy(_)
+                | Self::Timeout { .. }
+                | Self::BackendUnavailable(_)
         )
     }
 }

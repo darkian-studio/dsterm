@@ -300,8 +300,7 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
             continue;
         }
 
-        let batch =
-            unsafe { llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
+        let batch = unsafe { llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
         let ret = unsafe { llama_decode(ctx.ptr_mut(), batch) };
         if ret != 0 {
             return Err(InferenceError::decode_failed(format!(
