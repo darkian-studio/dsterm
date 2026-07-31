@@ -814,9 +814,10 @@ pub async fn execute_command(Json(options): Json<ExecuteCommandOption>) -> impl 
     let cwd = options.cwd.or(options.u_cwd).unwrap_or("".to_string());
 
     tracing::info!(
+        handler = "execute_command",
         command = %options.command,
         cwd = %cwd,
-        "Executing command"
+        "HANDLER_ENTERED execute_command"
     );
 
     let shell = shell_program();
@@ -962,10 +963,17 @@ pub async fn silent_exec(Json(options): Json<SilentExecRequest>) -> impl IntoRes
     let id = options.id.clone();
     let command = options.command.clone();
     let cwd = options.cwd.clone();
-    let env = options.env.clone();
     let timeout_ms = options.timeout_ms.unwrap_or(30000);
 
-    tracing::info!(id = %id, command = %command, cwd = ?cwd, timeout_ms, "Executing silent command");
+    tracing::info!(
+        handler = "silent_exec",
+        id = %id,
+        command = %command,
+        cwd = ?cwd,
+        timeout_ms_raw = ?options.timeout_ms,
+        timeout_ms_resolved = timeout_ms,
+        "HANDLER_ENTERED silent_exec"
+    );
 
     if command.trim().is_empty() {
         return (
