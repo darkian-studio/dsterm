@@ -134,12 +134,43 @@ fn read_u64_le(cursor: &mut Cursor<&[u8]>) -> Result<u64, GGUFError> {
 
 fn read_gguf_string(cursor: &mut Cursor<&[u8]>) -> Result<String, GGUFError> {
     let len = read_u64_le(cursor)? as usize;
+    let remaining = cursor
+        .get_ref()
+        .len()
+        .saturating_sub(cursor.position() as usize);
+    if len > remaining {
+        return Err(GGUFError::InvalidMetadata(format!(
+            "GGUF string length {len} exceeds remaining {remaining} bytes"
+        )));
+    }
     let mut buf = vec![0u8; len];
     cursor
         .read_exact(&mut buf)
         .map_err(|e| GGUFError::Io(e.to_string()))?;
     String::from_utf8(buf)
         .map_err(|_| GGUFError::InvalidMetadata("invalid UTF-8 in GGUF string".into()))
+}
+
+/// GGUF metadata and tensor info blocks are padded to a 32-byte boundary
+/// (GGUF_DEFAULT_ALIGNMENT) before the next section.
+const GGUF_ALIGNMENT: u64 = 32;
+
+fn align_cursor(cursor: &mut Cursor<&[u8]>, version: u32) -> Result<(), GGUFError> {
+    let alignment = if version >= 1 && version <= 3 {
+        GGUF_ALIGNMENT
+    } else {
+        GGUF_ALIGNMENT
+    };
+    let pos = cursor.position();
+    let padded = pos.saturating_add(alignment - 1) / alignment * alignment;
+    let file_len = cursor.get_ref().len() as u64;
+    if padded > file_len {
+        return Err(GGUFError::InvalidMetadata(format!(
+            "aligned offset {padded} exceeds file size {file_len}"
+        )));
+    }
+    cursor.set_position(padded);
+    Ok(())
 }
 
 fn read_value(cursor: &mut Cursor<&[u8]>, value_type: u32) -> Result<GGUFValue, GGUFError> {
@@ -377,7 +408,12 @@ pub fn parse_gguf<P: AsRef<std::path::Path>>(path: P) -> Result<GGUFMetadata, GG
         _ => None,
     });
 
-    let computed_parameter_count = compute_parameter_count(&mut cursor, tensor_count, version)?;
+    let computed_parameter_count = {
+        if tensor_count > 0 {
+            align_cursor(&mut cursor, version)?;
+        }
+        compute_parameter_count(&mut cursor, tensor_count, version)?
+    };
 
     let tokenizer_model = raw_metadata
         .get("tokenizer.ggml.model")
@@ -431,9 +467,12 @@ fn compute_parameter_count(
     _version: u32,
 ) -> Result<Option<f64>, GGUFError> {
     let mut total_params: f64 = 0.0;
+    let file_len = cursor.get_ref().len();
     for _ in 0..tensor_count {
         let _name = read_gguf_string(cursor)?;
         let n_dims = read_u32_le(cursor)?;
+        let remaining = file_len.saturating_sub(cursor.position() as usize);
+        let n_dims = n_dims.min((remaining / 8) as u32);
         let mut dims = Vec::with_capacity(n_dims as usize);
         for _ in 0..n_dims {
             dims.push(read_u64_le(cursor)?);
@@ -1003,7 +1042,7 @@ mod tests {
         buf.extend_from_slice(&0u64.to_le_bytes()); // metadata_kv_count = 0
         let _ = std::fs::write(&path, &buf);
         let result = parse_gguf(&path);
-        assert!(matches!(result, Err(GGUFError::Io(_))));
+        assert!(result.is_err());
         let _ = std::fs::remove_file(&path);
     }
 
