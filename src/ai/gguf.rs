@@ -151,28 +151,6 @@ fn read_gguf_string(cursor: &mut Cursor<&[u8]>) -> Result<String, GGUFError> {
         .map_err(|_| GGUFError::InvalidMetadata("invalid UTF-8 in GGUF string".into()))
 }
 
-/// GGUF metadata and tensor info blocks are padded to a 32-byte boundary
-/// (GGUF_DEFAULT_ALIGNMENT) before the next section.
-const GGUF_ALIGNMENT: u64 = 32;
-
-fn align_cursor(cursor: &mut Cursor<&[u8]>, version: u32) -> Result<(), GGUFError> {
-    let alignment = if version >= 1 && version <= 3 {
-        GGUF_ALIGNMENT
-    } else {
-        GGUF_ALIGNMENT
-    };
-    let pos = cursor.position();
-    let padded = pos.saturating_add(alignment - 1) / alignment * alignment;
-    let file_len = cursor.get_ref().len() as u64;
-    if padded > file_len {
-        return Err(GGUFError::InvalidMetadata(format!(
-            "aligned offset {padded} exceeds file size {file_len}"
-        )));
-    }
-    cursor.set_position(padded);
-    Ok(())
-}
-
 fn read_value(cursor: &mut Cursor<&[u8]>, value_type: u32) -> Result<GGUFValue, GGUFError> {
     match value_type {
         0 => {
@@ -408,12 +386,7 @@ pub fn parse_gguf<P: AsRef<std::path::Path>>(path: P) -> Result<GGUFMetadata, GG
         _ => None,
     });
 
-    let computed_parameter_count = {
-        if tensor_count > 0 {
-            align_cursor(&mut cursor, version)?;
-        }
-        compute_parameter_count(&mut cursor, tensor_count, version)?
-    };
+    let computed_parameter_count = { compute_parameter_count(&mut cursor, tensor_count, version)? };
 
     let tokenizer_model = raw_metadata
         .get("tokenizer.ggml.model")
@@ -478,6 +451,7 @@ fn compute_parameter_count(
             dims.push(read_u64_le(cursor)?);
         }
         let _tensor_type = read_u32_le(cursor)?;
+        let _data_offset = read_u64_le(cursor)?;
 
         let mut tensor_params: f64 = 1.0;
         for d in &dims {
@@ -1014,6 +988,84 @@ mod tests {
             Some(42)
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Builds a valid GGUF v3 with 1 KV pair and 2 tensors. Layout per spec:
+    /// header, KV pairs, tensor info entries immediately (no padding, no extra
+    /// count field), then 32-byte-aligned tensor data. Returns (bytes, offset
+    /// of the first tensor data byte).
+    fn multi_tensor_gguf_buf() -> (Vec<u8>, u64) {
+        let mut buf = b"GGUF".to_vec();
+        buf.extend_from_slice(&3u32.to_le_bytes()); // version
+        buf.extend_from_slice(&2u64.to_le_bytes()); // tensor_count
+        buf.extend_from_slice(&1u64.to_le_bytes()); // metadata_kv_count = 1
+        let key = "general.architecture";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key.as_bytes());
+        buf.extend_from_slice(&8u32.to_le_bytes()); // type = string
+        let val = "qwen3";
+        buf.extend_from_slice(&(val.len() as u64).to_le_bytes());
+        buf.extend_from_slice(val.as_bytes());
+
+        // tensor[0] "output.weight", dims (3, 4), F32, offset 0
+        let t0_name = "output.weight";
+        buf.extend_from_slice(&(t0_name.len() as u64).to_le_bytes());
+        buf.extend_from_slice(t0_name.as_bytes());
+        buf.extend_from_slice(&2u32.to_le_bytes()); // n_dims
+        buf.extend_from_slice(&3u64.to_le_bytes()); // dims[0]
+        buf.extend_from_slice(&4u64.to_le_bytes()); // dims[1]
+        buf.extend_from_slice(&0u32.to_le_bytes()); // type = F32
+        buf.extend_from_slice(&0u64.to_le_bytes()); // offset
+
+        // tensor[1] "output.bias", dims (12,), F32, offset 48
+        let t1_name = "output.bias";
+        buf.extend_from_slice(&(t1_name.len() as u64).to_le_bytes());
+        buf.extend_from_slice(t1_name.as_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes()); // n_dims
+        buf.extend_from_slice(&12u64.to_le_bytes()); // dims[0]
+        buf.extend_from_slice(&0u32.to_le_bytes()); // type = F32
+        buf.extend_from_slice(&48u64.to_le_bytes()); // offset
+
+        // tensor info section ends here; pad to 32 and append data
+        let info_end = buf.len() as u64;
+        let data_start = (info_end + 31) / 32 * 32;
+        buf.extend_from_slice(&vec![0u8; (data_start - info_end) as usize]);
+        buf.extend_from_slice(&[0u8; 96]); // 48 + 48 bytes of F32 data
+        (buf, data_start)
+    }
+
+    #[test]
+    fn test_parse_multi_tensor_fixture() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("multi_tensor.gguf");
+        let (buf, data_start) = multi_tensor_gguf_buf();
+        let _ = std::fs::write(&path, &buf);
+        let meta = parse_gguf(&path).unwrap();
+        assert_eq!(meta.version, 3);
+        assert_eq!(meta.tensor_count, 2);
+        assert_eq!(meta.architecture.as_deref(), Some("qwen3"));
+        assert_eq!(meta.computed_parameter_count, Some(24.0));
+        assert_eq!(data_start % 32, 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_compute_parameter_count_ends_at_tensor_info_boundary() {
+        let (buf, _) = multi_tensor_gguf_buf();
+        let mut cursor = Cursor::new(buf.as_slice());
+
+        // header: magic(4) + version(4) + tensor_count(8) + kv_count(8)
+        cursor.set_position(24);
+        // skip the single KV pair: key len(8) + key(16) + type(4) + val len(8) + val(5)
+        cursor.set_position(cursor.position() + 8 + 16 + 4 + 8 + 5);
+        assert_eq!(cursor.position(), 65);
+
+        // tensor[0]: len(8) + "output.weight"(13) + n_dims(4) + dims(16) + type(4) + offset(8) = 53
+        // tensor[1]: len(8) + "output.bias"(12) + n_dims(4) + dims(8) + type(4) + offset(8) = 44
+        let expected_boundary = 65 + 53 + 44;
+        let params = compute_parameter_count(&mut cursor, 2, 3).unwrap();
+        assert_eq!(params, Some(24.0));
+        assert_eq!(cursor.position(), expected_boundary);
     }
 
     #[test]
