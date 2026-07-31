@@ -965,7 +965,7 @@ pub async fn silent_exec(Json(options): Json<SilentExecRequest>) -> impl IntoRes
     let env = options.env.clone();
     let timeout_ms = options.timeout_ms.unwrap_or(30000);
 
-    tracing::info!(id = %id, command = %command, cwd = ?cwd, "Executing silent command");
+    tracing::info!(id = %id, command = %command, cwd = ?cwd, timeout_ms, "Executing silent command");
 
     if command.trim().is_empty() {
         return (
