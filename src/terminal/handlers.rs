@@ -963,6 +963,7 @@ pub async fn silent_exec(Json(options): Json<SilentExecRequest>) -> impl IntoRes
     let id = options.id.clone();
     let command = options.command.clone();
     let cwd = options.cwd.clone();
+    let env = options.env.clone();
     let timeout_ms = options.timeout_ms.unwrap_or(30000);
 
     tracing::info!(
