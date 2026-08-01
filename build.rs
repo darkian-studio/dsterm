@@ -51,8 +51,13 @@ fn build_llama() {
         // which exports the legacy `std::__1` ABI while llama.cpp is compiled
         // against the NDK `std::__ndk1` ABI. Linking `-lc++_shared` instead
         // makes the binary depend on libc++_shared.so at runtime (Termux only
-        // finds it via LD_LIBRARY_PATH), so statically link the NDK libc++.
-        "android" => println!("cargo:rustc-link-arg=-static-libstdc++"),
+        // finds it via LD_LIBRARY_PATH), so link the NDK's static libc++ and
+        // libunwind explicitly; `-static-libstdc++` is a no-op because rustc
+        // links with -nodefaultlibs (which drops the driver's default libs).
+        "android" => {
+            println!("cargo:rustc-link-lib=static=c++_static");
+            println!("cargo:rustc-link-lib=static=unwind");
+        }
         "macos" | "ios" => println!("cargo:rustc-link-lib=c++"),
         "linux" => println!("cargo:rustc-link-lib=stdc++"),
         _ => {}
