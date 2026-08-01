@@ -20,11 +20,11 @@ use tokio::sync::RwLock;
 
 #[cfg(feature = "llama")]
 use crate::ai::backend_trait::{InferenceBackend, TokenSink};
+#[cfg(feature = "llama")]
+use crate::ai::context_config::auto_n_ctx;
 use crate::ai::error::{self, AiError};
 use crate::ai::generation_event::{GenerationEvent, SessionState};
 use crate::ai::inspect;
-#[cfg(feature = "llama")]
-use crate::ai::context_config::auto_n_ctx;
 #[cfg(feature = "llama")]
 use crate::ai::llama_backend::LlamaBackend;
 #[cfg(feature = "llama")]
