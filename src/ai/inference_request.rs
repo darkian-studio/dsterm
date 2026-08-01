@@ -198,7 +198,7 @@ impl InferenceRequest {
                 .unwrap_or("")
                 .to_string(),
             priority: body.get("priority").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-            n_ctx: body.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(2048) as u32,
+            n_ctx: body.get("n_ctx").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             n_batch: body.get("n_batch").and_then(|v| v.as_u64()).unwrap_or(512) as u32,
             n_threads: body.get("n_threads").and_then(|v| v.as_i64()).unwrap_or(-1) as i32,
             tools: Vec::new(),
