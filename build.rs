@@ -11,7 +11,13 @@ fn build_llama() {
         .define("BUILD_SHARED_LIBS", "OFF")
         // OpenMP adds a libomp runtime dependency (only a static lib on
         // Termux, absent elsewhere); ggml-cpu threads fine without it.
-        .define("GGML_OPENMP", "OFF");
+        .define("GGML_OPENMP", "OFF")
+        // dsterm only uses the CPU backend and never links ggml-metal,
+        // ggml-blas or the Accelerate framework; the backend registry would
+        // otherwise emit undefined metal_reg/blas_reg and vDSP references.
+        .define("GGML_METAL", "OFF")
+        .define("GGML_BLAS", "OFF")
+        .define("GGML_ACCELERATE", "OFF");
     if std::process::Command::new("ninja")
         .arg("--version")
         .output()
@@ -26,14 +32,16 @@ fn build_llama() {
     let dst = cfg.build();
 
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
-    // Order matters for static archives: each lib must be scanned before the
-    // libs that satisfy its unresolved symbols.
+    // Order matters for static archives with single-pass linkers (e.g. the
+    // binutils 2.32 shipped with musl-cross): ggml-backend-reg.cpp in libggml
+    // references ggml_backend_cpu_reg in libggml-cpu, so libggml must be
+    // scanned before libggml-cpu, and libggml-cpu before libggml-base.
     println!("cargo:rustc-link-lib=static=dsterm_shim");
     println!("cargo:rustc-link-lib=static=dsterm_common");
     println!("cargo:rustc-link-lib=static=llama");
+    println!("cargo:rustc-link-lib=static=ggml");
     println!("cargo:rustc-link-lib=static=ggml-cpu");
     println!("cargo:rustc-link-lib=static=ggml-base");
-    println!("cargo:rustc-link-lib=static=ggml");
 
     // Rust never links a C++ standard library by default; the llama.cpp
     // archives are C++.
