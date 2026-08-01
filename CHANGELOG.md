@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] - 2026-08-01
+
+### Added
+- **Local inference backend (`llama` feature)** — llama.cpp (tag `b10210`) is
+  vendored under `third_party/` and built via CMake, so the feature now links a
+  real on-device inference engine (Qwen3 support included). Build with
+  `cargo build --features llama`; system deps: CMake ≥ 3.14 and a C++17
+  compiler (Termux: `pkg install cmake binutils`). Release binaries ship with
+  the feature enabled.
+
+### Changed
+- **Repeat / frequency / presence penalties now actually apply.** The sampler
+  used to be built with an empty token history, so these settings were
+  displayed and configured but never did anything. Penalties are now computed
+  over the full context window (`penalty_last_n = -1`). If you have non-default
+  penalty values set, generation output will change — typically towards less
+  repetition.
+- Inference endpoints on builds **without** the `llama` feature now return an
+  explicit `INTERNAL_SERVER_ERROR` ("Inference backend not compiled. Rebuild
+  dsterm with the `llama` feature enabled.") instead of silently succeeding
+  with `success: true, text: ""`. The WebSocket path sends an Error event
+  instead of a fake Done.
+
+### Fixed
+- **Batch lifecycle crash** — `llama_batch_get_one()` allocates nothing: its
+  `.token` field is the caller's own buffer. Passing such a batch to
+  `llama_batch_free()` called `free()` on Rust-owned memory, which aborted the
+  daemon with scudo's "Pointer tag ... truncated" on Android. Batches from
+  `get_one()` are now never freed (`llama_decode()` does not manage batch
+  lifecycle either). Fixed at all three call sites: prompt processing, the
+  token loop, and embeddings.
+
 ## [1.6.4]
 
 ### Fixed
