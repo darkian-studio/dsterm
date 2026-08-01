@@ -7,9 +7,40 @@ use crate::ai::backend_trait::*;
 use crate::ai::context_config::ContextConfig;
 use crate::ai::context_manager::InferenceContext;
 use crate::ai::inference_error::InferenceError;
+use crate::ai::inference_request::{InferenceMode, InferenceRequest};
 use crate::ai::llama::bindings::*;
 use crate::ai::llama::{self, backend::LlamaContext, LlamaModel};
 use crate::ai::sampler::{LlamaSampler, Sampler, SamplingConfig};
+
+/// D1: reasoning off by default -- direct answers for an inline coding
+/// assistant. Flip to true to surface the model's chain of thought (which
+/// then gets stripped per D2).
+const ENABLE_THINKING: bool = false;
+
+/// D3: pocketpal-ai's static cross-model-family stop list, ported verbatim.
+/// Costs nothing to carry; dsterm may load other model families later.
+const FALLBACK_STOPS: &[&str] = &[
+    "</s>",
+    "<|eot_id|>",
+    "<|end_of_text|>",
+    "<|im_end|>",
+    "<|EOT|>",
+    "<|END_OF_TURN_TOKEN|>",
+    "<|end_of_turn|>",
+    "<end_of_turn>",
+    "<|endoftext|>",
+    "<|return|>",
+    "<|END_RESPONSE|>",
+];
+
+/// What `run_generation` needs beyond the raw prompt string: template-implied
+/// stop strings and the model's thinking tags (for D2 stripping).
+pub struct GenerationPrompt {
+    pub text: String,
+    pub stops: Vec<String>,
+    pub thinking_start_tag: Option<String>,
+    pub thinking_end_tags: Vec<String>,
+}
 
 pub struct LlamaBackend {
     model: Arc<LlamaModel>,
@@ -63,7 +94,7 @@ impl InferenceBackend for LlamaBackend {
 
     async fn generate(
         &self,
-        prompt: &str,
+        request: &InferenceRequest,
         context_config: ContextConfig,
         sampling_config: SamplingConfig,
         max_tokens: i32,
@@ -71,7 +102,7 @@ impl InferenceBackend for LlamaBackend {
         context_config.validate()?;
 
         let model = self.model.clone();
-        let prompt = prompt.to_string();
+        let prompt = self.resolve_prompt(request)?;
         let cancel = Arc::new(AtomicBool::new(false));
 
         let handle = tokio::task::spawn_blocking(move || {
@@ -93,7 +124,7 @@ impl InferenceBackend for LlamaBackend {
 
     async fn generate_streaming(
         &self,
-        prompt: &str,
+        request: &InferenceRequest,
         context_config: ContextConfig,
         sampling_config: SamplingConfig,
         max_tokens: i32,
@@ -102,7 +133,7 @@ impl InferenceBackend for LlamaBackend {
         context_config.validate()?;
 
         let model = self.model.clone();
-        let prompt = prompt.to_string();
+        let prompt = self.resolve_prompt(request)?;
         let cancel = Arc::new(AtomicBool::new(false));
 
         let handle = tokio::task::spawn_blocking(move || {
@@ -139,9 +170,126 @@ async fn create_default_context(model: &LlamaModel) -> BackendResult<LlamaContex
         .map_err(InferenceError::context_creation_failed)
 }
 
+impl LlamaBackend {
+    /// Resolve the request into the prompt that actually gets tokenized.
+    /// Chat mode uses the model's native chat template (llama.cpp's Jinja2
+    /// engine, wrapped by the shim); everything else keeps the legacy
+    /// resolution (prompt / FIM prefix-suffix).
+    fn resolve_prompt(&self, request: &InferenceRequest) -> BackendResult<GenerationPrompt> {
+        if !matches!(request.mode, InferenceMode::Chat) {
+            return Ok(GenerationPrompt {
+                text: request.resolved_prompt_fim(None, Some(&request.architecture)),
+                stops: Vec::new(),
+                thinking_start_tag: None,
+                thinking_end_tags: Vec::new(),
+            });
+        }
+        self.resolve_chat_prompt(request)
+    }
+
+    fn resolve_chat_prompt(&self, request: &InferenceRequest) -> BackendResult<GenerationPrompt> {
+        let legacy = || GenerationPrompt {
+            text: request.resolved_prompt(None),
+            stops: FALLBACK_STOPS.iter().map(|s| s.to_string()).collect(),
+            thinking_start_tag: None,
+            thinking_end_tags: Vec::new(),
+        };
+
+        let Some(templates) = self.model.chat_templates() else {
+            return Ok(legacy());
+        };
+
+        let messages = assemble_messages(request);
+        match templates.apply(&messages, ENABLE_THINKING) {
+            Ok(out) => {
+                let mut stops = out.additional_stops;
+                stops.extend(FALLBACK_STOPS.iter().map(|s| s.to_string()));
+                Ok(GenerationPrompt {
+                    text: out.prompt,
+                    stops,
+                    thinking_start_tag: out.thinking_start_tag,
+                    thinking_end_tags: out.thinking_end_tags,
+                })
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "chat template apply failed ({e}); falling back to legacy formatting"
+                );
+                Ok(legacy())
+            }
+        }
+    }
+}
+
+/// Merge every system message into a single leading one (strict chat
+/// templates raise on a second system message), then pass the turns through
+/// in order.
+fn assemble_messages(request: &InferenceRequest) -> Vec<(String, String)> {
+    let mut system = String::new();
+    let mut turns = Vec::with_capacity(request.messages.len());
+    for m in &request.messages {
+        if m.role == "system" {
+            if !system.is_empty() {
+                system.push('\n');
+            }
+            system.push_str(&m.content);
+        } else {
+            turns.push((m.role.clone(), m.content.clone()));
+        }
+    }
+    if !system.is_empty() {
+        let mut out = Vec::with_capacity(turns.len() + 1);
+        out.push(("system".to_string(), system));
+        out.extend(turns);
+        out
+    } else {
+        turns
+    }
+}
+
+/// If `text` ends with any stop string, return the index where the stop
+/// begins so the caller can truncate it away.
+fn match_stop(text: &str, stops: &[String]) -> Option<usize> {
+    for stop in stops {
+        if stop.is_empty() {
+            continue;
+        }
+        if text.ends_with(stop.as_str()) {
+            return Some(text.len() - stop.len());
+        }
+    }
+    None
+}
+
+/// D2: strip a thinking block using the model's actual tags (not
+/// pattern-guessed ones). Removes [start .. first end tag]; an unclosed
+/// block is removed to the end of the text.
+fn strip_thinking(mut text: String, start_tag: &Option<String>, end_tags: &[String]) -> String {
+    let Some(start) = start_tag else {
+        return text;
+    };
+    let Some(start_pos) = text.find(start.as_str()) else {
+        return text;
+    };
+
+    let after = &text[start_pos + start.len()..];
+    let end_pos = end_tags
+        .iter()
+        .filter_map(|t| {
+            after
+                .find(t.as_str())
+                .map(|i| start_pos + start.len() + i + t.len())
+        })
+        .min()
+        .unwrap_or(text.len());
+
+    text.replace_range(start_pos..end_pos, "");
+    text
+}
+
 fn run_generation(
     model: Arc<LlamaModel>,
-    prompt: String,
+    gen: GenerationPrompt,
     context_config: ContextConfig,
     sampling_config: SamplingConfig,
     max_tokens: i32,
@@ -157,8 +305,10 @@ fn run_generation(
     let eos = ctx.token_eos();
     let bos = ctx.token_bos();
 
+    // The chat template (if any) has already been applied by resolve_prompt;
+    // BOS is added exactly once here (add_bos = true).
     let mut tokens = ctx
-        .tokenize(&prompt, true)
+        .tokenize(&gen.text, true)
         .map_err(InferenceError::tokenization_failed)?;
 
     if tokens.is_empty() {
@@ -231,6 +381,12 @@ fn run_generation(
         match ctx.token_to_piece(token_id) {
             Ok(piece) => {
                 full_text.push_str(&piece);
+                // String-based stop matching against the growing decoded
+                // text: template-implied stops plus the static fallback list.
+                if let Some(cut) = match_stop(&full_text, &gen.stops) {
+                    full_text.truncate(cut);
+                    break;
+                }
                 if let Some(ref mut s) = sink {
                     let _ = s.on_token(&piece);
                 }
@@ -258,8 +414,12 @@ fn run_generation(
         n_past += 1;
     }
 
+    // Strip a thinking block (if any) before the text is returned, so it
+    // never pollutes stored history for the next turn.
+    let text = strip_thinking(full_text, &gen.thinking_start_tag, &gen.thinking_end_tags);
+
     Ok(GenerateOutput {
-        text: full_text,
+        text,
         prompt_tokens,
         completion_tokens: generated,
         stopped_by_eos,

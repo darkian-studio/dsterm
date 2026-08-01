@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::ai::context_config::ContextConfig;
 use crate::ai::context_manager;
 use crate::ai::inference_error::InferenceError;
+use crate::ai::inference_request::InferenceRequest;
 use crate::ai::sampler::SamplingConfig;
 
 pub type BackendResult<T> = Result<T, InferenceError>;
@@ -45,16 +46,19 @@ pub trait InferenceBackend: Send + Sync {
     async fn validate(&self, ctx_config: &ContextConfig) -> BackendResult<()>;
     async fn tokenize(&self, text: &str, add_bos: bool) -> BackendResult<Vec<i32>>;
     async fn detokenize(&self, token: i32) -> BackendResult<String>;
+    /// Generate a completion for `request`. The backend resolves the request
+    /// into a prompt itself (chat backends may apply the model's native chat
+    /// template instead of a pre-flattened string).
     async fn generate(
         &self,
-        prompt: &str,
+        request: &InferenceRequest,
         context_config: ContextConfig,
         sampling_config: SamplingConfig,
         max_tokens: i32,
     ) -> BackendResult<GenerateOutput>;
     async fn generate_streaming(
         &self,
-        prompt: &str,
+        request: &InferenceRequest,
         context_config: ContextConfig,
         sampling_config: SamplingConfig,
         max_tokens: i32,

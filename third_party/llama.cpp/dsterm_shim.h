@@ -47,6 +47,7 @@ typedef struct dsterm_sampler_config {
 /* Model */
 void *      dsterm_llama_model_load(const char *path);          /* NULL on failure */
 const void *dsterm_llama_model_vocab(const void *model);        /* cached vocab handle */
+const void *dsterm_llama_model_raw(const void *model);          /* underlying llama_model* */
 void        dsterm_llama_model_free(void *model);
 int32_t     dsterm_llama_n_embd(const void *model);
 
@@ -72,6 +73,36 @@ float * dsterm_llama_get_embeddings(void *ctx);
 void *  dsterm_llama_sampler_new(const dsterm_sampler_config *cfg); /* NULL on failure */
 int32_t dsterm_llama_sample(void *sampler, void *ctx);              /* -1 on invalid args */
 void    dsterm_llama_sampler_free(void *sampler);
+
+/* Chat templates: llama.cpp's native Jinja2 engine (common/chat.cpp).
+ * init reads the GGUF's own embedded template; "" override, never a custom one. */
+void *dsterm_chat_templates_init(const void *model);     /* NULL on failure */
+void  dsterm_chat_templates_free(void *tmpls);
+bool  dsterm_chat_supports_thinking(const void *tmpls);  /* false on invalid handle */
+
+typedef struct dsterm_chat_message {
+    const char *role;      /* NUL-terminated */
+    const char *content;   /* NUL-terminated */
+} dsterm_chat_message;
+
+/* Heap-allocated by the shim; strings owned by this struct. */
+typedef struct dsterm_chat_result {
+    char  *prompt;                 /* rendered prompt (NUL-terminated) */
+    bool   supports_thinking;
+    char  *thinking_start_tag;     /* NULL if the template has none */
+    char **thinking_end_tags;      /* NULL if none */
+    int32_t n_thinking_end_tags;
+    char **additional_stops;       /* template-implied stop strings, NULL if none */
+    int32_t n_additional_stops;
+} dsterm_chat_result;
+
+/* add_bos/add_eos are always left false: BOS is added exactly once at
+ * tokenize time on the Rust side (dsterm_llama_tokenize's add_bos flag). */
+dsterm_chat_result *dsterm_chat_apply_template(
+    const void *tmpls,
+    const dsterm_chat_message *messages, int32_t n_messages,
+    bool enable_thinking);         /* NULL on failure */
+void dsterm_chat_result_free(dsterm_chat_result *result);
 
 #ifdef __cplusplus
 }

@@ -29,6 +29,7 @@ fn build_llama() {
     // Order matters for static archives: each lib must be scanned before the
     // libs that satisfy its unresolved symbols.
     println!("cargo:rustc-link-lib=static=dsterm_shim");
+    println!("cargo:rustc-link-lib=static=dsterm_common");
     println!("cargo:rustc-link-lib=static=llama");
     println!("cargo:rustc-link-lib=static=ggml-cpu");
     println!("cargo:rustc-link-lib=static=ggml-base");

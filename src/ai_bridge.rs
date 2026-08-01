@@ -1167,7 +1167,7 @@ async fn run_generation(
     _priority: i32,
 ) -> Result<(), String> {
     let start_time = Instant::now();
-    let req = crate::ai::inference_request::InferenceRequest::from_value(params);
+    let mut req = crate::ai::inference_request::InferenceRequest::from_value(params);
 
     // Auto-load & pool acquire
     let (llama_model, pool_id, arch) = {
@@ -1222,10 +1222,13 @@ async fn run_generation(
         ))
         .await;
 
+    // The backend resolves the prompt itself (native chat template for chat
+    // mode); it needs the architecture for FIM template selection.
+    req.architecture = arch;
+
     let context_config = req.to_context_config();
     let sampling_config = req.to_sampling_config();
     let max_tokens = req.max_tokens;
-    let prompt = req.resolved_prompt_fim(None, Some(&arch));
 
     let backend = LlamaBackend::new(llama_model);
 
@@ -1239,17 +1242,11 @@ async fn run_generation(
         tool_parser: crate::ai::output_parser::ToolCallParser::new(),
     });
 
-    let prompt_owned = prompt.to_string();
+    let request = req.clone();
 
     let join_handle = tokio::spawn(async move {
         backend
-            .generate_streaming(
-                &prompt_owned,
-                context_config,
-                sampling_config,
-                max_tokens,
-                sink,
-            )
+            .generate_streaming(&request, context_config, sampling_config, max_tokens, sink)
             .await
     });
 

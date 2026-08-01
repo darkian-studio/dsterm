@@ -51,12 +51,33 @@ pub struct DstermSamplerConfig {
     pub penalty_last_n: i32,
 }
 
+/// Mirror of `dsterm_chat_message` in third_party/llama.cpp/dsterm_shim.h.
+#[repr(C)]
+pub struct DstermChatMessage {
+    pub role: *const c_char,
+    pub content: *const c_char,
+}
+
+/// Mirror of `dsterm_chat_result` in third_party/llama.cpp/dsterm_shim.h.
+/// Heap-allocated by the shim; freed via `dsterm_chat_result_free`.
+#[repr(C)]
+pub struct DstermChatResult {
+    pub prompt: *mut c_char,
+    pub supports_thinking: bool,
+    pub thinking_start_tag: *mut c_char,
+    pub thinking_end_tags: *mut *mut c_char,
+    pub n_thinking_end_tags: c_int,
+    pub additional_stops: *mut *mut c_char,
+    pub n_additional_stops: c_int,
+}
+
 extern "C" {
     // dsterm shim (third_party/llama.cpp/dsterm_shim.c).
     // All *_load / *_new functions return NULL on failure and never partially
     // construct a handle. Rust callers must treat NULL as a recoverable error.
     pub fn dsterm_llama_model_load(path: *const c_char) -> *mut std::ffi::c_void;
     pub fn dsterm_llama_model_vocab(model: *const std::ffi::c_void) -> *const std::ffi::c_void;
+    pub fn dsterm_llama_model_raw(model: *const std::ffi::c_void) -> *const std::ffi::c_void;
     pub fn dsterm_llama_model_free(model: *mut std::ffi::c_void);
     pub fn dsterm_llama_n_embd(model: *const std::ffi::c_void) -> c_int;
 
@@ -95,6 +116,18 @@ extern "C" {
     pub fn dsterm_llama_sample(sampler: *mut std::ffi::c_void, ctx: *mut std::ffi::c_void)
         -> c_int;
     pub fn dsterm_llama_sampler_free(sampler: *mut std::ffi::c_void);
+
+    // Chat templates (native Jinja2 engine, wrapped in dsterm_shim_chat.cpp).
+    pub fn dsterm_chat_templates_init(model: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+    pub fn dsterm_chat_templates_free(tmpls: *mut std::ffi::c_void);
+    pub fn dsterm_chat_supports_thinking(tmpls: *const std::ffi::c_void) -> bool;
+    pub fn dsterm_chat_apply_template(
+        tmpls: *const std::ffi::c_void,
+        messages: *const DstermChatMessage,
+        n_messages: c_int,
+        enable_thinking: bool,
+    ) -> *mut DstermChatResult;
+    pub fn dsterm_chat_result_free(result: *mut DstermChatResult);
 
     // Stable llama.cpp API kept direct (verified against vendored llama.h at b10210).
     pub fn llama_batch_get_one(tokens: *mut llama_token, n_tokens: c_int) -> llama_batch;

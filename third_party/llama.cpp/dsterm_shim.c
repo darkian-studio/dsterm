@@ -46,6 +46,13 @@ const void *dsterm_llama_model_vocab(const void *model) {
     return ((const dsterm_model *)model)->vocab;
 }
 
+const void *dsterm_llama_model_raw(const void *model) {
+    if (model == NULL) {
+        return NULL;
+    }
+    return ((const dsterm_model *)model)->model;
+}
+
 void dsterm_llama_model_free(void *model) {
     if (model == NULL) {
         return;

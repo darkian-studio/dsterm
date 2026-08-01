@@ -22,7 +22,6 @@ impl ImmediateScheduler {
     ) -> Result<GenerateOutput, InferenceError> {
         let config = request.to_context_config();
         let sampling = request.to_sampling_config();
-        let prompt = request.resolved_prompt(None);
 
         config.validate()?;
 
@@ -42,7 +41,7 @@ impl ImmediateScheduler {
 
         handle.set_generating();
         let result = backend
-            .generate(&prompt, config, sampling, request.max_tokens)
+            .generate(request, config, sampling, request.max_tokens)
             .await;
 
         match result {
@@ -64,7 +63,6 @@ impl ImmediateScheduler {
     ) -> Result<GenerateOutput, InferenceError> {
         let config = request.to_context_config();
         let sampling = request.to_sampling_config();
-        let prompt = request.resolved_prompt(None);
 
         config.validate()?;
 
@@ -83,7 +81,7 @@ impl ImmediateScheduler {
 
         handle.set_generating();
         let result = backend
-            .generate_streaming(&prompt, config, sampling, request.max_tokens, sink)
+            .generate_streaming(request, config, sampling, request.max_tokens, sink)
             .await;
 
         handle.set_streaming();

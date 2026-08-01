@@ -4,10 +4,12 @@ use std::ffi::CString;
 use std::ptr::NonNull;
 
 use super::bindings::*;
+use super::chat_template::ChatTemplates;
 
 pub struct LlamaModel {
     ptr: NonNull<std::ffi::c_void>,
     vocab: *const std::ffi::c_void,
+    chat_templates: Option<ChatTemplates>,
 }
 
 unsafe impl Send for LlamaModel {}
@@ -28,9 +30,22 @@ impl LlamaModel {
             return Err(format!("model loaded but vocab is null: {path}"));
         }
 
+        // Chat templates are parsed once per model load. A failure here is
+        // non-fatal: requests then fall back to legacy formatting.
+        let chat_templates = unsafe { dsterm_chat_templates_init(ptr) };
+        let chat_templates = if chat_templates.is_null() {
+            tracing::warn!(
+                "chat templates unavailable for {path}; chat requests will use legacy formatting"
+            );
+            None
+        } else {
+            Some(ChatTemplates::from_ptr(chat_templates))
+        };
+
         Ok(Self {
             ptr: NonNull::new(ptr).unwrap(),
             vocab,
+            chat_templates,
         })
     }
 
@@ -52,6 +67,10 @@ impl LlamaModel {
 
     pub fn n_embd(&self) -> i32 {
         unsafe { dsterm_llama_n_embd(self.ptr.as_ptr()) }
+    }
+
+    pub fn chat_templates(&self) -> Option<&ChatTemplates> {
+        self.chat_templates.as_ref()
     }
 }
 
