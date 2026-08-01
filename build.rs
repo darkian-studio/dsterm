@@ -49,8 +49,10 @@ fn build_llama() {
     match target_os.as_str() {
         // On Android, `-lc++` resolves to the system /system/lib64/libc++.so,
         // which exports the legacy `std::__1` ABI while llama.cpp is compiled
-        // against the NDK `std::__ndk1` ABI. `libc++_shared.so` exports it.
-        "android" => println!("cargo:rustc-link-lib=c++_shared"),
+        // against the NDK `std::__ndk1` ABI. Linking `-lc++_shared` instead
+        // makes the binary depend on libc++_shared.so at runtime (Termux only
+        // finds it via LD_LIBRARY_PATH), so statically link the NDK libc++.
+        "android" => println!("cargo:rustc-link-arg=-static-libstdc++"),
         "macos" | "ios" => println!("cargo:rustc-link-lib=c++"),
         "linux" => println!("cargo:rustc-link-lib=stdc++"),
         _ => {}
