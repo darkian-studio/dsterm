@@ -514,6 +514,9 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
         offload_kqv: true,
         rope_scaling_type: 0,
     };
+    // Embedding contexts use their own config (512 batch); chunk the
+    // decode so a long text never exceeds llama_decode's n_batch assert.
+    let n_batch = ctx_config.n_batch.max(1) as usize;
     let mut ctx = model
         .create_context(ctx_config)
         .map_err(InferenceError::context_creation_failed)?;
@@ -540,7 +543,6 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
 
         // Embedding contexts use their own config (512 batch); chunk the
         // decode so a long text never exceeds llama_decode's n_batch assert.
-        let n_batch = ctx_config.n_batch.max(1) as usize;
         for chunk in tokens.chunks_mut(n_batch) {
             let batch = unsafe { llama_batch_get_one(chunk.as_mut_ptr(), chunk.len() as i32) };
             let ret = unsafe { llama_decode(ctx.ptr_mut(), batch) };
