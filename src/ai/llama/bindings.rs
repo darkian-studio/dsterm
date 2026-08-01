@@ -91,13 +91,9 @@ extern "C" {
     pub fn dsterm_llama_get_logits(ctx: *mut std::ffi::c_void) -> *mut c_float;
     pub fn dsterm_llama_get_embeddings(ctx: *mut std::ffi::c_void) -> *mut c_float;
 
-    pub fn dsterm_llama_sampler_new(
-        cfg: *const DstermSamplerConfig,
-    ) -> *mut std::ffi::c_void;
-    pub fn dsterm_llama_sample(
-        sampler: *mut std::ffi::c_void,
-        ctx: *mut std::ffi::c_void,
-    ) -> c_int;
+    pub fn dsterm_llama_sampler_new(cfg: *const DstermSamplerConfig) -> *mut std::ffi::c_void;
+    pub fn dsterm_llama_sample(sampler: *mut std::ffi::c_void, ctx: *mut std::ffi::c_void)
+        -> c_int;
     pub fn dsterm_llama_sampler_free(sampler: *mut std::ffi::c_void);
 
     // Stable llama.cpp API kept direct (verified against vendored llama.h at b10210).

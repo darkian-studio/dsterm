@@ -12,7 +12,11 @@ fn build_llama() {
         // OpenMP adds a libomp runtime dependency (only a static lib on
         // Termux, absent elsewhere); ggml-cpu threads fine without it.
         .define("GGML_OPENMP", "OFF");
-    if std::process::Command::new("ninja").arg("--version").output().is_ok() {
+    if std::process::Command::new("ninja")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         cfg.generator("Ninja");
     }
 
