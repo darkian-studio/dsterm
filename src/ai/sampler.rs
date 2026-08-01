@@ -42,6 +42,7 @@ pub trait Sampler: Send {
 pub struct LlamaSampler {
     pub config: SamplingConfig,
     ctx: *mut std::ffi::c_void,
+    sampler: *mut std::ffi::c_void,
 }
 
 #[cfg(feature = "llama")]
@@ -50,7 +51,33 @@ unsafe impl Send for LlamaSampler {}
 #[cfg(feature = "llama")]
 impl LlamaSampler {
     pub fn new(ctx: *mut std::ffi::c_void, config: SamplingConfig) -> Self {
-        Self { config, ctx }
+        // D3: penalty_last_n = -1 (full context window) -- the old sampling
+        // path passed an empty token history, silently disabling penalties.
+        let cfg = DstermSamplerConfig {
+            temperature: config.temperature,
+            top_k: config.top_k,
+            top_p: config.top_p,
+            min_p: config.min_p,
+            repeat_penalty: config.repeat_penalty,
+            frequency_penalty: config.frequency_penalty,
+            presence_penalty: config.presence_penalty,
+            penalty_last_n: -1,
+        };
+        let sampler = unsafe { dsterm_llama_sampler_new(&cfg) };
+        Self {
+            config,
+            ctx,
+            sampler,
+        }
+    }
+}
+
+#[cfg(feature = "llama")]
+impl Drop for LlamaSampler {
+    fn drop(&mut self) {
+        if !self.sampler.is_null() {
+            unsafe { dsterm_llama_sampler_free(self.sampler) }
+        }
     }
 }
 
@@ -59,52 +86,24 @@ impl Sampler for LlamaSampler {
     fn sample(
         &self,
         _logits: *const f32,
-        n_vocab: i32,
+        _n_vocab: i32,
     ) -> Result<i32, crate::ai::inference_error::InferenceError> {
-        let mut candidates_vec: Vec<llama_token_data> = (0..n_vocab)
-            .map(|i| llama_token_data {
-                id: i,
-                logit: unsafe { *_logits.add(i as usize) },
-                p: 0.0,
-            })
-            .collect();
-
-        let mut candidates = llama_token_data_array {
-            data: candidates_vec.as_mut_ptr(),
-            size: n_vocab as usize,
-            sorted: false,
-        };
-
-        unsafe {
-            llama_sample_repetition_penalties(
-                self.ctx,
-                &mut candidates,
-                std::ptr::null(),
-                0,
-                self.config.repeat_penalty,
-                self.config.frequency_penalty,
-                self.config.presence_penalty,
-            );
-
-            if (self.config.temperature - 0.0).abs() > f32::EPSILON {
-                llama_sample_temperature(self.ctx, &mut candidates, self.config.temperature);
-            }
-
-            if (self.config.top_p - 1.0).abs() > f32::EPSILON && self.config.top_p > 0.0 {
-                llama_sample_top_p(self.ctx, &mut candidates, self.config.top_p, 1);
-            }
-
-            if self.config.top_k > 0 {
-                llama_sample_top_k(self.ctx, &mut candidates, self.config.top_k, 1);
-            }
-
-            if (self.config.min_p - 0.0).abs() > f32::EPSILON && self.config.min_p > 0.0 {
-                llama_sample_min_p(self.ctx, &mut candidates, self.config.min_p, 1);
-            }
-
-            let token_id = llama_sample_token(self.ctx, &mut candidates);
-            Ok(token_id)
+        if self.sampler.is_null() {
+            return Err(crate::ai::inference_error::InferenceError::new(
+                "SAMPLER_ERROR",
+                "sampler chain failed to initialize",
+            ));
         }
+
+        // The sampler chain reads logits from the context itself.
+        let token_id = unsafe { dsterm_llama_sample(self.sampler, self.ctx) };
+        if token_id < 0 {
+            return Err(crate::ai::inference_error::InferenceError::new(
+                "SAMPLER_ERROR",
+                "dsterm_llama_sample failed",
+            ));
+        }
+        Ok(token_id)
     }
 
     fn config(&self) -> &SamplingConfig {

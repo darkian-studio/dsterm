@@ -34,7 +34,7 @@ impl InferenceBackend for LlamaBackend {
     }
 
     fn create_context(&self, config: &ContextConfig) -> BackendResult<Box<dyn InferenceContext>> {
-        let params = config.to_llama_params();
+        let params = config.to_dsterm_config();
         let ctx = self
             .model
             .create_context(params)
@@ -133,7 +133,7 @@ impl InferenceBackend for LlamaBackend {
 }
 
 async fn create_default_context(model: &LlamaModel) -> BackendResult<LlamaContext> {
-    let params = ContextConfig::default().to_llama_params();
+    let params = ContextConfig::default().to_dsterm_config();
     model
         .create_context(params)
         .map_err(InferenceError::context_creation_failed)
@@ -148,7 +148,7 @@ fn run_generation(
     cancel: Arc<AtomicBool>,
     mut sink: Option<Box<dyn TokenSink + Send>>,
 ) -> BackendResult<GenerateOutput> {
-    let ctx_params = context_config.to_llama_params();
+    let ctx_params = context_config.to_dsterm_config();
     let mut ctx = model
         .create_context(ctx_params)
         .map_err(InferenceError::context_creation_failed)?;
@@ -208,10 +208,10 @@ fn run_generation(
             break;
         }
 
-        let logits = unsafe { llama::bindings::llama_get_logits(ctx.ptr_mut()) };
+        let logits = unsafe { llama::bindings::dsterm_llama_get_logits(ctx.ptr_mut()) };
         if logits.is_null() {
             return Err(InferenceError::decode_failed(
-                "llama_get_logits returned null",
+                "dsterm_llama_get_logits returned null",
             ));
         }
 
@@ -249,6 +249,8 @@ fn run_generation(
 
         let mut next_tokens = [token_id];
         let batch = unsafe { llama::bindings::llama_batch_get_one(next_tokens.as_mut_ptr(), 1) };
+        // llama_decode takes the batch by value and frees its arrays itself
+        // (llama-context.cpp: llama_decode -> llama_batch_free).
         let ret = unsafe { llama::bindings::llama_decode(ctx.ptr_mut(), batch) };
         if ret != 0 {
             return Err(InferenceError::decode_failed(format!("decode: {ret}")));
@@ -271,16 +273,25 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
     }
 
     // Create context with mean pooling for embeddings
-    let mut ctx_params = unsafe { llama_context_default_params() };
-    ctx_params.n_ctx = 512;
-    ctx_params.n_batch = 512;
-    ctx_params.n_ubatch = 512;
-    ctx_params.pooling_type = 1; // LLAMA_POOLING_TYPE_MEAN
+    // D4: modern llama.cpp configures pooling and embedding extraction through
+    // the context params (llama_set_pooling_type no longer exists).
+    let ctx_config = crate::ai::llama::bindings::DstermCtxConfig {
+        n_ctx: 512,
+        n_batch: 512,
+        n_ubatch: 512,
+        n_threads: 4,
+        n_threads_batch: 4,
+        pooling_type: 1, // LLAMA_POOLING_TYPE_MEAN
+        embeddings: true,
+        flash_attn: false,
+        offload_kqv: true,
+        rope_scaling_type: 0,
+    };
     let mut ctx = model
-        .create_context(ctx_params)
+        .create_context(ctx_config)
         .map_err(InferenceError::context_creation_failed)?;
 
-    let n_embd = unsafe { llama_n_embd(model.ptr()) };
+    let n_embd = unsafe { llama::bindings::dsterm_llama_n_embd(model.ptr()) };
     if n_embd <= 0 {
         return Err(InferenceError::new(
             "EMBEDDING_ERROR",
@@ -308,11 +319,11 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
             )));
         }
 
-        let embeddings = unsafe { llama_get_embeddings(ctx.ptr_mut()) };
+        let embeddings = unsafe { llama::bindings::dsterm_llama_get_embeddings(ctx.ptr_mut()) };
         if embeddings.is_null() {
             return Err(InferenceError::new(
                 "EMBEDDING_ERROR",
-                "llama_get_embeddings returned null",
+                "dsterm_llama_get_embeddings returned null",
             ));
         }
 

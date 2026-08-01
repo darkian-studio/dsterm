@@ -585,9 +585,8 @@ async fn ai_chat(
     #[cfg(not(feature = "llama"))]
     {
         let _ = (state, model_id);
-        Ok(ok_response(
-            "inference.chat",
-            json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
+        Err::<(StatusCode, Json<Value>), AiError>(error::internal_error(
+            "Inference backend not compiled. Rebuild dsterm with the `llama` feature enabled.",
         ))
     }
 }
@@ -625,9 +624,8 @@ async fn ai_generate(
     #[cfg(not(feature = "llama"))]
     {
         let _ = (state, model_id);
-        Ok(ok_response(
-            "inference.generate",
-            json!({ "text": "", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }),
+        Err::<(StatusCode, Json<Value>), AiError>(error::internal_error(
+            "Inference backend not compiled. Rebuild dsterm with the `llama` feature enabled.",
         ))
     }
 }
@@ -1433,9 +1431,11 @@ async fn run_generation(
     );
     let _ = sender
         .send(Message::Text(
-            serde_json::to_string(&GenerationEvent::Done)
-                .unwrap()
-                .into(),
+            serde_json::to_string(&GenerationEvent::Error {
+                message: "Inference backend not compiled. Rebuild dsterm with the `llama` feature enabled.".to_string(),
+            })
+            .unwrap()
+            .into(),
         ))
         .await;
     Ok(())
@@ -1687,8 +1687,8 @@ mod tests {
             .unwrap();
         #[cfg(not(feature = "llama"))]
         {
-            // Without llama backend, generate returns stub (OK)
-            assert_eq!(response.status(), StatusCode::OK);
+            // Without llama backend, generate must fail loudly, not silently succeed
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         }
         #[cfg(feature = "llama")]
         {

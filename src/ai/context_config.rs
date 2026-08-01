@@ -1,8 +1,5 @@
 #![allow(dead_code)]
 
-#[cfg(feature = "llama")]
-use crate::ai::llama::bindings::llama_context_params;
-
 pub struct ContextConfig {
     pub n_ctx: u32,
     pub n_batch: u32,
@@ -49,18 +46,19 @@ impl ContextConfig {
     }
 
     #[cfg(feature = "llama")]
-    pub fn to_llama_params(&self) -> llama_context_params {
-        let mut p = unsafe { crate::ai::llama::bindings::llama_context_default_params() };
-        p.n_ctx = self.n_ctx;
-        p.n_batch = self.n_batch;
-        p.n_ubatch = self.n_ubatch;
-        p.n_threads = self.n_threads;
-        p.n_threads_batch = self.n_threads_batch;
-        p.flash_attn = self.flash_attn;
-        p.offload_kqv = self.offload_kqv;
-        p.rope_scaling_type = self.rope_scaling_type;
-        p.no_kv_offload = self.no_kv_offload;
-        p.pooling_type = self.pooling_type;
-        p
+    pub fn to_dsterm_config(&self) -> crate::ai::llama::bindings::DstermCtxConfig {
+        use crate::ai::llama::bindings::DstermCtxConfig;
+        DstermCtxConfig {
+            n_ctx: self.n_ctx,
+            n_batch: self.n_batch,
+            n_ubatch: self.n_ubatch,
+            n_threads: self.n_threads,
+            n_threads_batch: self.n_threads_batch,
+            pooling_type: self.pooling_type,
+            embeddings: false,
+            flash_attn: self.flash_attn,
+            offload_kqv: self.offload_kqv,
+            rope_scaling_type: self.rope_scaling_type,
+        }
     }
 }
