@@ -305,15 +305,14 @@ template <typename T, typename U> T load(const U *);
 template <> inline float32x4_t load(const float *p) {
     return vld1q_f32(p);
 }
-#if !defined(_MSC_VER)
-// FIXME: this should check for __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)
 template <> inline float16x8_t load(const ggml_fp16_t *p) {
     return vld1q_f16((const float16_t *)p);
 }
 template <> inline float32x4_t load(const ggml_fp16_t *p) {
     return vcvt_f32_f16(vld1_f16((const float16_t *)p));
 }
-#endif // _MSC_VER
+#endif // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC && !_MSC_VER
 #endif // __ARM_NEON
 
 #if defined(__VXE__) || defined(__VXE2__)
@@ -3981,7 +3980,7 @@ bool llamafile_sgemm(const struct ggml_compute_params * params, int64_t m, int64
                 (float *)C, ldc};
             return tb.matmul(m, n);
         }
-#elif defined(__ARM_NEON) && !defined(_MSC_VER)
+#elif defined(__ARM_NEON) && defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)
         if (Btype == GGML_TYPE_F32) {
             tinyBLAS<4, float32x4_t, float32x4_t, ggml_fp16_t, float, float> tb{ params,
                 k, (const ggml_fp16_t *)A, lda,
