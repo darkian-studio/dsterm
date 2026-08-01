@@ -412,9 +412,8 @@ mod tests {
         });
         let req = InferenceRequest::from_value(&body);
         let prompt = req.resolved_prompt(None);
-        assert!(prompt.contains("def foo():"));
-        assert!(prompt.contains("<FIM>"));
-        assert!(prompt.contains("    pass"));
+        // Empty architecture resolves to the Codestral FIM default.
+        assert_eq!(prompt, "[PREFIX]def foo():[SUFFIX]    pass[MIDDLE]");
     }
 
     #[test]

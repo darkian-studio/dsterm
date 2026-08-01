@@ -1026,9 +1026,9 @@ mod tests {
         buf.extend_from_slice(&0u32.to_le_bytes()); // type = F32
         buf.extend_from_slice(&48u64.to_le_bytes()); // offset
 
-        // tensor info section ends here; pad to 32 and append data
+        // tensor info section ends here; pad to a 32-byte boundary and append data
         let info_end = buf.len() as u64;
-        let data_start = info_end.div_ceil(32);
+        let data_start = info_end.div_ceil(32) * 32;
         buf.extend_from_slice(&vec![0u8; (data_start - info_end) as usize]);
         buf.extend_from_slice(&[0u8; 96]); // 48 + 48 bytes of F32 data
         (buf, data_start)
@@ -1056,13 +1056,13 @@ mod tests {
 
         // header: magic(4) + version(4) + tensor_count(8) + kv_count(8)
         cursor.set_position(24);
-        // skip the single KV pair: key len(8) + key(16) + type(4) + val len(8) + val(5)
-        cursor.set_position(cursor.position() + 8 + 16 + 4 + 8 + 5);
-        assert_eq!(cursor.position(), 65);
+        // skip the single KV pair: key len(8) + key(20) + type(4) + val len(8) + val(5)
+        cursor.set_position(cursor.position() + 8 + 20 + 4 + 8 + 5);
+        assert_eq!(cursor.position(), 69);
 
         // tensor[0]: len(8) + "output.weight"(13) + n_dims(4) + dims(16) + type(4) + offset(8) = 53
-        // tensor[1]: len(8) + "output.bias"(12) + n_dims(4) + dims(8) + type(4) + offset(8) = 44
-        let expected_boundary = 65 + 53 + 44;
+        // tensor[1]: len(8) + "output.bias"(11) + n_dims(4) + dims(8) + type(4) + offset(8) = 43
+        let expected_boundary = 69 + 53 + 43;
         let params = compute_parameter_count(&mut cursor, 2, 3).unwrap();
         assert_eq!(params, Some(24.0));
         assert_eq!(cursor.position(), expected_boundary);
