@@ -390,13 +390,18 @@ fn run_generation(
     let mut stopped_by_eos = false;
     let mut stopped_by_max = false;
 
-    let batch =
-        unsafe { llama::bindings::llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
-    let ret = unsafe { llama::bindings::llama_decode(ctx.ptr_mut(), batch) };
-    if ret != 0 {
-        return Err(InferenceError::decode_failed(format!(
-            "prompt decode: {ret}"
-        )));
+    // llama_decode asserts when a single batch exceeds n_batch, so decode the
+    // prompt in n_batch-sized chunks (the KV cache appends them sequentially).
+    let n_batch = context_config.n_batch.max(1) as usize;
+    for chunk in tokens.chunks_mut(n_batch) {
+        let batch =
+            unsafe { llama::bindings::llama_batch_get_one(chunk.as_mut_ptr(), chunk.len() as i32) };
+        let ret = unsafe { llama::bindings::llama_decode(ctx.ptr_mut(), batch) };
+        if ret != 0 {
+            return Err(InferenceError::decode_failed(format!(
+                "prompt decode: {ret}"
+            )));
+        }
     }
 
     let mut n_past = tokens.len();
@@ -533,12 +538,17 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
             continue;
         }
 
-        let batch = unsafe { llama_batch_get_one(tokens.as_mut_ptr(), tokens.len() as i32) };
-        let ret = unsafe { llama_decode(ctx.ptr_mut(), batch) };
-        if ret != 0 {
-            return Err(InferenceError::decode_failed(format!(
-                "embedding decode: {ret}"
-            )));
+        // Embedding contexts use their own config (512 batch); chunk the
+        // decode so a long text never exceeds llama_decode's n_batch assert.
+        let n_batch = ctx_config.n_batch.max(1) as usize;
+        for chunk in tokens.chunks_mut(n_batch) {
+            let batch = unsafe { llama_batch_get_one(chunk.as_mut_ptr(), chunk.len() as i32) };
+            let ret = unsafe { llama_decode(ctx.ptr_mut(), batch) };
+            if ret != 0 {
+                return Err(InferenceError::decode_failed(format!(
+                    "embedding decode: {ret}"
+                )));
+            }
         }
 
         let embeddings = unsafe { llama::bindings::dsterm_llama_get_embeddings(ctx.ptr_mut()) };
