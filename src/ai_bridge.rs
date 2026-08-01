@@ -24,12 +24,34 @@ use crate::ai::error::{self, AiError};
 use crate::ai::generation_event::{GenerationEvent, SessionState};
 use crate::ai::inspect;
 #[cfg(feature = "llama")]
+use crate::ai::context_config::auto_n_ctx;
+#[cfg(feature = "llama")]
 use crate::ai::llama_backend::LlamaBackend;
 #[cfg(feature = "llama")]
 use crate::ai::output_parser::OutputParser;
 use crate::ai::pool::{
     LoadLockManager, LoadLockManagerState, ModelPoolInner, ModelPoolState, PoolConfig,
 };
+
+/// Total physical RAM in bytes (MemTotal from /proc/meminfo), used as the
+/// RAM budget for the auto context-size heuristic.
+#[cfg(feature = "llama")]
+fn read_total_memory_bytes() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| {
+                let mut it = l.split_whitespace();
+                if it.next() == Some("MemTotal:") {
+                    it.next().and_then(|v| v.parse::<u64>().ok())
+                } else {
+                    None
+                }
+            })
+        })
+        .map(|kb| kb.saturating_mul(1024))
+        .unwrap_or(4_000_000_000)
+}
 fn ok_response(method: &str, data: Value) -> (StatusCode, Json<Value>) {
     (
         StatusCode::OK,
@@ -660,14 +682,18 @@ async fn ai_generate_shared(
             (
                 m.metadata.pool_id.clone(),
                 m.metadata.architecture.clone(),
+                m.metadata.memory_estimate.clone(),
                 m.runtime.as_ref().and_then(|r| r.model.clone()),
             )
         })
         .ok_or_else(|| error::model_not_found(model_id))?;
 
-    let (_pool_id, arch, llama_model) = loaded;
+    let (_pool_id, arch, mem, llama_model) = loaded;
     let model = llama_model.ok_or_else(|| error::internal_error("model has no llama backend"))?;
     req.architecture = arch;
+    if req.n_ctx == 0 {
+        req.n_ctx = auto_n_ctx(&mem, read_total_memory_bytes());
+    }
     drop(pool);
 
     let backend = Arc::new(LlamaBackend::new(model));
@@ -1190,7 +1216,7 @@ async fn run_generation(
     let mut req = crate::ai::inference_request::InferenceRequest::from_value(params);
 
     // Auto-load & pool acquire
-    let (llama_model, pool_id, arch) = {
+    let (llama_model, pool_id, arch, mem) = {
         let mut pool = state.model_pool.write().await;
         let found = pool
             .get(model_id)
@@ -1198,14 +1224,15 @@ async fn run_generation(
             .map(|m| {
                 let pool_id = m.metadata.pool_id.clone();
                 let arch = m.metadata.architecture.clone();
+                let mem = m.metadata.memory_estimate.clone();
                 let backend = m.runtime.as_ref().and_then(|r| r.model.clone());
-                (pool_id, arch, backend)
+                (pool_id, arch, mem, backend)
             });
-        if let Some((pool_id, arch, backend)) = found {
+        if let Some((pool_id, arch, mem, backend)) = found {
             let backend = backend.ok_or_else(|| format!("model {model_id} has no backend"))?;
             let m = pool.models.get_mut(&pool_id).unwrap();
             m.lifecycle.acquire().map_err(|e| format!("acquire: {e}"))?;
-            (backend, pool_id, arch)
+            (backend, pool_id, arch, mem)
         } else {
             drop(pool);
             let registry = state.model_registry.read().await;
@@ -1221,12 +1248,13 @@ async fn run_generation(
                 .ok_or_else(|| format!("model not loaded after auto-load: {model_id}"))?;
             let pool_id = m.metadata.pool_id.clone();
             let arch = m.metadata.architecture.clone();
+            let mem = m.metadata.memory_estimate.clone();
             let backend = m
                 .runtime
                 .as_ref()
                 .and_then(|r| r.model.clone())
                 .ok_or_else(|| format!("model {model_id} has no backend"))?;
-            (backend, pool_id, arch)
+            (backend, pool_id, arch, mem)
         }
     };
 
@@ -1246,6 +1274,9 @@ async fn run_generation(
     // mode); it needs the architecture for FIM template selection.
     req.architecture = arch;
 
+    if req.n_ctx == 0 {
+        req.n_ctx = auto_n_ctx(&mem, read_total_memory_bytes());
+    }
     let context_config = req.to_context_config();
     let sampling_config = req.to_sampling_config();
     let max_tokens = req.max_tokens;

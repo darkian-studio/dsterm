@@ -62,3 +62,98 @@ impl ContextConfig {
         }
     }
 }
+
+/// Largest power-of-two context (>= 2048, <= the model's native context) whose
+/// estimated memory footprint fits the device RAM budget, mirroring
+/// PocketPal's heuristic: ceiling = min(60% of RAM, RAM - 1.2 GiB).
+///
+/// `mem` must carry the KV cache estimate computed at the model's native
+/// context length (see `MemoryBreakdown::context_length`).
+pub fn auto_n_ctx(mem: &super::pool::MemoryBreakdown, total_ram_bytes: u64) -> u32 {
+    const MIN_CTX: u32 = 2048;
+    const MAX_CTX: u32 = 32768;
+
+    let train = if mem.context_length > 0 {
+        mem.context_length as u64
+    } else {
+        4096
+    };
+    let kv_per_token = mem.kv_cache_bytes / train;
+
+    if kv_per_token == 0 {
+        // No KV estimate available; stay conservative.
+        return train.min(MAX_CTX as u64).max(MIN_CTX as u64) as u32;
+    }
+
+    let budget = total_ram_bytes
+        .saturating_sub(1_200_000_000)
+        .min(total_ram_bytes.saturating_mul(6) / 10);
+
+    let fits = |ctx: u64| -> bool {
+        mem.weights_bytes
+            .saturating_add(kv_per_token.saturating_mul(ctx))
+            .saturating_add(mem.overhead_bytes)
+            <= budget
+    };
+
+    // Largest power of two <= train.
+    let mut ctx = if train >= 1 {
+        1u64 << (63 - train.leading_zeros())
+    } else {
+        1
+    };
+    loop {
+        if ctx < MIN_CTX as u64 {
+            return MIN_CTX;
+        }
+        if ctx <= MAX_CTX as u64 && fits(ctx) {
+            return ctx as u32;
+        }
+        ctx /= 2;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::auto_n_ctx;
+    use crate::ai::pool::MemoryBreakdown;
+
+    fn qwen3_0_6b() -> MemoryBreakdown {
+        MemoryBreakdown {
+            weights_bytes: 375_816_192,
+            kv_cache_bytes: 4_697_620_480,
+            runtime_buffers_bytes: 0,
+            overhead_bytes: 50_000_000,
+            total_bytes: 5_123_436_672,
+            context_length: 32768,
+        }
+    }
+
+    #[test]
+    fn picks_largest_fitting_power_of_two() {
+        // 5.6 GB device -> budget ~3.4 GB; 16K ctx fits (~2.8 GB), 32K doesn't.
+        let n = auto_n_ctx(&qwen3_0_6b(), 5_624_656_000);
+        assert_eq!(n, 16384);
+    }
+
+    #[test]
+    fn small_device_floors_at_2048() {
+        // 2 GB device -> budget ~0.8 GB; 2K ctx (~0.72 GB) is the floor.
+        let n = auto_n_ctx(&qwen3_0_6b(), 2_000_000_000);
+        assert_eq!(n, 2048);
+    }
+
+    #[test]
+    fn huge_device_uses_native_context() {
+        // 24 GB device -> budget ~13.7 GB; full 32K ctx fits.
+        let n = auto_n_ctx(&qwen3_0_6b(), 24_000_000_000);
+        assert_eq!(n, 32768);
+    }
+
+    #[test]
+    fn never_exceeds_native_context() {
+        let n = auto_n_ctx(&qwen3_0_6b(), u64::MAX);
+        assert!(n <= 32768);
+        assert_eq!(n, 32768);
+    }
+}

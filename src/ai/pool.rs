@@ -25,6 +25,9 @@ pub struct MemoryBreakdown {
     pub runtime_buffers_bytes: u64,
     pub overhead_bytes: u64,
     pub total_bytes: u64,
+    /// Context length the kv_cache_bytes estimate was computed for (the
+    /// model's native context). Used to derive the per-token KV cost.
+    pub context_length: u32,
 }
 
 impl MemoryBreakdown {
@@ -33,12 +36,16 @@ impl MemoryBreakdown {
         let kv = meta["memory"]["kv_cache_bytes"].as_u64().unwrap_or(0);
         let weights = meta["memory"]["model_weights_bytes"].as_u64().unwrap_or(0);
         let oh = meta["memory"]["overhead_bytes"].as_u64().unwrap_or(0);
+        let ctx = meta["architecture"]["context_length"]
+            .as_u64()
+            .unwrap_or(4096) as u32;
         Self {
             weights_bytes: weights,
             kv_cache_bytes: kv,
             runtime_buffers_bytes: 0,
             overhead_bytes: oh,
             total_bytes: total,
+            context_length: ctx,
         }
     }
 
@@ -47,11 +54,14 @@ impl MemoryBreakdown {
         let mut k = 0u64;
         let mut r = 0u64;
         let mut o = 0u64;
+        let mut c = 0u32;
         for m in models {
-            w = w.saturating_add(m.metadata.memory_estimate.weights_bytes);
-            k = k.saturating_add(m.metadata.memory_estimate.kv_cache_bytes);
-            r = r.saturating_add(m.metadata.memory_estimate.runtime_buffers_bytes);
-            o = o.saturating_add(m.metadata.memory_estimate.overhead_bytes);
+            let me = &m.metadata.memory_estimate;
+            w = w.saturating_add(me.weights_bytes);
+            k = k.saturating_add(me.kv_cache_bytes);
+            r = r.saturating_add(me.runtime_buffers_bytes);
+            o = o.saturating_add(me.overhead_bytes);
+            c = c.max(me.context_length);
         }
         Self {
             weights_bytes: w,
@@ -59,6 +69,7 @@ impl MemoryBreakdown {
             runtime_buffers_bytes: r,
             overhead_bytes: o,
             total_bytes: w.saturating_add(k).saturating_add(r).saturating_add(o),
+            context_length: c,
         }
     }
 }
@@ -1001,6 +1012,7 @@ mod tests {
                 runtime_buffers_bytes: 0,
                 overhead_bytes: 0,
                 total_bytes: mem,
+                context_length: 4096,
             },
             capabilities: crate::ai::gguf::ModelCapabilities {
                 chat: true,
