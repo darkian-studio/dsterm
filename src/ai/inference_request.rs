@@ -287,44 +287,7 @@ impl InferenceRequest {
                 // knows which tools are available. The message describes each
                 // tool's JSON schema and instructs the model to use
                 // <tool_call> XML syntax (matching ToolCallParser).
-                if !self.tool_definitions.is_empty() {
-                    let tool_list: Vec<Value> = self
-                        .tool_definitions
-                        .iter()
-                        .map(|def| {
-                            let name = def
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown");
-                            let description = def
-                                .get("description")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let parameters = def
-                                .get("parameters")
-                                .cloned()
-                                .unwrap_or(serde_json::Value::Null);
-                            json!({
-                                "name": name,
-                                "description": description,
-                                "parameters": parameters
-                            })
-                        })
-                        .collect();
-
-                    let tools_json = serde_json::to_string(&tool_list).unwrap_or_default();
-                    let tool_msg = format!(
-                        r#"You have access to the following tools:
-
-{}
-
-To call a tool, respond with EXACTLY:
-<tool_call>{{"name": "tool_name", "arguments": {{...}}}}</tool_call>
-
-Do not add any other text before or after the tool call."#,
-                        tools_json
-                    );
-
+                if let Some(tool_msg) = self.tool_instruction_message() {
                     let mut tool_system = serde_json::Map::new();
                     tool_system.insert("role".to_string(), Value::String("system".into()));
                     tool_system.insert("content".to_string(), Value::String(tool_msg));
@@ -334,6 +297,52 @@ Do not add any other text before or after the tool call."#,
                 super::chat_template::format_messages(&messages_json, template)
             }
         }
+    }
+
+    /// System-message text describing the available tools and the
+    /// <tool_call> JSON syntax the model must respond with (matching
+    /// ToolCallParser). Used by both the legacy formatter and the native
+    /// chat template path so tool definitions work for every model.
+    pub fn tool_instruction_message(&self) -> Option<String> {
+        if self.tool_definitions.is_empty() {
+            return None;
+        }
+        let tool_list: Vec<Value> = self
+            .tool_definitions
+            .iter()
+            .map(|def| {
+                let name = def
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let description = def
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let parameters = def
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                json!({
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters
+                })
+            })
+            .collect();
+
+        let tools_json = serde_json::to_string(&tool_list).unwrap_or_default();
+        Some(format!(
+            r#"You have access to the following tools:
+
+{}
+
+To call a tool, respond with EXACTLY:
+<tool_call>{{"name": "tool_name", "arguments": {{...}}}}</tool_call>
+
+Do not add any other text before or after the tool call."#,
+            tools_json
+        ))
     }
 
     pub fn to_sampling_config(&self) -> super::sampler::SamplingConfig {
@@ -479,5 +488,51 @@ mod tests {
         let cc = req.to_context_config();
         assert_eq!(cc.n_ctx, 4096);
         assert_eq!(cc.n_batch, 256);
+    }
+
+    #[test]
+    fn test_tool_instruction_message() {
+        let body = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }]
+        });
+        let req = InferenceRequest::from_value(&body);
+        let msg = req
+            .tool_instruction_message()
+            .expect("tools should produce instructions");
+        assert!(msg.contains("\"name\":\"get_weather\""));
+        assert!(msg.contains("<tool_call>"));
+        assert!(msg.contains("Do not add any other text"));
+
+        let req2 = InferenceRequest::from_value(&json!({
+            "messages": [{"role": "user", "content": "hi"}]
+        }));
+        assert!(req2.tool_instruction_message().is_none());
+    }
+
+    #[test]
+    fn test_resolved_prompt_injects_tools() {
+        let body = json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{
+                "type": "function",
+                "function": {"name": "read_file", "description": "read a file"}
+            }]
+        });
+        let req = InferenceRequest::from_value(&body);
+        let prompt = req.resolved_prompt(None);
+        assert!(prompt.contains("read_file"));
+        assert!(prompt.contains("<tool_call>"));
+        let system_pos = prompt.find("System: ");
+        let user_pos = prompt.find("User: ");
+        assert!(system_pos.is_some() && user_pos.is_some());
+        assert!(system_pos.unwrap() < user_pos.unwrap());
     }
 }

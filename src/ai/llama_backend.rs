@@ -200,6 +200,22 @@ impl LlamaBackend {
         };
 
         let messages = assemble_messages(request);
+        // Native chat templates know nothing about tool definitions, so
+        // mirror the legacy path: append the tool instructions to the
+        // (merged) system message before applying the template.
+        let messages = if let Some(tool_msg) = request.tool_instruction_message() {
+            let mut out = messages;
+            match out.first_mut() {
+                Some((role, content)) if role.as_str() == "system" => {
+                    content.push('\n');
+                    content.push_str(&tool_msg);
+                }
+                _ => out.insert(0, ("system".to_string(), tool_msg)),
+            }
+            out
+        } else {
+            messages
+        };
         match templates.apply(&messages, ENABLE_THINKING) {
             Ok(out) => {
                 let mut stops = out.additional_stops;

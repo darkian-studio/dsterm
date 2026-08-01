@@ -548,6 +548,23 @@ async fn ai_session_state(
     ok_response("inference.sessionState", json!({ "session": data }))
 }
 
+/// Resolve an empty model_id to the pool_id of the first loaded model so
+/// clients that never send a model id (e.g. the DS app's local chat
+/// transport) still work against the loaded model.
+async fn resolve_model_id(state: &AiState, model_id: &str) -> Result<String, AiError> {
+    if !model_id.is_empty() {
+        return Ok(model_id.to_string());
+    }
+    let guard = state.model_pool.read().await;
+    let first = guard.list().first().cloned();
+    drop(guard);
+    let m = first.ok_or_else(|| error::bad_request("no model loaded and no model_id provided"))?;
+    m["metadata"]["pool_id"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| error::bad_request("loaded model has no pool_id"))
+}
+
 async fn ai_chat(
     State(state): State<AiState>,
     body: Option<Json<Value>>,
@@ -565,9 +582,7 @@ async fn ai_chat(
         .unwrap_or("")
         .to_string();
 
-    if model_id.is_empty() {
-        return Err(error::bad_request("model is required"));
-    }
+    let model_id = resolve_model_id(&state, &model_id).await?;
 
     let n_ctx = body_value
         .get("n_ctx")
@@ -612,9 +627,7 @@ async fn ai_generate(
     if prompt.is_empty() {
         return Err(error::bad_request("prompt is required"));
     }
-    if model_id.is_empty() {
-        return Err(error::bad_request("model_id is required"));
-    }
+    let model_id = resolve_model_id(&state, &model_id).await?;
 
     #[cfg(feature = "llama")]
     {
@@ -707,20 +720,8 @@ async fn ai_complete(
         .unwrap_or("")
         .to_string();
 
-    // If no model_id provided, use the most recently loaded model
-    let model_id = if model_id.is_empty() {
-        let guard = state.model_pool.read().await;
-        let first = guard.list().first().cloned();
-        drop(guard);
-        let m =
-            first.ok_or_else(|| error::bad_request("no model loaded and no model_id provided"))?;
-        m["metadata"]["pool_id"]
-            .as_str()
-            .ok_or_else(|| error::bad_request("loaded model has no pool_id"))?
-            .to_string()
-    } else {
-        model_id
-    };
+    // If no model_id provided, use the first loaded model
+    let model_id = resolve_model_id(&state, &model_id).await?;
 
     #[cfg(feature = "llama")]
     {
@@ -764,9 +765,7 @@ async fn ai_embed(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    if model_id.is_empty() {
-        return Err(error::bad_request("model_id or model is required"));
-    }
+    let model_id = resolve_model_id(&state, model_id).await?;
 
     #[cfg(feature = "llama")]
     {
@@ -1044,7 +1043,9 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     let model_id = params
         .get("model_id")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
+
     let session_id = params
         .get("session_id")
         .and_then(|v| v.as_str())
@@ -1087,6 +1088,25 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         return;
     }
 
+    // No model_id provided: fall back to the first loaded model so local
+    // clients (DS chat, which never sends a model id) work out of the box.
+    let model_id = match resolve_model_id(&state, &model_id).await {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::to_string(&GenerationEvent::Error {
+                        message: e.body.message,
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await;
+            let _ = sender.send(Message::Close(None)).await;
+            return;
+        }
+    };
+
     // Session setup
     if !session_id.is_empty() {
         let mut ssl = session_state.write().await;
@@ -1121,7 +1141,7 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         state.clone(),
         &params,
         "",
-        model_id,
+        &model_id,
         cancel.clone(),
         session_state.clone(),
         priority,
