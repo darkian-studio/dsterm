@@ -771,15 +771,15 @@ async fn ai_embed(
     {
         let pool = state.model_pool.read().await;
         let loaded = pool
-            .get(model_id)
-            .or_else(|| pool.get_by_registry_id(model_id))
+            .get(&model_id)
+            .or_else(|| pool.get_by_registry_id(&model_id))
             .map(|m| {
                 (
                     m.metadata.pool_id.clone(),
                     m.runtime.as_ref().and_then(|r| r.model.clone()),
                 )
             })
-            .ok_or_else(|| error::model_not_found(model_id))?;
+            .ok_or_else(|| error::model_not_found(&model_id))?;
 
         let (_pool_id, llama_model) = loaded;
         let model =
