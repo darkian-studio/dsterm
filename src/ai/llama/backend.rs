@@ -6,6 +6,10 @@ use std::ptr::NonNull;
 use super::bindings::*;
 use super::chat_template::ChatTemplates;
 
+/// Upper bound for the tokenize output buffer (~8 MiB of i32). Prevents a
+/// runaway prompt from allocating the full i32 range.
+const MAX_TOKENIZE_BUFFER: usize = 2_000_000;
+
 pub struct LlamaModel {
     ptr: NonNull<std::ffi::c_void>,
     vocab: *const std::ffi::c_void,
@@ -102,7 +106,11 @@ impl LlamaContext {
         let n_ctx = self.n_ctx() as usize;
         let mut tokens: Vec<llama_token> = vec![0i32; n_ctx];
 
-        let n = unsafe {
+        // llama_tokenize reports the required token count as a negative
+        // number when the output buffer is too small (INT32_MIN on true
+        // overflow). Grow the buffer and retry so prompts longer than the
+        // context window can be counted (and then truncated by the caller).
+        let mut n = unsafe {
             dsterm_llama_tokenize(
                 self.vocab,
                 c_text.as_ptr(),
@@ -114,8 +122,31 @@ impl LlamaContext {
             )
         };
 
+        if n == i32::MIN {
+            return Err("tokenizer overflow: result exceeds i32 token count".into());
+        }
         if n < 0 {
-            return Err(format!("dsterm_llama_tokenize failed with {n}"));
+            let required = n.unsigned_abs() as usize;
+            if required > MAX_TOKENIZE_BUFFER {
+                return Err(format!(
+                    "prompt too long: tokenization would produce {required} tokens (cap {MAX_TOKENIZE_BUFFER})"
+                ));
+            }
+            tokens.resize(required, 0);
+            n = unsafe {
+                dsterm_llama_tokenize(
+                    self.vocab,
+                    c_text.as_ptr(),
+                    text.len() as i32,
+                    tokens.as_mut_ptr(),
+                    required as i32,
+                    add_bos,
+                    false,
+                )
+            };
+            if n < 0 {
+                return Err(format!("dsterm_llama_tokenize failed with {n}"));
+            }
         }
 
         tokens.truncate(n as usize);

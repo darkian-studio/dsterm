@@ -102,7 +102,7 @@ impl InferenceBackend for LlamaBackend {
         context_config.validate()?;
 
         let model = self.model.clone();
-        let prompt = self.resolve_prompt(request)?;
+        let prompt = self.resolve_prompt(request, &context_config)?;
         let cancel = Arc::new(AtomicBool::new(false));
 
         let handle = tokio::task::spawn_blocking(move || {
@@ -133,7 +133,7 @@ impl InferenceBackend for LlamaBackend {
         context_config.validate()?;
 
         let model = self.model.clone();
-        let prompt = self.resolve_prompt(request)?;
+        let prompt = self.resolve_prompt(request, &context_config)?;
         let cancel = Arc::new(AtomicBool::new(false));
 
         let handle = tokio::task::spawn_blocking(move || {
@@ -175,7 +175,11 @@ impl LlamaBackend {
     /// Chat mode uses the model's native chat template (llama.cpp's Jinja2
     /// engine, wrapped by the shim); everything else keeps the legacy
     /// resolution (prompt / FIM prefix-suffix).
-    fn resolve_prompt(&self, request: &InferenceRequest) -> BackendResult<GenerationPrompt> {
+    fn resolve_prompt(
+        &self,
+        request: &InferenceRequest,
+        context_config: &ContextConfig,
+    ) -> BackendResult<GenerationPrompt> {
         if !matches!(request.mode, InferenceMode::Chat) {
             return Ok(GenerationPrompt {
                 text: request.resolved_prompt_fim(None, Some(&request.architecture)),
@@ -184,10 +188,14 @@ impl LlamaBackend {
                 thinking_end_tags: Vec::new(),
             });
         }
-        self.resolve_chat_prompt(request)
+        self.resolve_chat_prompt(request, context_config)
     }
 
-    fn resolve_chat_prompt(&self, request: &InferenceRequest) -> BackendResult<GenerationPrompt> {
+    fn resolve_chat_prompt(
+        &self,
+        request: &InferenceRequest,
+        context_config: &ContextConfig,
+    ) -> BackendResult<GenerationPrompt> {
         let legacy = || GenerationPrompt {
             text: request.resolved_prompt(None),
             stops: FALLBACK_STOPS.iter().map(|s| s.to_string()).collect(),
@@ -203,7 +211,7 @@ impl LlamaBackend {
         // Native chat templates know nothing about tool definitions, so
         // mirror the legacy path: append the tool instructions to the
         // (merged) system message before applying the template.
-        let messages = if let Some(tool_msg) = request.tool_instruction_message() {
+        let mut messages = if let Some(tool_msg) = request.tool_instruction_message() {
             let mut out = messages;
             match out.first_mut() {
                 Some((role, content)) if role.as_str() == "system" => {
@@ -216,25 +224,63 @@ impl LlamaBackend {
         } else {
             messages
         };
-        match templates.apply(&messages, ENABLE_THINKING) {
-            Ok(out) => {
-                let mut stops = out.additional_stops;
-                stops.extend(FALLBACK_STOPS.iter().map(|s| s.to_string()));
-                Ok(GenerationPrompt {
-                    text: out.prompt,
-                    stops,
-                    thinking_start_tag: out.thinking_start_tag,
-                    thinking_end_tags: out.thinking_end_tags,
-                })
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "chat template apply failed ({e}); falling back to legacy formatting"
-                );
-                Ok(legacy())
+
+        // Drop the oldest turns until the rendered prompt fits the context
+        // window (llama-server style). A counting context with the same
+        // config as the generation context keeps the budgets consistent.
+        let ctx = self
+            .model
+            .create_context(context_config.to_dsterm_config())
+            .map_err(InferenceError::context_creation_failed)?;
+
+        loop {
+            match templates.apply(&messages, ENABLE_THINKING) {
+                Ok(out) => {
+                    let tokens = ctx
+                        .tokenize(&out.prompt, true)
+                        .map_err(InferenceError::tokenization_failed)?;
+                    if tokens.len() <= ctx.n_ctx() as usize || !drop_oldest_turn(&mut messages) {
+                        let mut stops = out.additional_stops;
+                        stops.extend(FALLBACK_STOPS.iter().map(|s| s.to_string()));
+                        return Ok(GenerationPrompt {
+                            text: out.prompt,
+                            stops,
+                            thinking_start_tag: out.thinking_start_tag,
+                            thinking_end_tags: out.thinking_end_tags,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "chat template apply failed ({e}); falling back to legacy formatting"
+                    );
+                    return Ok(legacy());
+                }
             }
         }
     }
+}
+
+/// Drop the oldest non-system turn. If that leaves an assistant reply whose
+/// preceding user turn was removed, drop it too (it would be orphaned). Never
+/// drops the final user message. Returns false when nothing can be dropped.
+fn drop_oldest_turn(messages: &mut Vec<(String, String)>) -> bool {
+    let drop_start = if messages.first().is_some_and(|(r, _)| r == "system") {
+        1
+    } else {
+        0
+    };
+    if messages.len() - drop_start <= 1 {
+        return false;
+    }
+    messages.drain(drop_start..drop_start + 1);
+    while messages
+        .first()
+        .is_some_and(|(role, _)| role.as_str() == "assistant")
+    {
+        messages.remove(0);
+    }
+    true
 }
 
 /// Merge every system message into a single leading one (strict chat
@@ -508,4 +554,45 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
     }
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drop_oldest_turn;
+
+    fn turns() -> Vec<(String, String)> {
+        vec![
+            ("user".to_string(), "u1".to_string()),
+            ("assistant".to_string(), "a1".to_string()),
+            ("user".to_string(), "u2".to_string()),
+        ]
+    }
+
+    #[test]
+    fn drops_oldest_turn_and_orphaned_assistant() {
+        let mut m = turns();
+        assert!(drop_oldest_turn(&mut m));
+        assert_eq!(m, vec![("user".to_string(), "u2".to_string())]);
+    }
+
+    #[test]
+    fn keeps_system_prompt() {
+        let mut m = turns();
+        m.insert(0, ("system".to_string(), "sys".to_string()));
+        assert!(drop_oldest_turn(&mut m));
+        assert_eq!(
+            m,
+            vec![
+                ("system".to_string(), "sys".to_string()),
+                ("user".to_string(), "u2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn never_drops_last_user_message() {
+        let mut m = vec![("user".to_string(), "u1".to_string())];
+        assert!(!drop_oldest_turn(&mut m));
+        assert_eq!(m, vec![("user".to_string(), "u1".to_string())]);
+    }
 }
