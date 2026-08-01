@@ -48,7 +48,7 @@ jobs:
         run: rustup target add ${{ matrix.platform.target }}
 
       - name: Build binary with cross
-        run: cross build --release --target ${{ matrix.platform.target }}
+        run: cross build --release --features llama --target ${{ matrix.platform.target }}
 
       - name: Rename binary
         run: mv target/${{ matrix.platform.target }}/release/dsterm target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
@@ -86,7 +86,7 @@ jobs:
         run: rustup target add ${{ matrix.platform.target }}
 
       - name: Build binary
-        run: cargo build --release --target ${{ matrix.platform.target }}
+        run: cargo build --release --features llama --target ${{ matrix.platform.target }}
 
       - name: Rename binary
         run: mv target/${{ matrix.platform.target }}/release/dsterm target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
@@ -114,7 +114,7 @@ jobs:
         run: rustup target add x86_64-pc-windows-msvc
 
       - name: Build binary
-        run: cargo build --release --target x86_64-pc-windows-msvc
+        run: cargo build --release --features llama --target x86_64-pc-windows-msvc
 
       - name: Rename binary
         run: Move-Item target/x86_64-pc-windows-msvc/release/dsterm.exe target/x86_64-pc-windows-msvc/release/dsterm-windows-x86_64.exe

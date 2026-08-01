@@ -38,3 +38,22 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+  build-llama:
+    name: Build & test with llama feature
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CMake and Ninja
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Build with llama feature
+        run: cargo build --features llama
+
+      - name: Test with llama feature
+        run: cargo test --features llama

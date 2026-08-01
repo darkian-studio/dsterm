@@ -153,5 +153,31 @@ cargo build --release
 
 Rust stable toolchain required.
 
+### Local inference (`llama` feature)
+
+Local LLM inference via a vendored llama.cpp is an opt-in Cargo feature:
+
+```bash
+cargo build --release --features llama
+```
+
+System requirements for the `llama` feature:
+
+- **CMake ≥ 3.14** and a **C++17 compiler**
+- Termux: `pkg install cmake binutils` (g++/clang included)
+- Linux: `g++` or `clang`
+- macOS: Xcode Command Line Tools
+- Windows: MSVC Build Tools
+
+Notes:
+
+- Release binaries ship with `llama` baked in. The `install.sh`/`install.ps1`
+  source-build fallback installs **without** the feature by default — run
+  `cargo install --git https://github.com/darkian-studio/dsterm --features llama` explicitly
+  if you need local inference there.
+- Without the feature, every inference endpoint returns an explicit
+  `INTERNAL_SERVER_ERROR` ("Inference backend not compiled...") instead of a
+  fake empty success.
+
 > [!NOTE]
 > If you encounter any issues, please open an issue on GitHub.
