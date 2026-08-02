@@ -274,11 +274,12 @@ fn drop_oldest_turn(messages: &mut Vec<(String, String)>) -> bool {
         return false;
     }
     messages.drain(drop_start..drop_start + 1);
-    while messages
-        .first()
-        .is_some_and(|(role, _)| role.as_str() == "assistant")
-    {
-        messages.remove(0);
+    // The removed turn may have orphaned the assistant reply that followed
+    // it; drop it too. With a leading system message the orphan sits right
+    // after the system prefix rather than at index 0.
+    let mut i = drop_start;
+    while i < messages.len() && messages[i].0 == "assistant" {
+        messages.remove(i);
     }
     true
 }
@@ -306,6 +307,34 @@ fn assemble_messages(request: &InferenceRequest) -> Vec<(String, String)> {
         out
     } else {
         turns
+    }
+}
+
+/// Incremental UTF-8 decoder: appends a raw piece to `pending`, emits the
+/// longest complete UTF-8 prefix, and keeps any incomplete trailing sequence
+/// for the next piece. Byte-level BPE (Qwen3 et al.) can split a single
+/// multi-byte character across two tokens.
+fn decode_incremental(pending: &mut Vec<u8>, piece: &[u8]) -> String {
+    pending.extend_from_slice(piece);
+    match std::str::from_utf8(pending) {
+        Ok(s) => {
+            let out = s.to_string();
+            pending.clear();
+            out
+        }
+        Err(e) => {
+            let valid = e.valid_up_to();
+            let out = match std::str::from_utf8(&pending[..valid]) {
+                Ok(s) => s.to_string(),
+                Err(_) => String::new(),
+            };
+            let keep = match e.error_len() {
+                Some(len) => valid + len,
+                None => valid,
+            };
+            pending.drain(..keep);
+            out
+        }
     }
 }
 
@@ -387,6 +416,7 @@ fn run_generation(
     let prompt_tokens = tokens.len() as i32;
     let mut generated = 0i32;
     let mut full_text = String::new();
+    let mut pending_bytes: Vec<u8> = Vec::new();
     let mut stopped_by_eos = false;
     let mut stopped_by_max = false;
 
@@ -445,8 +475,19 @@ fn run_generation(
             continue;
         }
 
-        match ctx.token_to_piece(token_id) {
-            Ok(piece) => {
+        // Byte-level BPE (Qwen3 et al.) splits multi-byte UTF-8 chars across
+        // tokens, so pieces must be decoded incrementally, not per token.
+        match ctx.token_to_piece_bytes(token_id) {
+            Ok(piece_bytes) => {
+                let piece = decode_incremental(&mut pending_bytes, &piece_bytes);
+                if piece.is_empty() {
+                    // incomplete UTF-8 sequence so far; wait for next token
+                    if generated >= max_tokens {
+                        stopped_by_max = true;
+                        break;
+                    }
+                    continue;
+                }
                 full_text.push_str(&piece);
                 // String-based stop matching against the growing decoded
                 // text: template-implied stops plus the static fallback list.
@@ -570,6 +611,7 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
 
 #[cfg(test)]
 mod tests {
+    use super::decode_incremental;
     use super::drop_oldest_turn;
 
     fn turns() -> Vec<(String, String)> {
@@ -606,5 +648,24 @@ mod tests {
         let mut m = vec![("user".to_string(), "u1".to_string())];
         assert!(!drop_oldest_turn(&mut m));
         assert_eq!(m, vec![("user".to_string(), "u1".to_string())]);
+    }
+
+    #[test]
+    fn decodes_multibyte_char_split_across_tokens() {
+        // 'é' is U+00E9 (0xC3 0xA9); byte-level BPE may split it across
+        // two tokens. Each half is invalid UTF-8 on its own.
+        let mut pending: Vec<u8> = Vec::new();
+        assert_eq!(decode_incremental(&mut pending, &[0xC3]), "");
+        assert_eq!(decode_incremental(&mut pending, &[0xA9]), "é");
+        assert_eq!(decode_incremental(&mut pending, b"!"), "!");
+        assert_eq!(pending.len(), 0);
+    }
+
+    #[test]
+    fn decodes_after_invalid_byte_sequence() {
+        let mut pending: Vec<u8> = Vec::new();
+        assert_eq!(decode_incremental(&mut pending, b"hi"), "hi");
+        assert_eq!(decode_incremental(&mut pending, &[0xFF, 0x41]), "A");
+        assert_eq!(decode_incremental(&mut pending, b"!"), "!");
     }
 }

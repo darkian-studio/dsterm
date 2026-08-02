@@ -153,7 +153,7 @@ impl LlamaContext {
         Ok(tokens)
     }
 
-    pub fn token_to_piece(&self, token: llama_token) -> Result<String, String> {
+    pub fn token_to_piece_bytes(&self, token: llama_token) -> Result<Vec<u8>, String> {
         let mut buf = vec![0i8; 32];
 
         let n = unsafe {
@@ -189,7 +189,11 @@ impl LlamaContext {
             buf.truncate(n as usize);
         }
 
-        let bytes: Vec<u8> = buf.iter().map(|&b| b as u8).collect();
+        Ok(buf.iter().map(|&b| b as u8).collect())
+    }
+
+    pub fn token_to_piece(&self, token: llama_token) -> Result<String, String> {
+        let bytes = self.token_to_piece_bytes(token)?;
         String::from_utf8(bytes).map_err(|e| format!("Invalid UTF-8: {e}"))
     }
 
