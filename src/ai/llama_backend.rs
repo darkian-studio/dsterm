@@ -665,7 +665,10 @@ mod tests {
     fn decodes_after_invalid_byte_sequence() {
         let mut pending: Vec<u8> = Vec::new();
         assert_eq!(decode_incremental(&mut pending, b"hi"), "hi");
-        assert_eq!(decode_incremental(&mut pending, &[0xFF, 0x41]), "A");
-        assert_eq!(decode_incremental(&mut pending, b"!"), "!");
+        // 0xFF is invalid; it is dropped, but the following 0x41 is held
+        // as pending (it may be the first half of a multi-byte char) and
+        // is flushed once the next piece completes it.
+        assert_eq!(decode_incremental(&mut pending, &[0xFF, 0x41]), "");
+        assert_eq!(decode_incremental(&mut pending, b"!"), "A!");
     }
 }
