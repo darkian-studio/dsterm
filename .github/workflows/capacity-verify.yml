@@ -1,0 +1,84 @@
+name: Model capacity verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: Public GGUF download URL
+        required: false
+        default: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q5_K_M.gguf
+      model_file:
+        description: File name used for the results report
+        required: false
+        default: Qwen3.5-4B-Q5_K_M.gguf
+      max_tokens:
+        description: Max completion tokens per test
+        required: false
+        default: "256"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Capacity verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CMake and Ninja
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Build dsterm server with llama backend
+        run: cargo build --release --features llama
+
+      - name: Download model
+        run: |
+          mkdir -p "$RUNNER_TEMP/models"
+          curl -L --fail --retry 3 -o "$RUNNER_TEMP/models/${{ inputs.model_file }}" "${{ inputs.model_url }}"
+
+      - name: Start dsterm server
+        run: |
+          ./target/release/dsterm -p 8767 >"$RUNNER_TEMP/dsterm.log" 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:8767/ai/health >/dev/null 2>&1; then
+              echo "server healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not become healthy" >&2
+          tail -50 "$RUNNER_TEMP/dsterm.log" >&2 || true
+          exit 1
+
+      - name: Run capacity verification
+        run: |
+          mkdir -p ci-results
+          out="ci-results/${{ inputs.model_file }}.md"
+          python3 .github/scripts/verify_model_capacity.py \
+            --model "$RUNNER_TEMP/models/${{ inputs.model_file }}" \
+            --prompts-dir .github/ci/prompts \
+            --max-tokens "${{ inputs.max_tokens }}" \
+            --out "$out"
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: capacity-verification
+          path: ci-results/
+
+      - name: Commit results
+        run: |
+          git config user.name "dsterm-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git add ci-results
+          if git diff --cached --quiet; then
+            echo "no result changes to commit"
+          else
+            git commit -m "ci(ai): capacity verification for ${{ inputs.model_file }}"
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
+          fi
