@@ -60,8 +60,12 @@ def http_post(host, port, path, body):
         return json.loads(resp.read())
 
 
+SOCK_TIMEOUT = 900
+
+
 def ws_connect(host, port, path):
     s = socket.create_connection((host, port), timeout=30)
+    s.settimeout(SOCK_TIMEOUT)
     key = base64.b64encode(os.urandom(16)).decode()
     s.sendall(
         (
@@ -248,7 +252,21 @@ def main():
     results = []
     for key, msgs in tests:
         print(f"\n=== {key} ===")
-        r = run(args.host, args.port, key, msgs, args.max_tokens)
+        try:
+            r = run(args.host, args.port, key, msgs, args.max_tokens)
+        except Exception as exc:
+            r = {
+                "label": key,
+                "messages": msgs,
+                "reply": "",
+                "tool_calls": [],
+                "wall": None,
+                "ttft": None,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "mem_first": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         if r["error"]:
             print("ERROR:", r["error"])
         else:
@@ -280,9 +298,11 @@ def main():
         reply = r["reply"].replace("|", "\\|").replace("\n", " ⏎ ")
         if len(reply) > 140:
             reply = reply[:140] + "…"
+        ttft = f"{r['ttft']:.1f}" if r["ttft"] is not None else "-"
+        wall = f"{r['wall']:.1f}" if r["wall"] is not None else "-"
         lines.append(
             f"| {r['label']} | {r['prompt_tokens']} | {r['completion_tokens']} | "
-            f"{r['ttft']:.1f} | {r['wall']:.1f} | {verdict} | {reply} |"
+            f"{ttft} | {wall} | {verdict} | {reply} |"
         )
     lines += [
         "",
