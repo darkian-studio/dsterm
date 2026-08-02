@@ -277,7 +277,7 @@ fn drop_oldest_turn(messages: &mut Vec<(String, String)>) -> bool {
     // The removed turn may have orphaned the assistant reply that followed
     // it; drop it too. With a leading system message the orphan sits right
     // after the system prefix rather than at index 0.
-    let mut i = drop_start;
+    let i = drop_start;
     while i < messages.len() && messages[i].0 == "assistant" {
         messages.remove(i);
     }
