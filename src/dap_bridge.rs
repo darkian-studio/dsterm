@@ -127,7 +127,7 @@ pub async fn dap_start(
         StatusCode::OK,
         Json(serde_json::json!({
             "id": req.id,
-            "ws_path": format!("/dap/{}", req.id)
+            "ws_path": format!("/dap/{}", urlencoding::encode(&req.id))
         })),
     )
 }
