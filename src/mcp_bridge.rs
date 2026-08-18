@@ -36,6 +36,7 @@ pub struct McpStartRequest {
     pub command: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
+    pub env: Option<HashMap<String, String>>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +79,10 @@ pub async fn mcp_start(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    if let Some(env) = &req.env {
+        command.envs(env);
+    }
 
     if let Some(cwd) = &req.cwd {
         command.current_dir(cwd);
