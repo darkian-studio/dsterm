@@ -1,16 +1,14 @@
 //! Extension-host HTTP+WebSocket bridge — Node.js process lifecycle owned by dsterm.
 //!
-//! Unlike lsp/dap/mcp bridges, the stdio protocol here is newline-delimited JSON:
-//! exactly one complete JSON object per `\n`-terminated line. Content-Length framing
-//! (proto_frame) is intentionally NOT used.
+//! Unlike lsp/dap/mcp bridges, the stdio protocol here is newline-delimited JSON.
+//! Wraps ProcessSession with custom handle_node_line for LSP-ready tracking.
 use crate::process_bridge::{self, ProcessRegistry};
-use axum::extract::{
-    ws::{Message, WebSocket, WebSocketUpgrade},
-    Path,
-};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Extension, Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::Router;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -26,7 +24,6 @@ pub struct LspEndpoint {
     pub port: u16,
 }
 
-#[allow(dead_code)]
 pub struct ExtensionHostSession {
     pub inner: process_bridge::ProcessSession,
     pub active_language_servers: Arc<RwLock<HashMap<String, LspEndpoint>>>,
@@ -52,7 +49,7 @@ pub struct ExtensionHostKillRequest {
     pub id: Option<String>,
 }
 
-pub async fn extension_host_start(
+async fn start_handler(
     State(registry): State<ExtensionHostRegistry>,
     Json(req): Json<ExtensionHostStartRequest>,
 ) -> impl IntoResponse {
@@ -107,7 +104,7 @@ pub async fn extension_host_start(
     )
 }
 
-pub async fn extension_host_kill(
+async fn kill_handler(
     State(registry): State<ExtensionHostRegistry>,
     body: Option<Json<ExtensionHostKillRequest>>,
 ) -> impl IntoResponse {
@@ -121,7 +118,6 @@ pub async fn extension_host_kill(
     };
 
     let mut killed = Vec::new();
-
     for id in target_ids {
         let session = registry.write().await.remove(&id);
         if let Some(session) = session {
@@ -136,7 +132,7 @@ pub async fn extension_host_kill(
     )
 }
 
-pub async fn extension_host_websocket(
+async fn websocket_handler(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
     State(registry): State<ExtensionHostRegistry>,
@@ -152,7 +148,9 @@ pub async fn extension_host_websocket(
     }
     let stdout = stdout.unwrap();
 
-    ws.on_upgrade(move |socket| extension_host_pump(socket, id, registry, session, stdout))
+    ws.on_upgrade(move |socket| async move {
+        extension_host_pump(socket, id, registry, session, stdout).await;
+    })
 }
 
 async fn extension_host_pump(
@@ -254,7 +252,7 @@ async fn handle_node_line(session: &ExtensionHostSession, line: &str) {
 
 pub fn extension_host_routes() -> Router<ExtensionHostRegistry> {
     Router::new()
-        .route("/extension-host/start", post(extension_host_start))
-        .route("/extension-host/kill", post(extension_host_kill))
-        .route("/extension-host/{id}", get(extension_host_websocket))
+        .route("/extension-host/start", post(start_handler))
+        .route("/extension-host/kill", post(kill_handler))
+        .route("/extension-host/{id}", get(websocket_handler))
 }
