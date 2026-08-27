@@ -10,6 +10,7 @@ mod lsp;
 mod lsp_bridge;
 mod mcp_bridge;
 mod ports;
+mod process_bridge;
 mod proto_frame;
 mod protocol;
 mod providers;
@@ -36,26 +37,18 @@ const DEFAULT_PORT: u16 = 8767;
 const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 #[derive(Parser)]
-#[command(name = "dsterm", version, author = "Darkian Studio <contact@darkian.io>", about = "CLI/Server backend to serve pty over socket", long_about = None)]
+#[command(name = "dsterm", version, author = "Darkian Studio <darkian.studio@gmail.com>", about = "CLI/Server backend to serve pty over socket", long_about = None)]
 struct Cli {
-    /// Port to start the server
     #[arg(short, long, default_value_t = DEFAULT_PORT, value_parser = clap::value_parser!(u16).range(1..), global = true)]
     port: u16,
-    /// Start the server on local network (ip)
     #[arg(short, long, global = true)]
     ip: bool,
-    /// Custom command or shell for interactive PTY (e.g. "/usr/bin/bash")
     #[arg(short = 'c', long = "command")]
     command_override: Option<String>,
-    /// Allow all origins for CORS (dangerous). By default only https://localhost is allowed.
     #[arg(long = "allow-any-origin", global = true)]
     allow_any_origin: bool,
-    /// Path to a TOML configuration file
     #[arg(long = "config", global = true)]
     config_path: Option<String>,
-    /// Enable the remote filesystem API (/fs/*) using the current directory as
-    /// the workspace root, with no config file required. Equivalent to
-    /// [filesystem] enabled = true.
     #[arg(long = "remote", global = true)]
     remote: bool,
     #[command(subcommand)]
@@ -64,58 +57,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Update dsterm server
     Update,
-    /// Revert to the previous dsterm version (the binary stashed as
-    /// dsterm.old by the last successful `update`)
     Downgrade,
-    /// Start a WebSocket LSP bridge for a stdio language server
     Lsp {
-        /// Session ID for port discovery (allows multiple instances of same server)
         #[arg(short = 's', long)]
         session: Option<String>,
-        /// The language server binary to run (e.g. "rust-analyzer")
         server: String,
-        /// Additional arguments to forward to the language server
         #[arg(trailing_var_arg = true)]
         server_args: Vec<String>,
     },
-    /// Print a Shellular-compatible pairing payload and QR code
     Pair {
-        /// Host id from the relay. If omitted, relay.host_id_file is read.
         #[arg(long = "host-id")]
         host_id: Option<String>,
-        /// Print only the hostId:key payload, without rendering a QR code.
         #[arg(long = "no-qr")]
         no_qr: bool,
     },
-    /// Manage approved relay clients
     Clients {
         #[command(subcommand)]
         action: ClientsAction,
     },
-    /// Register this host with the relay and cache the returned hostId
     Register,
-    /// Run as a relay host: serve locally on 127.0.0.1 and bridge to the relay
     Host,
-    /// Install an OS-native autostart entry (systemd user unit or Termux:Boot)
     Startup,
 }
 
 #[derive(Subcommand)]
 enum ClientsAction {
-    /// List all known clients and their approval state
     List,
-    /// Approve a client by id
-    Approve {
-        /// The client id to approve
-        client_id: String,
-    },
-    /// Reject a client by id
-    Reject {
-        /// The client id to reject
-        client_id: String,
-    },
+    Approve { client_id: String },
+    Reject { client_id: String },
 }
 
 fn print_update_available(current_version: &str, new_version: &str) {
@@ -258,10 +228,11 @@ async fn main() {
                 "Reverting to the previous version...".blue()
             );
 
-            // A running binary cannot be overwritten in place on Windows, so swap
-            // via a sibling: stash the running exe, drop the old one in, then
-            // remove the stash. On Unix an atomic rename over the running
-            // binary is fine.
+            // A running binary cannot be overwritten in place
+            // on Windows, so swap via a sibling: stash the
+            // running exe, drop the old one in, then remove
+            // the stash. On Unix an atomic rename over the
+            // running binary is fine.
             #[cfg(windows)]
             {
                 let stash_path = current_exe.with_extension("disabled");

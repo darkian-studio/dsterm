@@ -21,11 +21,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     agent_bridge, ai_bridge, ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge,
-    fs, lsp_bridge, mcp_bridge, ports, proxy, sysmon,
+    fs, lsp_bridge, mcp_bridge, ports, process_bridge, proxy, sysmon,
 };
 use handlers::*;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
 use types::Sessions;
 
 static DEFAULT_COMMAND: OnceLock<String> = OnceLock::new();
@@ -93,12 +91,12 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .init();
 
     let sessions: Sessions = Arc::new(DashMap::new());
-    let lsp_registry: lsp_bridge::LspRegistry = Arc::new(RwLock::new(HashMap::new()));
-    let dap_registry: dap_bridge::DapRegistry = Arc::new(RwLock::new(HashMap::new()));
+    let lsp_registry: lsp_bridge::LspRegistry = process_bridge::new_registry();
+    let dap_registry: dap_bridge::DapRegistry = process_bridge::new_registry();
     let extension_host_registry: extension_host_bridge::ExtensionHostRegistry =
-        Arc::new(RwLock::new(HashMap::new()));
-    let mcp_registry: mcp_bridge::McpRegistry = Arc::new(RwLock::new(HashMap::new()));
-    let agent_registry: agent_bridge::AgentRegistry = Arc::new(RwLock::new(HashMap::new()));
+        extension_host_bridge::new_registry();
+    let mcp_registry: mcp_bridge::McpRegistry = process_bridge::new_registry();
+    let agent_registry: agent_bridge::AgentRegistry = process_bridge::new_registry();
     let ast_registry = ast_bridge::new_registry();
     let ai_state = ai_bridge::AiState::new();
     let web_provider: crate::web_routes::WebState =
@@ -195,12 +193,51 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
 
     let addr: std::net::SocketAddr = (host, port).into();
 
+    // Clones for shutdown cleanup — kill every bridge session on SIGTERM / Ctrl-C.
+    let shutdown_lsp = lsp_registry.clone();
+    let shutdown_dap = dap_registry.clone();
+    let shutdown_mcp = mcp_registry.clone();
+    let shutdown_agent = agent_registry.clone();
+    let shutdown_ext = extension_host_registry.clone();
+    let kill_timeout = get_config().bridges.kill_timeout_secs;
+
     match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => {
             tracing::info!("listening on {}", listener.local_addr().unwrap());
 
+            let shutdown = async move {
+                shutdown_signal().await;
+                tracing::info!("killing all bridge sessions");
+                let (l, d, m, a, e) = tokio::join!(
+                    process_bridge::kill_all(&shutdown_lsp, kill_timeout),
+                    process_bridge::kill_all(&shutdown_dap, kill_timeout),
+                    process_bridge::kill_all(&shutdown_mcp, kill_timeout),
+                    process_bridge::kill_all(&shutdown_agent, kill_timeout),
+                    async {
+                        let ids: Vec<String> = shutdown_ext.read().await.keys().cloned().collect();
+                        let mut killed = Vec::new();
+                        for id in ids {
+                            let session = shutdown_ext.write().await.remove(&id);
+                            if let Some(session) = session {
+                                process_bridge::kill_session(&session.inner, kill_timeout).await;
+                            }
+                            killed.push(id);
+                        }
+                        killed
+                    },
+                );
+                tracing::info!(
+                    "bridge cleanup done: lsp={} dap={} mcp={} agent={} ext={}",
+                    l.len(),
+                    d.len(),
+                    m.len(),
+                    a.len(),
+                    e.len(),
+                );
+            };
+
             if let Err(e) = axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown_signal())
+                .with_graceful_shutdown(shutdown)
                 .await
             {
                 tracing::error!("Server error: {}", e);

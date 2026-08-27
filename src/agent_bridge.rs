@@ -1,7 +1,8 @@
-//! ACP agent bridge — spawns an AI coding agent as a subprocess and bridges its
-//! newline-delimited JSON (NDJSON) stdio to a WebSocket. Mirrors the
-//! extension-host bridge; Content-Length framing is intentionally NOT used.
-//! ACP permission requests (session/request_permission) pass through verbatim.
+//! ACP agent bridge — spawns an AI coding agent as a
+//! subprocess and bridges its newline-delimited JSON (NDJSON)
+//! stdio to a WebSocket. ACP permission requests (session/request_permission)
+//! pass through verbatim.
+use crate::process_bridge::{self, ProcessRegistry};
 use axum::extract::{
     ws::{Message, WebSocket, WebSocketUpgrade},
     Path,
@@ -9,28 +10,10 @@ use axum::extract::{
 use axum::routing::{get, post};
 use axum::Router;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::process::Stdio;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{Mutex, RwLock};
-use tokio::task;
-use tokio::time::timeout;
 
-#[allow(dead_code)]
-pub struct AgentSession {
-    pub child: Arc<Mutex<Child>>,
-    pub stdin: Arc<Mutex<ChildStdin>>,
-    pub stdout: Arc<Mutex<Option<ChildStdout>>>,
-    pub pid: u32,
-}
-
-pub type AgentRegistry = Arc<RwLock<HashMap<String, Arc<AgentSession>>>>;
+pub type AgentRegistry = ProcessRegistry;
 
 #[derive(Deserialize)]
 pub struct AgentStartRequest {
@@ -61,62 +44,25 @@ pub async fn agent_start(
         }
     }
 
-    let mut command = Command::new(&req.command);
-    command
-        .args(&req.args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    if let Some(cwd) = &req.cwd {
-        command.current_dir(cwd);
-    }
-    if let Some(env) = &req.env {
-        for (key, value) in env {
-            command.env(key, value);
-        }
-    }
-
-    let mut child = match command.spawn() {
-        Ok(c) => c,
-        Err(e) => {
+    let session = match process_bridge::spawn_process(&process_bridge::SpawnConfig {
+        command: req.command,
+        args: req.args,
+        cwd: req.cwd,
+        env: req.env,
+        stderr_target: "agent_stderr",
+    })
+    .await
+    {
+        Ok(s) => s,
+        Err((code, msg)) => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("spawn failed: {e}"), "id": req.id})),
+                StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(serde_json::json!({"error": msg, "id": req.id})),
             );
         }
     };
 
-    let stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take();
-    let pid = child.id().unwrap_or(0);
-    let command_str = req.command.clone();
-
-    if let Some(stderr) = stderr {
-        let pid_copy = pid;
-        let command_copy = command_str;
-        task::spawn(async move {
-            let reader = tokio::io::BufReader::new(stderr);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                tracing::warn!(target: "agent_stderr", program = %command_copy, pid = %pid_copy, "{}", line);
-            }
-        });
-    }
-
-    let session = AgentSession {
-        child: Arc::new(Mutex::new(child)),
-        stdin: Arc::new(Mutex::new(stdin)),
-        stdout: Arc::new(Mutex::new(Some(stdout))),
-        pid,
-    };
-
-    registry
-        .write()
-        .await
-        .insert(req.id.clone(), Arc::new(session));
+    registry.write().await.insert(req.id.clone(), session);
 
     (
         StatusCode::OK,
@@ -132,35 +78,17 @@ pub async fn agent_kill(
     body: Option<Json<AgentKillRequest>>,
 ) -> impl IntoResponse {
     let req = body.map(|Json(b)| b).unwrap_or_default();
-
-    let target_ids = if let Some(id) = &req.id {
-        vec![id.clone()]
-    } else {
-        registry.read().await.keys().cloned().collect()
-    };
-
     let kill_timeout = crate::terminal::get_config().bridges.kill_timeout_secs;
-    let mut killed = Vec::new();
 
-    for id in target_ids {
-        let session = registry.write().await.remove(&id);
-        if let Some(session) = session {
-            let mut child = session.child.lock().await;
-            if child.start_kill().is_ok() {
-                match timeout(Duration::from_secs(kill_timeout), child.wait()).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(_)) => {
-                        let _ = child.kill().await;
-                    }
-                    Err(_) => {
-                        let _ = child.kill().await;
-                    }
-                }
-            }
-            drop(child);
+    let killed = if let Some(id) = &req.id {
+        if process_bridge::kill_one(&registry, id, kill_timeout).await {
+            vec![id.clone()]
+        } else {
+            vec![]
         }
-        killed.push(id);
-    }
+    } else {
+        process_bridge::kill_all(&registry, kill_timeout).await
+    };
 
     (
         StatusCode::OK,
@@ -184,63 +112,7 @@ pub async fn agent_websocket(
     }
     let stdout = stdout.unwrap();
 
-    ws.on_upgrade(move |socket| agent_pump(socket, id, registry, session, stdout))
-}
-
-async fn agent_pump(
-    socket: WebSocket,
-    id: String,
-    registry: AgentRegistry,
-    session: Arc<AgentSession>,
-    stdout: ChildStdout,
-) {
-    let (mut ws_send, mut ws_recv) = socket.split();
-    let mut lines = tokio::io::BufReader::new(stdout).lines();
-
-    loop {
-        tokio::select! {
-            msg = ws_recv.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        let mut stdin = session.stdin.lock().await;
-                        let _ = stdin.write_all(text.as_bytes()).await;
-                        let _ = stdin.write_all(b"\n").await;
-                        let _ = stdin.flush().await;
-                    }
-                    Some(Ok(Message::Binary(b))) => {
-                        if let Ok(text) = std::str::from_utf8(&b) {
-                            let mut stdin = session.stdin.lock().await;
-                            let _ = stdin.write_all(text.as_bytes()).await;
-                            let _ = stdin.write_all(b"\n").await;
-                            let _ = stdin.flush().await;
-                        }
-                    }
-                    Some(Ok(Message::Ping(p))) => {
-                        let _ = ws_send.send(Message::Pong(p)).await;
-                    }
-                    Some(Ok(Message::Pong(_))) => {}
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
-                        break;
-                    }
-                }
-            }
-            line = lines.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
-                        let _ = ws_send.send(Message::Text(line.into())).await;
-                    }
-                    Ok(None) => break,
-                    Err(_) => break,
-                }
-            }
-        }
-    }
-
-    registry.write().await.remove(&id);
-    if let Ok(mut child) = session.child.try_lock() {
-        let _ = child.start_kill();
-    }
-    let _ = ws_send.send(Message::Close(None)).await;
+    ws.on_upgrade(move |socket| process_bridge::ndjson_pump(socket, id, registry, session, stdout))
 }
 
 pub fn agent_routes() -> Router<AgentRegistry> {
