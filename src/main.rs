@@ -497,7 +497,8 @@ async fn main() {
                 set_default_command(cmd);
             }
 
-            let ip = if ip {
+            let lan_requested = ip;
+            let ip = if lan_requested {
                 get_ip_address().unwrap_or_else(|| {
                     println!(
                         "{} localhost.",
@@ -519,6 +520,12 @@ async fn main() {
                 println!("IP: {ip}");
                 println!("Port: {port}");
                 println!("Folder: {folder}");
+                if !lan_requested {
+                    eprintln!(
+                        "{} Remote file system is enabled but server is bound to 127.0.0.1 (localhost-only). Add -i to expose on LAN or use `dsterm host --remote` for Internet via relay.",
+                        "⚠".yellow()
+                    );
+                }
             }
 
             start_server(ip, port, allow_any_origin).await;

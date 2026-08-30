@@ -156,8 +156,26 @@ pub async fn create_terminal(
     State(sessions): State<Sessions>,
     Json(options): Json<TerminalOptions>,
 ) -> impl IntoResponse {
-    let rows = parse_u16(&options.rows, "rows").expect("failed");
-    let cols = parse_u16(&options.cols, "cols").expect("failed");
+    let rows = match parse_u16(&options.rows, "rows") {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: e }),
+            )
+                .into_response()
+        }
+    };
+    let cols = match parse_u16(&options.cols, "cols") {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: e }),
+            )
+                .into_response()
+        }
+    };
     tracing::info!("Creating new terminal with cols={}, rows={}", cols, rows);
 
     #[cfg(not(windows))]
@@ -480,8 +498,26 @@ pub async fn resize_terminal(
     Path(pid): Path<u32>,
     Json(options): Json<TerminalOptions>,
 ) -> impl IntoResponse {
-    let rows = parse_u16(&options.rows, "rows").expect("Failed");
-    let cols = parse_u16(&options.cols, "cols").expect("Failed");
+    let rows = match parse_u16(&options.rows, "rows") {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: e }),
+            )
+                .into_response()
+        }
+    };
+    let cols = match parse_u16(&options.cols, "cols") {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: e }),
+            )
+                .into_response()
+        }
+    };
     tracing::info!("Resizing terminal {} to cols={}, rows={}", pid, cols, rows);
 
     if let Some(session) = sessions.get(&pid) {
