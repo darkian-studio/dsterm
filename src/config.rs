@@ -141,6 +141,19 @@ pub struct DstermConfig {
 }
 
 impl DstermConfig {
+    /// Helper for FIX-065: typed home path (keeps `home` as String for serde compat)
+    #[allow(dead_code)]
+    pub fn home_path(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.home)
+    }
+
+    /// Centralize `--remote` override (FIX-062)
+    pub fn apply_remote_flag(&mut self, remote: bool) {
+        if remote {
+            self.filesystem.enabled = true;
+        }
+    }
+
     /// Load configuration from a TOML file at the given path.
     /// Returns an error if the file cannot be read or parsed.
     pub fn load(path: &str) -> anyhow::Result<Self> {

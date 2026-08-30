@@ -122,11 +122,12 @@ fn load_config_or_default(path: Option<&str>, announce: bool) -> DstermConfig {
                 config
             }
             Err(e) => {
+                // FIX-061: fail fast on explicit --config path (was warning-only)
                 eprintln!(
-                    "{} Failed to load config from {path}: {e}. Using defaults.",
-                    "⚠".yellow()
+                    "{} Failed to load config from {path}: {e}",
+                    "✗".red().bold()
                 );
-                DstermConfig::default()
+                std::process::exit(1);
             }
         }
     } else {
@@ -397,9 +398,7 @@ async fn main() {
         }
         Some(Commands::Host) => {
             let mut cfg = load_config_or_default(config_path.as_deref(), true);
-            if remote {
-                cfg.filesystem.enabled = true;
-            }
+            cfg.apply_remote_flag(remote);
             init_config(cfg.clone());
 
             if let Some(cmd) = command_override {
@@ -477,18 +476,16 @@ async fn main() {
                     }
                     Err(e) => {
                         eprintln!(
-                            "{} Failed to load config from {path}: {e}. Using defaults.",
-                            "⚠".yellow()
+                            "{} Failed to load config from {path}: {e}",
+                            "✗".red().bold()
                         );
-                        DstermConfig::default()
+                        std::process::exit(1);
                     }
                 }
             } else {
                 DstermConfig::default()
             };
-            if remote {
-                cfg.filesystem.enabled = true;
-            }
+            cfg.apply_remote_flag(remote);
             init_config(cfg);
 
             tokio::task::spawn(check_updates_in_background());
