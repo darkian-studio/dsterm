@@ -74,6 +74,8 @@ pub struct StartRequest {
 #[derive(Deserialize, Default)]
 pub struct KillRequest {
     pub id: Option<String>,
+    #[serde(default)]
+    pub all: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +250,13 @@ async fn kill_handler(
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let kill_timeout = crate::terminal::get_config().bridges.kill_timeout_secs;
 
+    if req.id.is_none() && req.all != Some(true) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "must provide id or all:true"})),
+        )
+            .into_response();
+    }
     let killed = if let Some(id) = &req.id {
         if kill_one(&registry, id, kill_timeout).await {
             vec![id.clone()]
@@ -262,6 +271,7 @@ async fn kill_handler(
         StatusCode::OK,
         Json(serde_json::json!({ "killed": killed })),
     )
+        .into_response()
 }
 
 async fn websocket_handler(
@@ -399,6 +409,20 @@ async fn ndjson_pump(
     session: Arc<ProcessSession>,
     stdout: ChildStdout,
 ) {
+    ndjson_pump_with_hook(socket, id, registry, session, stdout, |_| async {}).await
+}
+
+pub async fn ndjson_pump_with_hook<F, Fut>(
+    socket: WebSocket,
+    id: String,
+    registry: ProcessRegistry,
+    session: Arc<ProcessSession>,
+    stdout: ChildStdout,
+    hook: F,
+) where
+    F: Fn(String) -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = ()> + Send,
+{
     let (mut ws_send, mut ws_recv) = socket.split();
     let mut lines = tokio::io::BufReader::new(stdout).lines();
 
@@ -432,6 +456,7 @@ async fn ndjson_pump(
             line = lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
+                        hook(line.clone()).await;
                         let _ = ws_send.send(Message::Text(line.into())).await;
                     }
                     Ok(None) => break,

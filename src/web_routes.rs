@@ -14,15 +14,29 @@ pub fn web_routes() -> Router<WebState> {
         .route("/web/crawl", post(web_crawl))
 }
 
+fn parse_budgets_and_payload(body: serde_json::Value) -> (serde_json::Value, Budgets) {
+    if let Some(obj) = body.as_object() {
+        if obj.contains_key("payload") || obj.contains_key("budgets") {
+            let budgets = obj
+                .get("budgets")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let payload = obj.get("payload").cloned().unwrap_or_else(|| {
+                let mut rest = obj.clone();
+                rest.remove("budgets");
+                serde_json::Value::Object(rest)
+            });
+            return (payload, budgets);
+        }
+    }
+    (body, Budgets::default())
+}
+
 async fn web_fetch(
     State(provider): State<WebState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let budgets: Budgets = body
-        .get("budgets")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-    let payload = body.get("payload").cloned().unwrap_or(body);
+    let (payload, budgets) = parse_budgets_and_payload(body);
 
     let request = ProviderRequest {
         operation: "fetch".to_string(),
@@ -44,11 +58,7 @@ async fn web_extract(
     State(provider): State<WebState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let budgets: Budgets = body
-        .get("budgets")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-    let payload = body.get("payload").cloned().unwrap_or(body);
+    let (payload, budgets) = parse_budgets_and_payload(body);
 
     let request = ProviderRequest {
         operation: "extract".to_string(),
@@ -70,11 +80,7 @@ async fn web_search(
     State(provider): State<WebState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let budgets: Budgets = body
-        .get("budgets")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-    let payload = body.get("payload").cloned().unwrap_or(body);
+    let (payload, budgets) = parse_budgets_and_payload(body);
 
     let request = ProviderRequest {
         operation: "search".to_string(),
@@ -96,11 +102,7 @@ async fn web_crawl(
     State(provider): State<WebState>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let budgets: Budgets = body
-        .get("budgets")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-    let payload = body.get("payload").cloned().unwrap_or(body);
+    let (payload, budgets) = parse_budgets_and_payload(body);
 
     let request = ProviderRequest {
         operation: "crawl".to_string(),
