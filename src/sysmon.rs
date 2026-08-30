@@ -1,6 +1,8 @@
 use axum::{response::IntoResponse, Json};
 use serde::Serialize;
 use std::fs;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use sysinfo::{Disks, System};
 
 #[derive(Debug, Serialize)]
@@ -65,8 +67,24 @@ fn read_battery() -> Option<BatteryInfo> {
     None
 }
 
+static CACHE: OnceLock<std::sync::Mutex<Option<(Instant, serde_json::Value)>>> = OnceLock::new();
+static SYSTEM: OnceLock<std::sync::Mutex<System>> = OnceLock::new();
+
 pub fn snapshot_json() -> serde_json::Value {
-    let mut system = System::new_all();
+    // FIX-041: cache snapshot for 1s to avoid System::new_all per request
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((ts, val)) = guard.as_ref() {
+            if ts.elapsed() < Duration::from_secs(1) {
+                return val.clone();
+            }
+        }
+    }
+    let mut system_guard = SYSTEM
+        .get_or_init(|| std::sync::Mutex::new(System::new_all()))
+        .lock()
+        .unwrap();
+    let system = &mut *system_guard;
     system.refresh_all();
     let cpus = system.cpus();
     let usage = if cpus.is_empty() {
@@ -83,7 +101,7 @@ pub fn snapshot_json() -> serde_json::Value {
             available: disk.available_space(),
         })
         .collect::<Vec<_>>();
-    serde_json::to_value(SysmonResponse {
+    let val = serde_json::to_value(SysmonResponse {
         cpu: CpuInfo {
             brand: cpus
                 .first()
@@ -101,7 +119,12 @@ pub fn snapshot_json() -> serde_json::Value {
         disks,
         battery: read_battery(),
     })
-    .unwrap_or_else(|_| serde_json::json!({}))
+    .unwrap_or_else(|_| serde_json::json!({}));
+    drop(system_guard);
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((Instant::now(), val.clone()));
+    }
+    val
 }
 
 pub async fn get_sysmon() -> impl IntoResponse {

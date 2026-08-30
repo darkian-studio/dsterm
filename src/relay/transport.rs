@@ -13,12 +13,22 @@ use crate::relay::wire::ClientCtx;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+fn http_client() -> reqwest::Client {
+    HTTP_CLIENT.get_or_init(reqwest::Client::new).clone()
+}
+
 /// Run the relay client forever, reconnecting with a fixed backoff ladder.
 pub async fn run(config: DstermConfig, secretbox: Secretbox, host_id: String, local_port: u16) {
+    // FIX-025: warn if using default placeholder relay URL
+    if config.relay.server_url == "https://localhost:3000" {
+        tracing::warn!("relay server_url is default https://localhost:3000 — set relay.server_url in config for production");
+    }
     let ladder = if config.relay.reconnect_secs.is_empty() {
         vec![1u64, 2, 5, 10, 30]
     } else {
@@ -91,7 +101,7 @@ async fn connect_once(
         }
     });
 
-    let http = reqwest::Client::new();
+    let http = http_client();
     let terminals = RelayTerminals::new();
     let agents = RelayAgents::new();
     let proxy_ws = RelayProxyWs::new();
