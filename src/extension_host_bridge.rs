@@ -2,9 +2,9 @@
 //!
 //! Unlike lsp/dap/mcp bridges, the stdio protocol here is newline-delimited JSON.
 //! Wraps ProcessSession with custom handle_node_line for LSP-ready tracking.
-use crate::process_bridge::{self, ProcessRegistry};
+use crate::process_bridge::{self};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -25,7 +25,7 @@ pub struct LspEndpoint {
 }
 
 pub struct ExtensionHostSession {
-    pub inner: process_bridge::ProcessSession,
+    pub inner: Arc<process_bridge::ProcessSession>,
     pub active_language_servers: Arc<RwLock<HashMap<String, LspEndpoint>>>,
 }
 

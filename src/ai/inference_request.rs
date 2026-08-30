@@ -86,6 +86,7 @@ fn default_max_tokens() -> i32 {
     512
 }
 
+#[allow(dead_code)]
 impl InferenceRequest {
     /// Convert a `serde_json::Value` message to `InferenceMessage`.
     fn message_from_value(msg: &Value) -> InferenceMessage {

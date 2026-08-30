@@ -173,12 +173,15 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
 
     let app = Router::new()
         .merge(terminal_router)
-        .merge(lsp_bridge::lsp_routes().with_state(lsp_registry))
-        .merge(dap_bridge::dap_routes().with_state(dap_registry))
-        .merge(extension_host_bridge::extension_host_routes().with_state(extension_host_registry))
-        .merge(mcp_bridge::mcp_routes().with_state(mcp_registry))
+        .merge(lsp_bridge::lsp_routes().with_state(lsp_registry.clone()))
+        .merge(dap_bridge::dap_routes().with_state(dap_registry.clone()))
+        .merge(
+            extension_host_bridge::extension_host_routes()
+                .with_state(extension_host_registry.clone()),
+        )
+        .merge(mcp_bridge::mcp_routes().with_state(mcp_registry.clone()))
         .merge(ast_bridge::ast_routes().with_state(ast_registry))
-        .merge(agent_bridge::agent_routes().with_state(agent_registry))
+        .merge(agent_bridge::agent_routes().with_state(agent_registry.clone()))
         .merge(ai_bridge::ai_routes().with_state(ai_state))
         .merge(fs::fs_routes())
         .merge(sysmon::sysmon_routes())

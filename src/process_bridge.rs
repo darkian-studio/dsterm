@@ -10,7 +10,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -81,11 +81,11 @@ pub struct KillRequest {
 // ---------------------------------------------------------------------------
 
 pub struct SpawnConfig {
-    command: String,
-    args: Vec<String>,
-    cwd: Option<String>,
-    env: Option<HashMap<String, String>>,
-    stderr_target: &'static str,
+    pub command: String,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    pub env: Option<HashMap<String, String>>,
+    pub stderr_target: &'static str,
 }
 
 pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, (u16, String)> {
@@ -120,7 +120,7 @@ pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, 
             let reader = tokio::io::BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::warn!(target: target, program = %command_str, pid = %pid, "{}", line);
+                tracing::warn!(program = %command_str, pid = %pid, stderr_target = target, "{}", line);
             }
         });
     }
@@ -229,7 +229,7 @@ async fn start_handler(
 
 async fn kill_handler(
     State(registry): State<ProcessRegistry>,
-    Extension(config): Extension<Arc<BridgeConfig>>,
+    Extension(_config): Extension<Arc<BridgeConfig>>,
     body: Option<Json<KillRequest>>,
 ) -> impl IntoResponse {
     let req = body.map(|Json(b)| b).unwrap_or_default();
