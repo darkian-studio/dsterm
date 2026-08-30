@@ -503,9 +503,14 @@ async fn ai_loaded_models(State(state): State<AiState>) -> impl IntoResponse {
     ok_response("inference.loadedModels", json!({ "models": models }))
 }
 
-async fn ai_delete(body: Option<Json<Value>>) -> impl IntoResponse {
+async fn ai_delete(body: Option<Json<Value>>) -> Result<axum::response::Response, AiError> {
     let _ = body;
-    ok_response("inference.deleteModel", json!({ "deleted": true }))
+    // FIX-050: stub previously returned success:true with no effect — now explicit 501
+    Err(AiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        "NOT_IMPLEMENTED",
+        "deleteModel not implemented; use /ai/models/remove or /ai/unload",
+    ))
 }
 
 async fn ai_create_session(
@@ -836,14 +841,22 @@ async fn ai_embed(
     }
 }
 
-async fn ai_tokenize(body: Option<Json<Value>>) -> impl IntoResponse {
+async fn ai_tokenize(body: Option<Json<Value>>) -> Result<axum::response::Response, AiError> {
     let _ = body;
-    ok_response("inference.tokenize", json!({ "tokens": [] }))
+    Err(AiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        "NOT_IMPLEMENTED",
+        "tokenize not implemented; llama backend required",
+    ))
 }
 
-async fn ai_detokenize(body: Option<Json<Value>>) -> impl IntoResponse {
+async fn ai_detokenize(body: Option<Json<Value>>) -> Result<axum::response::Response, AiError> {
     let _ = body;
-    ok_response("inference.detokenize", json!({ "text": "" }))
+    Err(AiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        "NOT_IMPLEMENTED",
+        "detokenize not implemented; llama backend required",
+    ))
 }
 
 async fn ai_statistics(State(state): State<AiState>) -> impl IntoResponse {

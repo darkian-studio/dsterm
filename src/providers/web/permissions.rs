@@ -77,16 +77,40 @@ impl NetworkPermissions {
 }
 
 fn is_localhost(host: &str) -> bool {
-    host == "localhost"
+    if host == "localhost"
         || host == "::1"
         || host == "[::1]"
         || host == "0.0.0.0"
         || host == "127.0.0.1"
         || host == "127.0.0.2"
         || host.starts_with("127.")
+    {
+        return true;
+    }
+    // FIX-081: block integer-encoded IP (e.g. http://2130706433 == 127.0.0.1)
+    if let Ok(num) = host.parse::<u32>() {
+        let ip = Ipv4Addr::from(num);
+        if ip.is_loopback() {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_private_ip_detailed(host: &str) -> Option<String> {
+    // FIX-081: also handle decimal integer IPs
+    if let Ok(num) = host.parse::<u32>() {
+        let ip = Ipv4Addr::from(num);
+        if ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_broadcast()
+            || ip.is_unspecified()
+            || is_reserved_ipv4(&ip)
+        {
+            return Some(host.to_string());
+        }
+    }
     if let Ok(ip) = host.parse::<Ipv4Addr>() {
         if ip.is_loopback() {
             return Some(host.to_string());
