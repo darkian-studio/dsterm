@@ -28,10 +28,43 @@ pub struct Secretbox {
 impl Secretbox {
     pub fn load_or_create(path: Option<&str>) -> anyhow::Result<Self> {
         let path = key_path(path)?;
-        if path.exists() {
-            return Self::load(path);
+        // Atomic TOCTOU-safe: try load, then create_new, retry on AlreadyExists (FIX-026)
+        match Self::load(&path) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                // Only retry create if file truly missing (NotFound)
+                if let Some(ioe) = e.downcast_ref::<std::io::Error>() {
+                    if ioe.kind() != std::io::ErrorKind::NotFound {
+                        // Unexpected load error (e.g., permission) — propagate
+                        // unless file simply doesn't exist
+                        if path.exists() {
+                            return Err(e);
+                        }
+                    }
+                } else if path.exists() {
+                    return Err(e);
+                }
+            }
         }
-        Self::create(path)
+        match Self::create(&path) {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                // Race: another process created between our load and create
+                if let Some(ioe) = e.downcast_ref::<std::io::Error>() {
+                    if ioe.kind() == std::io::ErrorKind::AlreadyExists {
+                        return Self::load(&path);
+                    }
+                }
+                // For write_key_file's inner OpenOptions error wrapped via `?`, downcast may be nested.
+                // Fallback: if file now exists, try load once more.
+                if path.exists() {
+                    if let Ok(s) = Self::load(&path) {
+                        return Ok(s);
+                    }
+                }
+                Err(e)
+            }
+        }
     }
 
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
