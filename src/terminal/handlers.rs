@@ -337,6 +337,7 @@ pub async fn create_terminal(
                     // error (e.g. missing program), not a PTY capability issue.
                     // Do NOT fall back; report immediately.
                     tracing::error!("spawn_command failed: {}", e);
+                    drop(pair); // explicitly close PTY master/slave before returning (FIX-004)
                     return Json(ErrorResponse {
                         error: format!("Failed to spawn command: {e}"),
                     })
