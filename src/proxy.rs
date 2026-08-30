@@ -29,15 +29,30 @@ fn proxy_enabled() -> bool {
     get_config().proxy.enabled
 }
 
+const MAX_PROXY_RESPONSE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+
 pub fn is_localhost(url: &str) -> bool {
-    match reqwest::Url::parse(url) {
-        Ok(parsed) => match parsed.host_str() {
-            Some(host) => {
-                host == "localhost" || host == "::1" || host == "[::1]" || host.starts_with("127.")
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    match parsed.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => {
+            if ip.is_loopback() {
+                return true;
             }
-            None => false,
-        },
-        Err(_) => false,
+            // Handle IPv4-mapped IPv6 like ::ffff:127.0.0.1
+            if let Some(v4) = ip.to_ipv4_mapped() {
+                return v4.is_loopback();
+            }
+            if let Some(v4) = ip.to_ipv4() {
+                return v4.is_loopback();
+            }
+            false
+        }
+        None => false,
     }
 }
 
@@ -96,19 +111,44 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
             headers.insert(key.to_string(), value.to_string());
         }
     }
-    let bytes =
-        match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(e) => return (
-                axum::http::StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": format!("Failed to read upstream body: {e}") })),
+    // Enforce size limit before buffering whole body (FIX-020).
+    if let Some(len) = response.content_length() {
+        if len > MAX_PROXY_RESPONSE_BYTES as u64 {
+            return (
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                Json(serde_json::json!({ "error": format!("Upstream body too large: {len} bytes (limit {MAX_PROXY_RESPONSE_BYTES})") })),
             )
-                .into_response(),
-        };
+                .into_response();
+        }
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    use futures::StreamExt as _;
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(chunk) => {
+                if body.len() + chunk.len() > MAX_PROXY_RESPONSE_BYTES {
+                    return (
+                        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                        Json(serde_json::json!({ "error": format!("Upstream body exceeded limit of {MAX_PROXY_RESPONSE_BYTES} bytes") })),
+                    )
+                        .into_response();
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({ "error": format!("Failed to read upstream body: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
     Json(serde_json::json!({
         "status": status,
         "headers": headers,
-        "body_base64": BASE64.encode(&bytes),
+        "body_base64": BASE64.encode(&body),
     }))
     .into_response()
 }
