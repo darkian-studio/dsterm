@@ -111,12 +111,22 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
             loop {
                 tick.tick().await;
                 let now = std::time::SystemTime::now();
+                // FIX-044: avoid silent skip on lock contention and future timestamps
                 let to_evict: Vec<u32> = sessions
                     .iter()
                     .filter_map(|entry| {
                         let pid = *entry.key();
-                        let last = *entry.value().last_accessed.try_lock().ok()?;
-                        let elapsed = now.duration_since(last).unwrap_or_default();
+                        let last = match entry.value().last_accessed.try_lock() {
+                            Ok(g) => *g,
+                            Err(_) => {
+                                tracing::debug!(pid = %pid, "eviction: last_accessed lock contended, skipping");
+                                return None;
+                            }
+                        };
+                        let elapsed = match now.duration_since(last) {
+                            Ok(d) => d,
+                            Err(_) => std::time::Duration::ZERO, // clock skew: last in future → not evict
+                        };
                         if elapsed.as_secs() > timeout_secs {
                             Some(pid)
                         } else {
@@ -141,11 +151,23 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
             .allow_methods(Any)
             .allow_headers(Any)
     } else {
-        let localhost = "https://localhost"
-            .parse::<HeaderValue>()
-            .expect("valid origin");
+        // FIX-024: allow any localhost origin (http/https, any port) rather than single https://localhost
+        use tower_http::cors::AllowOrigin;
         CorsLayer::new()
-            .allow_origin(localhost)
+            .allow_origin(AllowOrigin::predicate(
+                |origin: &HeaderValue, _| match origin.to_str() {
+                    Ok(s) => match url::Url::parse(s) {
+                        Ok(u) => match u.host() {
+                            Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+                            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                            None => false,
+                        },
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                },
+            ))
             .allow_methods(Any)
             .allow_headers(Any)
     };

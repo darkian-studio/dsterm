@@ -285,5 +285,15 @@ pub enum Envelope {
 }
 
 pub fn is_plaintext_allowed(msg_type: &str) -> bool {
-    msg_type == "ping" || msg_type == "pong" || msg_type.starts_with("session:")
+    matches!(
+        msg_type,
+        "ping"
+            | "pong"
+            | "session:host"
+            | "session:hosted"
+            | "session:error"
+            | "session:client-join"
+            | "session:client-left"
+            | "session:client-approve"
+    )
 }

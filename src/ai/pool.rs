@@ -845,7 +845,8 @@ impl ModelPoolInner {
     }
 
     #[allow(dead_code)]
-    pub fn verify(&mut self) -> bool {
+    pub fn verify(&self) -> bool {
+        // FIX-053: verify is now pure (does not mutate consistency_ok); callers should update if needed
         // Check no duplicate pool_ids
         let mut seen_pool = std::collections::HashSet::new();
         let mut seen_reg = std::collections::HashSet::new();
@@ -882,7 +883,6 @@ impl ModelPoolInner {
             }
         }
 
-        self.consistency_ok = ok;
         ok
     }
 

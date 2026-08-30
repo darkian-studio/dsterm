@@ -48,6 +48,17 @@ pub async fn ast_scope(
         }
     }
 
+    const MAX_AST_BYTES: usize = 2 * 1024 * 1024; // 2 MB (FIX-090)
+    if req.content.len() > MAX_AST_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "error": format!("content too large: {} bytes (limit {MAX_AST_BYTES})", req.content.len())
+            })),
+        )
+            .into_response();
+    }
+
     let mut parser = Parser::new();
     if parser.set_language(&language).is_err() {
         return (

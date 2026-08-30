@@ -234,11 +234,8 @@ async fn start_handler(
         registry.insert(req.id.clone(), session);
     }
 
-    let ws_path = if config.framing == FramingMode::ContentLength && config.prefix == "dap" {
-        format!("/{}/{}", config.prefix, urlencoding::encode(&req.id))
-    } else {
-        format!("/{}/{}", config.prefix, req.id)
-    };
+    // FIX-102: always encode ws id to handle slashes consistently
+    let ws_path = format!("/{}/{}", config.prefix, urlencoding::encode(&req.id));
 
     (
         StatusCode::OK,

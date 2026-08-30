@@ -263,6 +263,7 @@ pub async fn dispatch(msg: IncomingMsg, ctx: &ClientCtx, http: &reqwest::Client,
             tracing::warn!("message reached dispatch; should be routed to a relay manager");
         }
         IncomingMsg::Unknown => {
+            tracing::warn!("unknown message type received");
             ctx.send_error(None, "Unknown message type").await;
         }
     }
