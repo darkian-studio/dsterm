@@ -315,7 +315,13 @@ async fn route(
             agents.kill(ctx, http, local_port, id, &agent_id).await;
         }
         IncomingMsg::WsOpen { id, url } => {
-            proxy_ws.open(ctx, id, url).await;
+            // FIX-074: pre-validate url before proxy (proxy_ws also checks is_localhost)
+            if !crate::proxy::is_localhost(&url) {
+                ctx.send_error(id, "Only localhost ws targets allowed")
+                    .await;
+            } else {
+                proxy_ws.open(ctx, id, url).await;
+            }
         }
         IncomingMsg::WsData {
             ws_id,

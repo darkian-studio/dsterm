@@ -583,6 +583,7 @@ async fn ai_session_state(
 /// Resolve an empty model_id to the pool_id of the first loaded model so
 /// clients that never send a model id (e.g. the DS app's local chat
 /// transport) still work against the loaded model.
+/// FIX-051: logs when fallback is used; ordering is HashMap iteration (nondeterministic) — caller should send explicit id.
 async fn resolve_model_id(state: &AiState, model_id: &str) -> Result<String, AiError> {
     if !model_id.is_empty() {
         return Ok(model_id.to_string());
@@ -591,10 +592,12 @@ async fn resolve_model_id(state: &AiState, model_id: &str) -> Result<String, AiE
     let first = guard.list().first().cloned();
     drop(guard);
     let m = first.ok_or_else(|| error::bad_request("no model loaded and no model_id provided"))?;
-    m["metadata"]["pool_id"]
+    let pool_id = m["metadata"]["pool_id"]
         .as_str()
         .map(str::to_string)
-        .ok_or_else(|| error::bad_request("loaded model has no pool_id"))
+        .ok_or_else(|| error::bad_request("loaded model has no pool_id"))?;
+    tracing::warn!("resolve_model_id: empty model_id, falling back to first loaded {pool_id}");
+    Ok(pool_id)
 }
 
 async fn ai_chat(

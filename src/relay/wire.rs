@@ -46,7 +46,10 @@ impl ClientCtx {
     pub async fn send(&self, msg: OutgoingMsg) {
         match encrypt_envelope(&self.secretbox, &self.client_id, &msg) {
             Ok(frame) => {
-                let _ = self.out_tx.send(frame).await;
+                if let Err(e) = self.out_tx.send(frame).await {
+                    // FIX-073: log when relay writer is gone (was silent _ =)
+                    tracing::warn!(client_id = %self.client_id, "relay out_tx closed, dropping frame: {e}");
+                }
             }
             Err(e) => tracing::error!("Failed to encrypt outgoing message: {e}"),
         }
