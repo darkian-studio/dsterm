@@ -79,11 +79,16 @@ fn lexical_normalize(path: &StdPath) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
+            Component::Prefix(p) => out.push(p.as_os_str()),
+            Component::RootDir => out.push(component.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                out.pop();
+                // Never pop past RootDir/Prefix — out.parent()==None means we're at root
+                if out.parent().is_some() {
+                    out.pop();
+                }
             }
-            other => out.push(other.as_os_str()),
+            Component::Normal(n) => out.push(n),
         }
     }
     out
