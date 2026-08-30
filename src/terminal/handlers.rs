@@ -64,6 +64,56 @@ fn windows_shell_args(program: &str) -> Vec<String> {
     }
 }
 
+/// Split a shell command string respecting single/double quotes and backslash escapes (FIX-003).
+/// Returns None if quotes are unbalanced.
+fn split_command(cmd: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut has_token = false;
+
+    for ch in cmd.chars() {
+        if escaped {
+            cur.push(ch);
+            escaped = false;
+            has_token = true;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => {
+                escaped = true;
+            }
+            '\'' if !in_double => {
+                in_single = !in_single;
+                has_token = true;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                has_token = true;
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if has_token {
+                    parts.push(std::mem::take(&mut cur));
+                    has_token = false;
+                }
+            }
+            _ => {
+                cur.push(ch);
+                has_token = true;
+            }
+        }
+    }
+    if escaped || in_single || in_double {
+        return None;
+    }
+    if has_token {
+        parts.push(cur);
+    }
+    Some(parts)
+}
+
 fn default_working_directory() -> PathBuf {
     #[cfg(windows)]
     {
@@ -186,7 +236,13 @@ pub async fn create_terminal(
     let env_overrides: Vec<(String, String)> = Vec::new();
     let (program, args) = if get_default_command().is_some() {
         let cmd = get_default_command().unwrap();
-        let parts: Vec<String> = cmd.split_whitespace().map(|s| s.to_string()).collect();
+        let parts: Vec<String> = split_command(cmd).unwrap_or_else(|| {
+            tracing::warn!(
+                "Failed to parse command {:?}, falling back to whitespace split",
+                cmd
+            );
+            cmd.split_whitespace().map(|s| s.to_string()).collect()
+        });
         if parts.is_empty() {
             #[cfg(windows)]
             {
