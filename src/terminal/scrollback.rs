@@ -33,9 +33,34 @@ impl Scrollback {
 
     pub fn append(&self, data: &[u8]) -> io::Result<()> {
         self.ensure_file()?;
-        let mut guard = self.file.lock().unwrap();
-        if let Some(ref mut f) = *guard {
-            f.write_all(data)?;
+        {
+            let mut guard = self.file.lock().unwrap();
+            if let Some(ref mut f) = *guard {
+                f.write_all(data)?;
+            }
+        }
+        // Cap disk usage: keep file bounded to ~2x max_scrollback_bytes (FIX-005).
+        // read_tail already caps replay; this prevents unbounded /tmp growth on long sessions.
+        let max = crate::terminal::get_config().terminal.max_scrollback_bytes as u64;
+        if max == 0 {
+            return Ok(());
+        }
+        let cap = max.saturating_mul(2);
+        let size = match fs::metadata(&self.path) {
+            Ok(m) => m.len(),
+            Err(_) => return Ok(()),
+        };
+        if size > cap {
+            // Close cached handle first so rename works on Windows
+            *self.file.lock().unwrap() = None;
+            let mut file = File::open(&self.path)?;
+            file.seek(SeekFrom::Start(size.saturating_sub(max)))?;
+            let mut buf = Vec::with_capacity(max as usize);
+            file.read_to_end(&mut buf)?;
+            drop(file);
+            let tmp = self.path.with_extension("tmp");
+            fs::write(&tmp, &buf)?;
+            fs::rename(&tmp, &self.path)?;
         }
         Ok(())
     }
