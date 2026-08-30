@@ -139,13 +139,19 @@ pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, 
 
 /// Kill a single session, waiting up to `timeout_secs` for a clean exit.
 pub async fn kill_session(session: &ProcessSession, timeout_secs: u64) {
-    if let Ok(mut child) = session.child.try_lock() {
-        if child.start_kill().is_ok() {
-            match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
-                Ok(Ok(_)) => {}
-                _ => {
-                    let _ = child.kill().await;
-                }
+    let mut child = match session.child.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            tracing::warn!(pid = %session.pid, "kill_session: child lock contended, waiting");
+            // Fall back to blocking lock to guarantee kill (avoid silent no-op)
+            session.child.lock().await
+        }
+    };
+    if child.start_kill().is_ok() {
+        match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
+            Ok(Ok(_)) => {}
+            _ => {
+                let _ = child.kill().await;
             }
         }
     }
