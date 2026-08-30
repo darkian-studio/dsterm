@@ -196,6 +196,7 @@ pub async fn read_file(headers: HeaderMap, Query(query): Query<PathQuery>) -> im
     }
 }
 
+// FIX-040 remainder: write/mkdir/delete etc. are low-frequency, offload deferred to follow-up
 pub async fn write_file(headers: HeaderMap, Json(req): Json<WriteRequest>) -> impl IntoResponse {
     if !filesystem_enabled() {
         return filesystem_disabled_response();
