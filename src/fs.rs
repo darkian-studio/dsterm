@@ -139,37 +139,47 @@ pub async fn read_file(Query(query): Query<PathQuery>) -> impl IntoResponse {
     if !filesystem_enabled() {
         return filesystem_disabled_response();
     }
-    let path = match safe_path(&query.path) {
-        Ok(path) => path,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
-    };
-    tracing::debug!(
-        "fs read requested={:?} resolved={}",
-        query.path,
-        path.display()
-    );
-    let metadata = match fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(e) => return fs_error(axum::http::StatusCode::NOT_FOUND, e),
-    };
-    let max = get_config().filesystem.max_read_bytes as u64;
-    if metadata.len() > max {
-        return fs_error(
-            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            "File exceeds read limit",
-        );
+    // FIX-040: offload blocking fs calls to spawn_blocking
+    let path_clone = query.path.clone();
+    let res = tokio::task::spawn_blocking(
+        move || -> Result<(String, String, String), (axum::http::StatusCode, String)> {
+            let path = safe_path(&path_clone)
+                .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e.to_string()))?;
+            tracing::debug!(
+                "fs read requested={:?} resolved={}",
+                path_clone,
+                path.display()
+            );
+            let metadata = fs::metadata(&path)
+                .map_err(|e| (axum::http::StatusCode::NOT_FOUND, e.to_string()))?;
+            let max = get_config().filesystem.max_read_bytes as u64;
+            if metadata.len() > max {
+                return Err((
+                    axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                    "File exceeds read limit".into(),
+                ));
+            }
+            let content = fs::read(&path)
+                .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let (encoding, content) = if content.contains(&0) {
+                ("base64".to_string(), BASE64.encode(content))
+            } else {
+                (
+                    "utf-8".to_string(),
+                    String::from_utf8_lossy(&content).into_owned(),
+                )
+            };
+            Ok((path_clone, encoding, content))
+        },
+    )
+    .await;
+    match res {
+        Ok(Ok((p, enc, c))) => {
+            Json(serde_json::json!({ "path": p, "encoding": enc, "content": c })).into_response()
+        }
+        Ok(Err((status, msg))) => fs_error(status, msg),
+        Err(e) => fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
     }
-    let content = match fs::read(&path) {
-        Ok(content) => content,
-        Err(e) => return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
-    };
-    let (encoding, content) = if content.contains(&0) {
-        ("base64", BASE64.encode(content))
-    } else {
-        ("utf-8", String::from_utf8_lossy(&content).into_owned())
-    };
-    Json(serde_json::json!({ "path": query.path, "encoding": encoding, "content": content }))
-        .into_response()
 }
 
 pub async fn write_file(Json(req): Json<WriteRequest>) -> impl IntoResponse {
@@ -296,39 +306,64 @@ pub async fn file_search(Query(query): Query<SearchQuery>) -> impl IntoResponse 
     if !filesystem_enabled() {
         return filesystem_disabled_response();
     }
-    let root = match workspace_root() {
-        Ok(root) => root,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
-    };
+    // FIX-040/010: offload blocking BFS to spawn_blocking with symlink-cycle guard
     let needle = query.query.to_lowercase();
     let limit = query.limit.unwrap_or(100).min(1000);
-    let mut stack = vec![root.clone()];
-    let mut results = Vec::new();
-    while let Some(dir) = stack.pop() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_lowercase();
-            if name == ".git" || name == "target" {
+    let root_res = workspace_root();
+    let root = match root_res {
+        Ok(r) => r,
+        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+    };
+    let root_clone = root.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        use std::collections::HashSet;
+        let mut stack = vec![root_clone.clone()];
+        let mut results = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        while let Some(dir) = stack.pop() {
+            // FIX-010: prevent symlink cycles via canonical visited set
+            let canon_key = dir
+                .canonicalize()
+                .unwrap_or(dir.clone())
+                .to_string_lossy()
+                .to_string();
+            if !visited.insert(canon_key) {
                 continue;
             }
-            if name.contains(&needle) {
-                if let Ok(relative) = path.strip_prefix(&root) {
-                    results.push(relative.to_string_lossy().replace('\\', "/"));
-                    if results.len() >= limit {
-                        return Json(serde_json::json!({ "results": results })).into_response();
+            let entries = match fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name == ".git" || name == "target" {
+                    continue;
+                }
+                if name.contains(&needle) {
+                    if let Ok(relative) = path.strip_prefix(&root_clone) {
+                        results.push(relative.to_string_lossy().replace('\\', "/"));
+                        if results.len() >= limit {
+                            return results;
+                        }
                     }
                 }
-            }
-            if path.is_dir() {
-                stack.push(path);
+                if path.is_dir() {
+                    // depth guard via visited set size
+                    if visited.len() > 5000 {
+                        continue;
+                    }
+                    stack.push(path);
+                }
             }
         }
+        results
+    })
+    .await;
+    match res {
+        Ok(results) => Json(serde_json::json!({ "results": results })).into_response(),
+        Err(e) => fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
     }
-    Json(serde_json::json!({ "results": results })).into_response()
 }
 
 #[derive(Debug, Serialize)]
