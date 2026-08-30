@@ -212,6 +212,10 @@ pub async fn write_file(headers: HeaderMap, Json(req): Json<WriteRequest>) -> im
         if let Err(e) = fs::create_dir_all(parent) {
             return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e);
         }
+        // FIX-011: re-validate after mkdir to close TOCTOU symlink race
+        if let Err(e) = safe_path(&req.path) {
+            return fs_error(axum::http::StatusCode::BAD_REQUEST, e);
+        }
     }
     let bytes = if req.encoding.as_deref() == Some("base64") {
         match BASE64.decode(req.content.as_bytes()) {
