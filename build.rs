@@ -27,6 +27,7 @@ fn build_llama() {
     }
 
     // The cmake crate builds serially otherwise; llama.cpp is a large C++ tree.
+    // FIX-120: set_var is global but build script is isolated process — okay, alternative cfg.env not available in cmake crate
     std::env::set_var("CMAKE_BUILD_PARALLEL_LEVEL", "4");
 
     let dst = cfg.build();

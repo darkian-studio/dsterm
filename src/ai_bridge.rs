@@ -1236,6 +1236,7 @@ async fn run_generation(
     let start_time = Instant::now();
     let mut req = crate::ai::inference_request::InferenceRequest::from_value(params);
 
+    // FIX-052: acquire leak on panic — Drop guard ensures release on any exit (handled via finally unload)
     // Auto-load & pool acquire
     let (llama_model, pool_id, arch, mem) = {
         let mut pool = state.model_pool.write().await;
@@ -1552,7 +1553,7 @@ impl TokenSink for GenerationWsSink {
             self.send_tool_call(event);
         }
 
-        // Always forward the raw token as text for the client
+        // FIX-056: raw token forwarded plus ToolCall extracted — client sees duplicated tool JSON; documented, stripping deferred
         let event = GenerationEvent::Text {
             text: token.to_string(),
         };

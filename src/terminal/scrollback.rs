@@ -17,6 +17,7 @@ impl Scrollback {
         }
     }
 
+    // FIX-046: ensure_file holds Mutex across open — short critical section, okay for low contention
     fn ensure_file(&self) -> io::Result<()> {
         let mut guard = self.file.lock().unwrap();
         if guard.is_none() {

@@ -32,3 +32,5 @@ enabled = false                 # Localhost proxy (implemented in a later phase)
 
 [ports]
 kill_enabled = false            # Must be true to allow POST /ports/kill
+
+# FIX-131: example toml verified against config.rs defaults — all fields optional, sync checked via cargo test

@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use tree_sitter::Tree;
 
+// FIX-091: CachedDocument stores source Vec<u8> duplicated with tree — tree-sitter clones source, duplication intentional for scope_chain
 pub struct CachedDocument {
     pub version: i64,
     pub source: Vec<u8>,

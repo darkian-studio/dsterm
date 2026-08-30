@@ -27,7 +27,7 @@ use handlers::*;
 use types::Sessions;
 
 static DEFAULT_COMMAND: OnceLock<String> = OnceLock::new();
-static CONFIG: OnceLock<DstermConfig> = OnceLock::new();
+static CONFIG: OnceLock<DstermConfig> = OnceLock::new(); // FIX-060: global OnceLock hides deps — Arc<State> injection deferred, shim kept for compat
 static LOOPBACK_TOKEN: OnceLock<String> = OnceLock::new();
 
 pub fn loopback_token() -> &'static str {

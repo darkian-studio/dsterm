@@ -559,6 +559,7 @@ impl ModelPoolInner {
         let model_hash = compute_model_hash(&meta);
 
         // Check if already loaded by registry_id
+        // FIX-012: dedup via ref increment does not need capacity check — memory already accounted, only ref grows
         let mut found = None;
         for model in self.models.values_mut() {
             if model.metadata.registry_id == registry_id {

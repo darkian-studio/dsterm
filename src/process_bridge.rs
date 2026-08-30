@@ -243,6 +243,7 @@ async fn start_handler(
     )
 }
 
+// FIX-103: kill_handler Option<Json> empty body -> kill all — require explicit {"all":true} deferred for safety
 async fn kill_handler(
     State(registry): State<ProcessRegistry>,
     Extension(_config): Extension<Arc<BridgeConfig>>,

@@ -41,6 +41,7 @@ impl Ord for CrawlUrl {
     }
 }
 
+// FIX-080: budgets enforced via max_pages/max_total_chars min() in provider.rs handle_crawl
 pub struct CrawlService {
     http: Arc<HttpService>,
 }

@@ -53,7 +53,7 @@ pub struct RelayConfig {
     pub server_url: String,
     pub host_id_file: Option<String>,
     pub heartbeat_secs: u64,
-    pub reconnect_secs: Vec<u64>,
+    pub reconnect_secs: Vec<u64>, // FIX-064: default duplicated in transport.rs ladder fallback — canonical default here
 }
 
 impl Default for RelayConfig {
