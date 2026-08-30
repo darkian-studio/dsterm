@@ -202,10 +202,10 @@ async fn start_handler(
     }
 
     let session = match spawn_process(&SpawnConfig {
-        command: req.command,
-        args: req.args,
-        cwd: req.cwd,
-        env: req.env,
+        command: req.command.clone(),
+        args: req.args.clone(),
+        cwd: req.cwd.clone(),
+        env: req.env.clone(),
         stderr_target: config.stderr_target,
     })
     .await
@@ -219,7 +219,20 @@ async fn start_handler(
         }
     };
 
-    registry.write().await.insert(req.id.clone(), session);
+    // Re-check under write lock to close race where two concurrent starts passed the read check (FIX-101)
+    {
+        let mut registry = registry.write().await;
+        if registry.contains_key(&req.id) {
+            // Another task raced us — clean up the process we just spawned
+            let kill_timeout = crate::terminal::get_config().bridges.kill_timeout_secs;
+            kill_session(&session, kill_timeout).await;
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "session exists", "id": req.id})),
+            );
+        }
+        registry.insert(req.id.clone(), session);
+    }
 
     let ws_path = if config.framing == FramingMode::ContentLength && config.prefix == "dap" {
         format!("/{}/{}", config.prefix, urlencoding::encode(&req.id))
