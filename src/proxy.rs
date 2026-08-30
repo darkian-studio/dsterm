@@ -97,11 +97,13 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
     let response = match builder.send().await {
         Ok(response) => response,
         Err(e) => {
+            // FIX-083: sanitize upstream error (was leaking internal URLs)
+            tracing::warn!("proxy upstream failed: {e}");
             return (
                 axum::http::StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": format!("Upstream request failed: {e}") })),
+                Json(serde_json::json!({ "error": "Upstream request failed" })),
             )
-                .into_response()
+                .into_response();
         }
     };
     let status = response.status().as_u16();
@@ -137,9 +139,10 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
                 body.extend_from_slice(&chunk);
             }
             Err(e) => {
+                tracing::warn!("proxy read body failed: {e}");
                 return (
                     axum::http::StatusCode::BAD_GATEWAY,
-                    Json(serde_json::json!({ "error": format!("Failed to read upstream body: {e}") })),
+                    Json(serde_json::json!({ "error": "Failed to read upstream body" })),
                 )
                     .into_response();
             }

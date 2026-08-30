@@ -862,6 +862,7 @@ async fn ai_detokenize(body: Option<Json<Value>>) -> Result<axum::response::Resp
     ))
 }
 
+// FIX-057: ai_statistics / ai_memory / ai_pool_health overlap — consolidate docs, deprecate duplicate in follow-up
 async fn ai_statistics(State(state): State<AiState>) -> impl IntoResponse {
     let sessions_total = AI_SESSIONS_CREATED.load(Ordering::Relaxed);
     let pool_guard = state.model_pool.read().await;

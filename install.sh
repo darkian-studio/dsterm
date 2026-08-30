@@ -12,6 +12,7 @@ detect_binary_name() {
     local arch os
     arch=$(uname -m)
 
+    # FIX-122: TERMUX_VERSION gating matches src/updates.rs:153 — single source via env var
     # Termux (Android). TERMUX_VERSION is the concrete signal Termux always
     # sets; a `/data/data/com.termux` path check can resolve incorrectly on
     # some hosts, so rely on the env var instead.
