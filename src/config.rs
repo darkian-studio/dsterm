@@ -124,6 +124,13 @@ pub struct ProxyConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct ExecConfig {
+    /// Optional regex allowlist for exec commands; if set, only matching commands are allowed (FIX-030)
+    pub allowlist: Option<String>,
+}
+
 /// Top-level dsterm configuration.
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
@@ -138,6 +145,7 @@ pub struct DstermConfig {
     pub filesystem: FilesystemConfig,
     pub proxy: ProxyConfig,
     pub ports: PortsConfig,
+    pub exec: ExecConfig,
 }
 
 impl DstermConfig {

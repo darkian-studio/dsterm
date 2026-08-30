@@ -13,7 +13,7 @@ use crate::relay::wire::ClientCtx;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -88,11 +88,18 @@ async fn connect_once(
     } else {
         config.relay.heartbeat_secs
     };
+    let last_pong = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
+    let last_pong_hb = last_pong.clone();
     let hb_tx = out_tx.clone();
     let heartbeat = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(hb_secs));
         loop {
             tick.tick().await;
+            // FIX-072: break if no pong within 2x heartbeat interval (ghost connection)
+            if last_pong_hb.lock().await.elapsed() > Duration::from_secs(hb_secs * 2) {
+                tracing::warn!("relay pong timeout, reconnecting");
+                break;
+            }
             if hb_tx
                 .send(json!({ "type": "ping" }).to_string())
                 .await
@@ -134,7 +141,15 @@ async fn connect_once(
                 .to_string();
 
             if is_plaintext_allowed(&msg_type) {
-                handle_control(&msg_type, &value, config, &out_tx, &mut approved).await?;
+                handle_control(
+                    &msg_type,
+                    &value,
+                    config,
+                    &out_tx,
+                    &mut approved,
+                    &last_pong,
+                )
+                .await?;
                 continue;
             }
 
@@ -196,12 +211,15 @@ async fn handle_control(
     config: &DstermConfig,
     out_tx: &mpsc::Sender<String>,
     approved: &mut HashSet<String>,
+    last_pong: &std::sync::Arc<tokio::sync::Mutex<std::time::Instant>>,
 ) -> anyhow::Result<()> {
     match msg_type {
         "ping" => {
             let _ = out_tx.send(json!({ "type": "pong" }).to_string()).await;
         }
-        "pong" => {}
+        "pong" => {
+            *last_pong.lock().await = std::time::Instant::now();
+        }
         "session:hosted" => {
             let sid = value
                 .get("sessionId")
