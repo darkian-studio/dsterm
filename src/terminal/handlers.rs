@@ -1142,17 +1142,21 @@ async fn execute_silent_command(
         }
     };
 
-    let wait_child = async { tokio::time::timeout(timeout_duration, child.wait()).await };
+    // Bound the whole operation (readers + wait) to timeout_duration so hanging
+    // stdout/stderr readers cannot block past the deadline (FIX-007).
+    let joined = tokio::time::timeout(timeout_duration, async {
+        tokio::join!(read_stdout, read_stderr, child.wait())
+    })
+    .await;
 
-    let (stdout_result, stderr_result, wait_result) =
-        tokio::join!(read_stdout, read_stderr, wait_child);
-
-    match wait_result {
-        Ok(Ok(status)) => {
-            let exit_code = status.code().unwrap_or(-1);
-            Ok((exit_code, stdout_result, stderr_result, false))
-        }
-        Ok(Err(e)) => Err(format!("Failed to wait for command: {}", e)),
+    match joined {
+        Ok((stdout_result, stderr_result, wait_res)) => match wait_res {
+            Ok(status) => {
+                let exit_code = status.code().unwrap_or(-1);
+                Ok((exit_code, stdout_result, stderr_result, false))
+            }
+            Err(e) => Err(format!("Failed to wait for command: {}", e)),
+        },
         Err(_) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -1349,6 +1353,8 @@ async fn handle_silent_exec_stream(socket: WebSocket) {
         }
     });
 
+    // Use a single deadline so timeout does not reset each loop iteration (FIX-008).
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         tokio::select! {
             msg = stdout_rx.recv() => {
@@ -1377,7 +1383,7 @@ async fn handle_silent_exec_stream(socket: WebSocket) {
                 let _ = sender.send(Message::Text(serde_json::to_string(&done).unwrap().into())).await;
                 break;
             }
-            _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+            _ = tokio::time::sleep_until(deadline) => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 let _ = stdout_task.await;
