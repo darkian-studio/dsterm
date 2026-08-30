@@ -47,7 +47,6 @@ impl ClientCtx {
         match encrypt_envelope(&self.secretbox, &self.client_id, &msg) {
             Ok(frame) => {
                 if let Err(e) = self.out_tx.send(frame).await {
-                    // FIX-073: log when relay writer is gone (was silent _ =)
                     tracing::warn!(client_id = %self.client_id, "relay out_tx closed, dropping frame: {e}");
                 }
             }

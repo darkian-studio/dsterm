@@ -16,8 +16,6 @@ impl Scrollback {
             file: Mutex::new(None),
         }
     }
-
-    // FIX-046: ensure_file holds Mutex across open — short critical section, okay for low contention
     fn ensure_file(&self) -> io::Result<()> {
         let mut guard = self.file.lock().unwrap();
         if guard.is_none() {
@@ -40,7 +38,7 @@ impl Scrollback {
                 f.write_all(data)?;
             }
         }
-        // Cap disk usage: keep file bounded to ~2x max_scrollback_bytes (FIX-005).
+        // Cap disk usage: keep file bounded to ~2x max_scrollback_bytes.
         // read_tail already caps replay; this prevents unbounded /tmp growth on long sessions.
         let max = crate::terminal::get_config().terminal.max_scrollback_bytes as u64;
         if max == 0 {

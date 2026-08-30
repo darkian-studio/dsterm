@@ -152,8 +152,6 @@ async fn websocket_handler(
         extension_host_pump(socket, id, registry, session, stdout).await;
     })
 }
-
-// FIX-100: extension_host replicates ndjson_pump — DRY via shared process_bridge::ndjson_pump with callback deferred
 async fn extension_host_pump(
     socket: WebSocket,
     id: String,

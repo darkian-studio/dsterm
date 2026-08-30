@@ -457,7 +457,6 @@ impl LoadLockManager {
         locks.len()
     }
 
-    /// FIX-058: prune unused semaphores (available_permits ==1 and not recently used)
     #[allow(dead_code)]
     pub async fn prune(&self) {
         let mut locks = self.locks.lock().await;
@@ -530,8 +529,6 @@ impl ModelPoolInner {
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-
-        // FIX-054: canonicalize key so symlink/relative paths share cache entry
         let key = Self::canonical_key(path);
         if let Some(cached) = self.file_cache.get(&key) {
             if cached.size != size || cached.mtime != mtime {
@@ -559,7 +556,6 @@ impl ModelPoolInner {
         let model_hash = compute_model_hash(&meta);
 
         // Check if already loaded by registry_id
-        // FIX-012: dedup via ref increment does not need capacity check — memory already accounted, only ref grows
         let mut found = None;
         for model in self.models.values_mut() {
             if model.metadata.registry_id == registry_id {
@@ -636,7 +632,7 @@ impl ModelPoolInner {
 
         let pool_id = self.next_pool_id_str();
 
-        // Cache file info (FIX-054 canonical key)
+        // Cache file info
         self.file_cache
             .insert(Self::canonical_key(path), file_info.clone());
 
@@ -863,7 +859,6 @@ impl ModelPoolInner {
 
     #[allow(dead_code)]
     pub fn verify(&self) -> bool {
-        // FIX-053: verify is now pure (does not mutate consistency_ok); callers should update if needed
         // Check no duplicate pool_ids
         let mut seen_pool = std::collections::HashSet::new();
         let mut seen_reg = std::collections::HashSet::new();
@@ -915,7 +910,6 @@ impl ModelPoolInner {
                 .values()
                 .filter(|m| m.lifecycle.ref_count == 0)
                 .max_by(|a, b| {
-                    // FIX-013: use total_cmp to handle NaN deterministically
                     self.eviction_strategy
                         .score(a)
                         .total_cmp(&self.eviction_strategy.score(b))

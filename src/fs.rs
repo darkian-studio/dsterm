@@ -153,7 +153,6 @@ pub async fn read_file(headers: HeaderMap, Query(query): Query<PathQuery>) -> im
     if !is_loopback_authorized(&headers) {
         return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
     }
-    // FIX-040: offload blocking fs calls to spawn_blocking
     let path_clone = query.path.clone();
     let res = tokio::task::spawn_blocking(
         move || -> Result<(String, String, String), (axum::http::StatusCode, String)> {
@@ -195,8 +194,6 @@ pub async fn read_file(headers: HeaderMap, Query(query): Query<PathQuery>) -> im
         Err(e) => fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
-
-// FIX-040 remainder: write/mkdir/delete etc. are low-frequency, offload deferred to follow-up
 pub async fn write_file(headers: HeaderMap, Json(req): Json<WriteRequest>) -> impl IntoResponse {
     if !filesystem_enabled() {
         return filesystem_disabled_response();
@@ -212,7 +209,6 @@ pub async fn write_file(headers: HeaderMap, Json(req): Json<WriteRequest>) -> im
         if let Err(e) = fs::create_dir_all(parent) {
             return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e);
         }
-        // FIX-011: re-validate after mkdir to close TOCTOU symlink race
         if let Err(e) = safe_path(&req.path) {
             return fs_error(axum::http::StatusCode::BAD_REQUEST, e);
         }
@@ -346,7 +342,6 @@ pub async fn file_search(
     if !is_loopback_authorized(&headers) {
         return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
     }
-    // FIX-040/010: offload blocking BFS to spawn_blocking with symlink-cycle guard
     let needle = query.query.to_lowercase();
     let limit = query.limit.unwrap_or(100).min(1000);
     let root_res = workspace_root();
@@ -361,7 +356,6 @@ pub async fn file_search(
         let mut results = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         while let Some(dir) = stack.pop() {
-            // FIX-010: prevent symlink cycles via canonical visited set
             let canon_key = dir
                 .canonicalize()
                 .unwrap_or(dir.clone())

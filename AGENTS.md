@@ -13,4 +13,4 @@
 > **Note:** The restriction above applies only on Windows — dsterm only compiles
 > on Linux. On a Linux machine you can run `cargo build`/`check`/etc. normally.
 
-<!-- FIX-132: cargo restriction clarified — Windows fmt-only, Linux full cargo per AGENTS.md note -->
+

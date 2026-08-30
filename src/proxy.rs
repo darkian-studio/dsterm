@@ -97,7 +97,6 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
     let response = match builder.send().await {
         Ok(response) => response,
         Err(e) => {
-            // FIX-083: sanitize upstream error (was leaking internal URLs)
             tracing::warn!("proxy upstream failed: {e}");
             return (
                 axum::http::StatusCode::BAD_GATEWAY,
@@ -113,7 +112,7 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
             headers.insert(key.to_string(), value.to_string());
         }
     }
-    // Enforce size limit before buffering whole body (FIX-020).
+    // Enforce size limit before buffering whole body.
     if let Some(len) = response.content_length() {
         if len > MAX_PROXY_RESPONSE_BYTES as u64 {
             return (

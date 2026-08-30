@@ -53,7 +53,7 @@ pub struct RelayConfig {
     pub server_url: String,
     pub host_id_file: Option<String>,
     pub heartbeat_secs: u64,
-    pub reconnect_secs: Vec<u64>, // FIX-064: default duplicated in transport.rs ladder fallback — canonical default here
+    pub reconnect_secs: Vec<u64>,
 }
 
 impl Default for RelayConfig {
@@ -127,7 +127,7 @@ pub struct ProxyConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct ExecConfig {
-    /// Optional regex allowlist for exec commands; if set, only matching commands are allowed (FIX-030)
+    /// Optional regex allowlist for exec commands; if set, only matching commands are allowed
     pub allowlist: Option<String>,
 }
 
@@ -149,13 +149,13 @@ pub struct DstermConfig {
 }
 
 impl DstermConfig {
-    /// Helper for FIX-065: typed home path (keeps `home` as String for serde compat)
+    /// Helper: typed home path (keeps `home` as String for serde compat)
     #[allow(dead_code)]
     pub fn home_path(&self) -> std::path::PathBuf {
         std::path::PathBuf::from(&self.home)
     }
 
-    /// Centralize `--remote` override (FIX-062)
+    /// Centralize `--remote` override
     pub fn apply_remote_flag(&mut self, remote: bool) {
         if remote {
             self.filesystem.enabled = true;

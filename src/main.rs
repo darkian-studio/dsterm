@@ -122,7 +122,6 @@ fn load_config_or_default(path: Option<&str>, announce: bool) -> DstermConfig {
                 config
             }
             Err(e) => {
-                // FIX-061: fail fast on explicit --config path (was warning-only)
                 eprintln!(
                     "{} Failed to load config from {path}: {e}",
                     "✗".red().bold()

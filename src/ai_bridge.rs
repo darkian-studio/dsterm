@@ -35,7 +35,7 @@ use crate::ai::pool::{
 
 /// Total physical RAM in bytes (MemTotal from /proc/meminfo), used as the
 /// RAM budget for the auto context-size heuristic.
-/// Cached after first read (FIX-055) to avoid per-inference /proc parsing.
+/// Cached after first read to avoid per-inference /proc parsing.
 #[cfg(feature = "llama")]
 fn read_total_memory_bytes() -> u64 {
     use std::sync::OnceLock;
@@ -505,7 +505,6 @@ async fn ai_loaded_models(State(state): State<AiState>) -> impl IntoResponse {
 
 async fn ai_delete(body: Option<Json<Value>>) -> Result<axum::response::Response, AiError> {
     let _ = body;
-    // FIX-050: stub previously returned success:true with no effect — now explicit 501
     Err(AiError::new(
         StatusCode::NOT_IMPLEMENTED,
         "NOT_IMPLEMENTED",
@@ -583,7 +582,6 @@ async fn ai_session_state(
 /// Resolve an empty model_id to the pool_id of the first loaded model so
 /// clients that never send a model id (e.g. the DS app's local chat
 /// transport) still work against the loaded model.
-/// FIX-051: logs when fallback is used; ordering is HashMap iteration (nondeterministic) — caller should send explicit id.
 async fn resolve_model_id(state: &AiState, model_id: &str) -> Result<String, AiError> {
     if !model_id.is_empty() {
         return Ok(model_id.to_string());
@@ -861,8 +859,6 @@ async fn ai_detokenize(body: Option<Json<Value>>) -> Result<axum::response::Resp
         "detokenize not implemented; llama backend required",
     ))
 }
-
-// FIX-057: ai_statistics / ai_memory / ai_pool_health overlap — consolidate docs, deprecate duplicate in follow-up
 async fn ai_statistics(State(state): State<AiState>) -> impl IntoResponse {
     let sessions_total = AI_SESSIONS_CREATED.load(Ordering::Relaxed);
     let pool_guard = state.model_pool.read().await;
@@ -1236,8 +1232,6 @@ async fn run_generation(
 ) -> Result<(), String> {
     let start_time = Instant::now();
     let mut req = crate::ai::inference_request::InferenceRequest::from_value(params);
-
-    // FIX-052: acquire leak on panic — Drop guard ensures release on any exit (handled via finally unload)
     // Auto-load & pool acquire
     let (llama_model, pool_id, arch, mem) = {
         let mut pool = state.model_pool.write().await;
@@ -1553,8 +1547,6 @@ impl TokenSink for GenerationWsSink {
         for event in &tool_events {
             self.send_tool_call(event);
         }
-
-        // FIX-056: raw token forwarded plus ToolCall extracted — client sees duplicated tool JSON; documented, stripping deferred
         let event = GenerationEvent::Text {
             text: token.to_string(),
         };

@@ -71,7 +71,6 @@ static CACHE: OnceLock<std::sync::Mutex<Option<(Instant, serde_json::Value)>>> =
 static SYSTEM: OnceLock<std::sync::Mutex<System>> = OnceLock::new();
 
 pub fn snapshot_json() -> serde_json::Value {
-    // FIX-041: cache snapshot for 1s to avoid System::new_all per request
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(None));
     if let Ok(guard) = cache.lock() {
         if let Some((ts, val)) = guard.as_ref() {

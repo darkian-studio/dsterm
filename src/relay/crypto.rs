@@ -28,7 +28,7 @@ pub struct Secretbox {
 impl Secretbox {
     pub fn load_or_create(path: Option<&str>) -> anyhow::Result<Self> {
         let path = key_path(path)?;
-        // Atomic TOCTOU-safe: try load, then create_new, retry on AlreadyExists (FIX-026)
+        // Atomic TOCTOU-safe: try load, then create_new, retry on AlreadyExists
         match Self::load(&path) {
             Ok(s) => return Ok(s),
             Err(e) => {

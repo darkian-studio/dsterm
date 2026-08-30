@@ -22,8 +22,6 @@ async fn web_fetch(
         .get("budgets")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-
-    // FIX-082: payload shape ambiguous — explicit WebReq struct deferred, fallback keeps compat
     let payload = body.get("payload").cloned().unwrap_or(body);
 
     let request = ProviderRequest {
@@ -50,8 +48,6 @@ async fn web_extract(
         .get("budgets")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-
-    // FIX-082: payload shape ambiguous — explicit WebReq struct deferred, fallback keeps compat
     let payload = body.get("payload").cloned().unwrap_or(body);
 
     let request = ProviderRequest {
@@ -78,8 +74,6 @@ async fn web_search(
         .get("budgets")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-
-    // FIX-082: payload shape ambiguous — explicit WebReq struct deferred, fallback keeps compat
     let payload = body.get("payload").cloned().unwrap_or(body);
 
     let request = ProviderRequest {
@@ -106,8 +100,6 @@ async fn web_crawl(
         .get("budgets")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-
-    // FIX-082: payload shape ambiguous — explicit WebReq struct deferred, fallback keeps compat
     let payload = body.get("payload").cloned().unwrap_or(body);
 
     let request = ProviderRequest {

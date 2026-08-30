@@ -64,7 +64,7 @@ fn windows_shell_args(program: &str) -> Vec<String> {
     }
 }
 
-/// Split a shell command string respecting single/double quotes and backslash escapes (FIX-003).
+/// Split a shell command string respecting single/double quotes and backslash escapes.
 /// Returns None if quotes are unbalanced.
 fn split_command(cmd: &str) -> Option<Vec<String>> {
     let mut parts = Vec::new();
@@ -337,7 +337,7 @@ pub async fn create_terminal(
                     // error (e.g. missing program), not a PTY capability issue.
                     // Do NOT fall back; report immediately.
                     tracing::error!("spawn_command failed: {}", e);
-                    drop(pair); // explicitly close PTY master/slave before returning (FIX-004)
+                    drop(pair); // explicitly close PTY master/slave before returning
                     return Json(ErrorResponse {
                         error: format!("Failed to spawn command: {e}"),
                     })
@@ -1200,7 +1200,7 @@ async fn execute_silent_command(
     };
 
     // Bound the whole operation (readers + wait) to timeout_duration so hanging
-    // stdout/stderr readers cannot block past the deadline (FIX-007).
+    // stdout/stderr readers cannot block past the deadline.
     let joined = tokio::time::timeout(timeout_duration, async {
         tokio::join!(read_stdout, read_stderr, child.wait())
     })
@@ -1410,7 +1410,7 @@ async fn handle_silent_exec_stream(socket: WebSocket) {
         }
     });
 
-    // Use a single deadline so timeout does not reset each loop iteration (FIX-008).
+    // Use a single deadline so timeout does not reset each loop iteration.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         tokio::select! {

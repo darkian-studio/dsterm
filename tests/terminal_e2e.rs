@@ -1,5 +1,4 @@
-// FIX-110: minimal PTY lifecycle integration test (create → resize → terminate → metrics)
-// Uses axum TestClient via tower::ServiceExt
+// minimal PTY lifecycle integration test (create → resize → terminate → metrics)
 use axum::http::Request;
 
 #[tokio::test]

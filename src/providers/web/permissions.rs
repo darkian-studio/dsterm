@@ -87,7 +87,6 @@ fn is_localhost(host: &str) -> bool {
     {
         return true;
     }
-    // FIX-081: block integer-encoded IP (e.g. http://2130706433 == 127.0.0.1)
     if let Ok(num) = host.parse::<u32>() {
         let ip = Ipv4Addr::from(num);
         if ip.is_loopback() {
@@ -98,7 +97,6 @@ fn is_localhost(host: &str) -> bool {
 }
 
 fn is_private_ip_detailed(host: &str) -> Option<String> {
-    // FIX-081: also handle decimal integer IPs
     if let Ok(num) = host.parse::<u32>() {
         let ip = Ipv4Addr::from(num);
         if ip.is_private()

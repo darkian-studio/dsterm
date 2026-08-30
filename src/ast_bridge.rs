@@ -48,7 +48,7 @@ pub async fn ast_scope(
         }
     }
 
-    const MAX_AST_BYTES: usize = 2 * 1024 * 1024; // 2 MB (FIX-090)
+    const MAX_AST_BYTES: usize = 2 * 1024 * 1024; // 2 MB
     if req.content.len() > MAX_AST_BYTES {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,

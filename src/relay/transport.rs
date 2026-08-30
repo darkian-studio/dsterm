@@ -25,7 +25,6 @@ fn http_client() -> reqwest::Client {
 
 /// Run the relay client forever, reconnecting with a fixed backoff ladder.
 pub async fn run(config: DstermConfig, secretbox: Secretbox, host_id: String, local_port: u16) {
-    // FIX-025: warn if using default placeholder relay URL
     if config.relay.server_url == "https://localhost:3000" {
         tracing::warn!("relay server_url is default https://localhost:3000 — set relay.server_url in config for production");
     }
@@ -44,7 +43,6 @@ pub async fn run(config: DstermConfig, secretbox: Secretbox, host_id: String, lo
             Err(e) => tracing::error!("relay connection error: {e}"),
         }
         let idx = attempt.min(ladder.len() - 1);
-        // FIX-075: add jitter (0-2s) to avoid thundering herd
         let jitter = (attempt as u64) % 3;
         let delay = ladder[idx].saturating_add(jitter);
         attempt = attempt.saturating_add(1);
@@ -95,7 +93,6 @@ async fn connect_once(
         let mut tick = tokio::time::interval(Duration::from_secs(hb_secs));
         loop {
             tick.tick().await;
-            // FIX-072: break if no pong within 2x heartbeat interval (ghost connection)
             if last_pong_hb.lock().await.elapsed() > Duration::from_secs(hb_secs * 2) {
                 tracing::warn!("relay pong timeout, reconnecting");
                 break;
@@ -335,7 +332,6 @@ async fn route(
             agents.kill(ctx, http, local_port, id, &agent_id).await;
         }
         IncomingMsg::WsOpen { id, url } => {
-            // FIX-074: pre-validate url before proxy (proxy_ws also checks is_localhost)
             if !crate::proxy::is_localhost(&url) {
                 ctx.send_error(id, "Only localhost ws targets allowed")
                     .await;

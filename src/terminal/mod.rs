@@ -27,7 +27,7 @@ use handlers::*;
 use types::Sessions;
 
 static DEFAULT_COMMAND: OnceLock<String> = OnceLock::new();
-static CONFIG: OnceLock<DstermConfig> = OnceLock::new(); // FIX-060: global OnceLock hides deps — Arc<State> injection deferred, shim kept for compat
+static CONFIG: OnceLock<DstermConfig> = OnceLock::new();
 static LOOPBACK_TOKEN: OnceLock<String> = OnceLock::new();
 
 pub fn loopback_token() -> &'static str {
@@ -120,7 +120,6 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
             loop {
                 tick.tick().await;
                 let now = std::time::SystemTime::now();
-                // FIX-044: avoid silent skip on lock contention and future timestamps
                 let to_evict: Vec<u32> = sessions
                     .iter()
                     .filter_map(|entry| {
@@ -160,7 +159,6 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
             .allow_methods(Any)
             .allow_headers(Any)
     } else {
-        // FIX-024: allow any localhost origin (http/https, any port) rather than single https://localhost
         use tower_http::cors::AllowOrigin;
         CorsLayer::new()
             .allow_origin(AllowOrigin::predicate(

@@ -219,7 +219,7 @@ async fn start_handler(
         }
     };
 
-    // Re-check under write lock to close race where two concurrent starts passed the read check (FIX-101)
+    // Re-check under write lock to close race where two concurrent starts passed the read check
     {
         let mut registry = registry.write().await;
         if registry.contains_key(&req.id) {
@@ -233,8 +233,6 @@ async fn start_handler(
         }
         registry.insert(req.id.clone(), session);
     }
-
-    // FIX-102: always encode ws id to handle slashes consistently
     let ws_path = format!("/{}/{}", config.prefix, urlencoding::encode(&req.id));
 
     (
@@ -242,8 +240,6 @@ async fn start_handler(
         Json(serde_json::json!({ "id": req.id, "ws_path": ws_path })),
     )
 }
-
-// FIX-103: kill_handler Option<Json> empty body -> kill all — require explicit {"all":true} deferred for safety
 async fn kill_handler(
     State(registry): State<ProcessRegistry>,
     Extension(_config): Extension<Arc<BridgeConfig>>,

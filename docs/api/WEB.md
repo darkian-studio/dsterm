@@ -398,4 +398,4 @@ Common errors:
 | `all retries exhausted` | Network failure on all attempts |
 | `redirect blocked` | Redirect led to a blocked host/scheme |
 
-<!-- FIX-130: Budgets struct documented via src/providers/mod.rs:17 — max_bytes/timeout/max_pages -->
+

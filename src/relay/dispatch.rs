@@ -127,7 +127,6 @@ pub async fn dispatch(msg: IncomingMsg, ctx: &ClientCtx, http: &reqwest::Client,
             cwd,
             timeout_ms,
         } => {
-            // FIX-030: optional allowlist regex for exec commands
             if let Some(pattern) = &crate::terminal::get_config().exec.allowlist {
                 match regex::Regex::new(pattern) {
                     Ok(re) if !re.is_match(&command) => {
