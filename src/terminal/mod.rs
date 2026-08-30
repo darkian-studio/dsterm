@@ -28,6 +28,14 @@ use types::Sessions;
 
 static DEFAULT_COMMAND: OnceLock<String> = OnceLock::new();
 static CONFIG: OnceLock<DstermConfig> = OnceLock::new();
+static LOOPBACK_TOKEN: OnceLock<String> = OnceLock::new();
+
+pub fn loopback_token() -> &'static str {
+    LOOPBACK_TOKEN.get().map(|s| s.as_str()).unwrap_or("")
+}
+fn init_loopback_token() {
+    let _ = LOOPBACK_TOKEN.set(uuid::Uuid::new_v4().to_string());
+}
 
 pub fn set_default_command(cmd: String) {
     let _ = DEFAULT_COMMAND.set(cmd);
@@ -81,6 +89,7 @@ async fn shutdown_signal() {
 }
 
 pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
+    init_loopback_token();
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
