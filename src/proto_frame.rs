@@ -114,7 +114,7 @@ pub fn encode_frame(payload: &str) -> Vec<u8> {
     result
 }
 
-fn parse_message(input: &[u8]) -> IResult<&[u8], &[u8]> {
+pub(crate) fn parse_message(input: &[u8]) -> IResult<&[u8], &[u8]> {
     let content_len = delimited(tag("Content-Length: "), digit1, crlf);
 
     let utf8 = alt((tag("utf-8"), tag("utf8")));
@@ -130,6 +130,6 @@ fn parse_message(input: &[u8]) -> IResult<&[u8], &[u8]> {
     message(input)
 }
 
-fn find_next_message(input: &[u8]) -> IResult<&[u8], usize> {
+pub(crate) fn find_next_message(input: &[u8]) -> IResult<&[u8], usize> {
     map(take_until("Content-Length"), |s: &[u8]| s.len())(input)
 }

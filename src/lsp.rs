@@ -1,5 +1,6 @@
 //! LSP WebSocket Proxy
 
+use crate::proto_frame::{find_next_message, parse_message};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderValue;
 use axum::response::IntoResponse;
@@ -7,15 +8,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use bytes::{Buf, BufMut, BytesMut};
 use futures::{SinkExt, StreamExt};
-use nom::{
-    branch::alt,
-    bytes::streaming::{is_not, tag, take_until},
-    character::streaming::{char, crlf, digit1, space0},
-    combinator::{map, map_res, opt},
-    multi::length_data,
-    sequence::{delimited, terminated, tuple},
-    IResult,
-};
+use nom::IResult;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
@@ -562,27 +555,4 @@ fn number_of_digits(mut n: usize) -> usize {
         num_digits += 1;
     }
     num_digits
-}
-
-// LSP Message Parser
-
-/// Get JSON message from input using the Content-Length header.
-fn parse_message(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    let content_len = delimited(tag("Content-Length: "), digit1, crlf);
-
-    let utf8 = alt((tag("utf-8"), tag("utf8")));
-    let charset = tuple((char(';'), space0, tag("charset="), utf8));
-    let content_type = tuple((tag("Content-Type: "), is_not(";\r"), opt(charset), crlf));
-
-    let header = terminated(terminated(content_len, opt(content_type)), crlf);
-
-    let header = map_res(header, str::from_utf8);
-    let length = map_res(header, |s: &str| s.parse::<usize>());
-    let mut message = length_data(length);
-
-    message(input)
-}
-
-fn find_next_message(input: &[u8]) -> IResult<&[u8], usize> {
-    map(take_until("Content-Length"), |s: &[u8]| s.len())(input)
 }
