@@ -44,7 +44,9 @@ pub async fn run(config: DstermConfig, secretbox: Secretbox, host_id: String, lo
             Err(e) => tracing::error!("relay connection error: {e}"),
         }
         let idx = attempt.min(ladder.len() - 1);
-        let delay = ladder[idx];
+        // FIX-075: add jitter (0-2s) to avoid thundering herd
+        let jitter = (attempt as u64) % 3;
+        let delay = ladder[idx].saturating_add(jitter);
         attempt = attempt.saturating_add(1);
         tracing::info!("reconnecting to relay in {delay}s");
         tokio::time::sleep(Duration::from_secs(delay)).await;

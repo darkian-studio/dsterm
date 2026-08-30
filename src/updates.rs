@@ -67,7 +67,10 @@ impl UpdateChecker {
                 .unwrap()
                 .as_secs();
             let content = format!("{now},{version}");
-            fs::write(cache_path, content).await?;
+            // FIX-121: atomic write via tmp+rename
+            let tmp = cache_path.with_extension("tmp");
+            fs::write(&tmp, content).await?;
+            fs::rename(&tmp, &cache_path).await?;
         }
         Ok(())
     }
