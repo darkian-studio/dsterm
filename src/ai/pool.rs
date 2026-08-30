@@ -456,6 +456,13 @@ impl LoadLockManager {
         let locks = self.locks.lock().await;
         locks.len()
     }
+
+    /// FIX-058: prune unused semaphores (available_permits ==1 and not recently used)
+    #[allow(dead_code)]
+    pub async fn prune(&self) {
+        let mut locks = self.locks.lock().await;
+        locks.retain(|_, sem| sem.available_permits() != 1);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +515,12 @@ impl ModelPoolInner {
         format!("pool://{id}")
     }
 
+    fn canonical_key(path: &str) -> String {
+        std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| path.to_string())
+    }
+
     fn check_file_unchanged(&self, path: &str) -> Result<FileInfo, String> {
         let meta = std::fs::metadata(path).map_err(|e| format!("Cannot stat file: {e}"))?;
         let size = meta.len();
@@ -518,7 +531,9 @@ impl ModelPoolInner {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        if let Some(cached) = self.file_cache.get(path) {
+        // FIX-054: canonicalize key so symlink/relative paths share cache entry
+        let key = Self::canonical_key(path);
+        if let Some(cached) = self.file_cache.get(&key) {
             if cached.size != size || cached.mtime != mtime {
                 return Err(format!(
                     "File changed since last load: {path} (size: {}->{}, mtime: {}->{})",
@@ -620,8 +635,9 @@ impl ModelPoolInner {
 
         let pool_id = self.next_pool_id_str();
 
-        // Cache file info
-        self.file_cache.insert(path.to_string(), file_info.clone());
+        // Cache file info (FIX-054 canonical key)
+        self.file_cache
+            .insert(Self::canonical_key(path), file_info.clone());
 
         let capabilities = super::gguf::ModelCapabilities::from_json(&meta["capabilities"]);
 
@@ -898,10 +914,10 @@ impl ModelPoolInner {
                 .values()
                 .filter(|m| m.lifecycle.ref_count == 0)
                 .max_by(|a, b| {
+                    // FIX-013: use total_cmp to handle NaN deterministically
                     self.eviction_strategy
                         .score(a)
-                        .partial_cmp(&self.eviction_strategy.score(b))
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&self.eviction_strategy.score(b))
                 })
                 .map(|m| m.metadata.pool_id.clone());
 
@@ -938,8 +954,7 @@ impl ModelPoolInner {
                 .max_by(|a, b| {
                     self.eviction_strategy
                         .score(a)
-                        .partial_cmp(&self.eviction_strategy.score(b))
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&self.eviction_strategy.score(b))
                 })
                 .map(|m| {
                     (

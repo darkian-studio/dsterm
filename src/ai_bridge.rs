@@ -35,22 +35,27 @@ use crate::ai::pool::{
 
 /// Total physical RAM in bytes (MemTotal from /proc/meminfo), used as the
 /// RAM budget for the auto context-size heuristic.
+/// Cached after first read (FIX-055) to avoid per-inference /proc parsing.
 #[cfg(feature = "llama")]
 fn read_total_memory_bytes() -> u64 {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|s| {
-            s.lines().find_map(|l| {
-                let mut it = l.split_whitespace();
-                if it.next() == Some("MemTotal:") {
-                    it.next().and_then(|v| v.parse::<u64>().ok())
-                } else {
-                    None
-                }
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<u64> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines().find_map(|l| {
+                    let mut it = l.split_whitespace();
+                    if it.next() == Some("MemTotal:") {
+                        it.next().and_then(|v| v.parse::<u64>().ok())
+                    } else {
+                        None
+                    }
+                })
             })
-        })
-        .map(|kb| kb.saturating_mul(1024))
-        .unwrap_or(4_000_000_000)
+            .map(|kb| kb.saturating_mul(1024))
+            .unwrap_or(4_000_000_000)
+    })
 }
 fn ok_response(method: &str, data: Value) -> (StatusCode, Json<Value>) {
     (
