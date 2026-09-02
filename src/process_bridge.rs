@@ -88,6 +88,10 @@ pub struct SpawnConfig {
     pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
     pub stderr_target: &'static str,
+    /// Protocol integrity: children whose stdout is a strict ndjson stream
+    /// (one JSON object per line, e.g. extension-host) must not inherit
+    /// ambient env that can make them emit non-JSON to that stream.
+    pub isolate_env: bool,
 }
 
 pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, (u16, String)> {
@@ -98,6 +102,15 @@ pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    if config.isolate_env {
+        command.env_clear();
+        for key in ["PATH", "HOME", "LANG"] {
+            if let Ok(val) = std::env::var(key) {
+                command.env(key, val);
+            }
+        }
+    }
 
     if let Some(env) = &config.env {
         command.envs(env);
@@ -209,6 +222,9 @@ async fn start_handler(
         cwd: req.cwd.clone(),
         env: req.env.clone(),
         stderr_target: config.stderr_target,
+        // Protocol integrity: generic bridges (LSP/DAP) need broad env
+        // (CARGO_HOME, GOPATH, venv) — do not isolate.
+        isolate_env: false,
     })
     .await
     {

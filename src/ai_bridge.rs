@@ -1473,6 +1473,7 @@ async fn run_generation(
 }
 
 #[cfg(not(feature = "llama"))]
+#[allow(clippy::too_many_arguments)]
 async fn run_generation(
     sender: &mut futures::stream::SplitSink<WebSocket, Message>,
     _receiver: &mut futures::stream::SplitStream<WebSocket>,

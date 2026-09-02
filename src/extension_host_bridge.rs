@@ -76,6 +76,8 @@ async fn start_handler(
             .into(),
         ),
         stderr_target: "extension_host_stderr",
+        // Protocol integrity: extension-host stdout must be pure ndjson
+        isolate_env: true,
     })
     .await
     {
@@ -192,8 +194,19 @@ async fn extension_host_pump(
             line = lines.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        handle_node_line(&session, &line).await;
-                        let _ = ws_send.send(Message::Text(line.into())).await;
+                        match serde_json::from_str::<serde_json::Value>(&line) {
+                            Ok(value @ serde_json::Value::Object(_)) => {
+                                handle_node_line(&session, &value).await;
+                                let _ = ws_send.send(Message::Text(line.into())).await;
+                            }
+                            _ => {
+                                tracing::debug!(
+                                    session_id = %id,
+                                    "extension-host: dropping non-JSON stdout line: {}",
+                                    line
+                                );
+                            }
+                        }
                     }
                     Ok(None) => break,
                     Err(_) => break,
@@ -209,12 +222,7 @@ async fn extension_host_pump(
     let _ = ws_send.send(Message::Close(None)).await;
 }
 
-async fn handle_node_line(session: &ExtensionHostSession, line: &str) {
-    let value = match serde_json::from_str::<serde_json::Value>(line) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-
+async fn handle_node_line(session: &ExtensionHostSession, value: &serde_json::Value) {
     if value.get("type").and_then(|t| t.as_str()) != Some("lsp_ready") {
         return;
     }
