@@ -1192,7 +1192,7 @@ mod tests {
 
     #[test]
     fn test_pool_verify_empty() {
-        let mut pool = new_pool();
+        let pool = new_pool();
         assert!(pool.verify());
     }
 
