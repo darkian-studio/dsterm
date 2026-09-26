@@ -610,16 +610,14 @@ pub async fn terminal_websocket(
 }
 
 /// Process-wide bus for server-initiated supervisor notifications
-/// (`update_ready`, ...). Terminal sockets are per-session PTY byte
-/// streams, so there is no natural "control connection" — instead every
-/// open terminal socket subscribes here and forwards these JSON text
-/// frames alongside the existing `command_exit`/`exit` control messages.
-/// Binary PTY output is untouched; clients already must distinguish text
-/// control frames from binary output.
+/// (`update_ready`, ...). Terminal sockets are per-session PTY streams with
+/// no control connection of their own, so notification frames ride them as
+/// JSON text — the same carrier as `command_exit`/`exit`, never the binary
+/// PTY stream.
 ///
-/// Best-effort by design: when no terminal is connected the message goes
-/// nowhere. Durability lives on disk (`<binary>.new` + sidecar), queryable
-/// via `dsterm update status` — the push is a courtesy, not the contract.
+/// Best-effort by contract: with no terminal connected the message goes
+/// nowhere. Durability lives on disk (`dsterm update status`); the push is
+/// a courtesy.
 static UPDATE_BUS: std::sync::OnceLock<tokio::sync::broadcast::Sender<String>> =
     std::sync::OnceLock::new();
 
@@ -1310,12 +1308,11 @@ fn take_decodable_prefix(pending: &mut Vec<u8>) -> Option<String> {
 }
 
 /// Forwards a child pipe as `silent_exec_chunk` frames the moment bytes
-/// arrive — deliberately NOT line-buffered. Interactive progress (`git
-/// --progress`, apt/curl bars) rewrites one line with `\r` and no `\n`,
-/// which `read_line` would hold until process exit: live consumers would
-/// see nothing for minutes and trip their stall timeouts on a healthy
-/// command. Torn lines across chunks are the consumer's problem (it splits
-/// on `\r`/`\n` and takes the last match, so the next intact line heals).
+/// arrive. Line buffering is the wrong contract here: interactive progress
+/// (`git --progress`, apt/curl bars) rewrites one line with `\r` and no
+/// `\n`, so `read_line` starves live consumers until process exit — and
+/// their stall timeouts then kill healthy commands. Torn lines across
+/// chunks are the consumer's contract (split on `\r`/`\n`, last match wins).
 async fn forward_pipe_chunks<R>(
     mut reader: R,
     id: String,
@@ -1364,9 +1361,6 @@ async fn forward_pipe_chunks<R>(
                     {
                         return;
                     }
-                    // A truncated tail (if any) stays in `pending`; loop
-                    // back only when progress was made to avoid spinning.
-                    // `take_decodable_prefix` returns None in that case.
                 }
             }
             Err(_) => break,

@@ -138,6 +138,9 @@ async fn check_updates_in_background() {
 /// server keeps running either way.
 async fn stage_updates_in_background() {
     let checker = UpdateChecker::new(env!("CARGO_PKG_VERSION"));
+    // Deliberate double resolution: the cheap cached check gates the
+    // expensive fetch, which re-resolves authoritatively (a lot can change
+    // between cache write and stage, and staging must never trust cache).
     match checker.check_update(false).await {
         Ok(Some(_)) => {}
         Ok(None) => return,
@@ -213,6 +216,9 @@ async fn main() {
     } = cli;
 
     if self_update && command.is_some() {
+        // clap can't express "flag conflicts with any subcommand" here
+        // (subcommands are an open set), so the launch-only scope of
+        // --self-update is enforced at runtime instead of in the schema.
         eprintln!(
             "{} --self-update only applies to server mode (no subcommand).",
             "✗".red().bold()

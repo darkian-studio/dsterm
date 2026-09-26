@@ -28,9 +28,9 @@ struct UpdateCache {
     latest_version: String,
 }
 
-/// A downloaded, fully verified update candidate: correct size, matching
-/// sha256 (when the release publishes one), and the expected magic bytes.
-/// Verification happens BEFORE anything touches the disk beside it.
+/// A downloaded update candidate. The constructor is the contract: no
+/// instance exists until size, sha256 (when published), and magic bytes
+/// all pass — so staging and activating can never be weaker than each other.
 pub struct FetchedUpdate {
     /// Normalized version (`1.6.7`, no `v` prefix).
     pub version: String,
@@ -38,9 +38,9 @@ pub struct FetchedUpdate {
     pub sha256_hex: String,
 }
 
-/// A staged candidate on disk: `<binary>.new` plus its sidecar. Both must
-/// be present for `staged_update()` to report it — a `.new` without a
-/// sidecar (crashed stage) reads as "none", never as ready.
+/// A staged candidate on disk. Both files must be present for
+/// `staged_update()` to report it — a `.new` without a sidecar (crashed
+/// stage) reads as "none", never as ready.
 pub struct StagedUpdate {
     pub version: String,
     pub path: PathBuf,
@@ -286,18 +286,16 @@ impl UpdateChecker {
             .map(|b| format!("{b:02x}"))
             .collect();
 
-        // Normalized version for sidecars and notifications (`1.6.7`).
-        let version = release.tag_name.trim_start_matches('v').to_string();
-
         Ok(FetchedUpdate {
-            version,
+            version: release.tag_name.trim_start_matches('v').to_string(),
             bytes: response.to_vec(),
             sha256_hex,
         })
     }
 
-    /// Atomic in-place replace of the running binary (the historical
-    /// `dsterm update` behavior, unchanged).
+    /// Atomic in-place replace of the running binary. Split out from, and
+    /// behavior-identical to, the historical `update()` — staging reuses
+    /// the fetch half without inheriting the replace half.
     async fn activate(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let current_exe = std::env::current_exe()?;
         let temp_path = current_exe.with_extension("new");
@@ -342,7 +340,8 @@ impl UpdateChecker {
         Self::activate(&fetched.bytes).await
     }
 
-    /// File name of the running binary (`dsterm` / `dsterm.exe`).
+    /// Single home of `<binary>.new` naming (preserves `.exe`, unlike
+    /// `with_extension`), so stage and status can never disagree on paths.
     fn binary_file_name() -> Result<String, Box<dyn std::error::Error>> {
         std::env::current_exe()?
             .file_name()
@@ -351,12 +350,9 @@ impl UpdateChecker {
             .ok_or_else(|| "Cannot determine binary file name".into())
     }
 
-    /// Stages a verified candidate as `<binary>.new` WITHOUT activating it:
-    /// temp file in the same directory, then atomic rename — partial data
-    /// never lands on `.new` itself. A JSON sidecar
-    /// (`<binary>.new.meta.json`) records version + sha256; `staged_update`
-    /// requires both. Any failure removes temp/partial state best-effort so
-    /// an interrupted stage never leaves a broken `.new` behind.
+    /// Stages a verified candidate as `<binary>.new` WITHOUT activating it.
+    /// Contract: an interrupted stage never leaves a broken `.new` behind
+    /// (temp file + atomic rename; partial state removed best-effort).
     pub async fn stage_update(
         fetched: &FetchedUpdate,
     ) -> Result<StagedUpdate, Box<dyn std::error::Error>> {
@@ -404,9 +400,6 @@ impl UpdateChecker {
         .await;
 
         if staged.is_err() {
-            // Best-effort: temp (rename failed), `.new` (sidecar failed
-            // after rename), sidecar. A crashed stage can only leave the
-            // pid-tagged temp behind, which `staged_update` ignores.
             let _ = fs::remove_file(&temp_path).await;
             let _ = fs::remove_file(&new_path).await;
             let _ = fs::remove_file(&meta_path).await;
@@ -414,10 +407,8 @@ impl UpdateChecker {
         staged
     }
 
-    /// Reports the staged candidate, if any. Requires BOTH `<binary>.new`
-    /// and its sidecar, plus a size match AND a sha256 re-verification —
-    /// a `.new` without a sidecar (crashed stage), with size drift, or
-    /// with bit rot reads as "none", never ready.
+    /// Reports the staged candidate, if any. Contract: `.new` without a
+    /// sidecar (crashed stage), size drift, or bit rot all read as "none".
     pub async fn staged_update() -> Option<StagedUpdate> {
         let current_exe = std::env::current_exe().ok()?;
         let dir = current_exe.parent()?;
