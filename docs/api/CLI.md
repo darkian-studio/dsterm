@@ -60,6 +60,58 @@ Checks for a new release on GitHub. If one exists, downloads and replaces the cu
 dsterm update
 ```
 
+### `dsterm update status`
+
+Reports the staged update candidate, if any — without touching anything:
+
+```bash
+dsterm update status
+# ↓ Staged update: 1.9.2 (/usr/local/bin/dsterm.new)
+# — or —
+# ✓ No staged update. (running 1.9.1)
+```
+
+A candidate counts as staged only when **both** `<binary>.new` and its
+sidecar (`<binary>.new.meta.json`) exist **and** the binary re-verifies
+(size + sha256). A `.new` left behind by a crashed stage reads as "none",
+never as ready. This is the durability behind `--self-update`: disk state
+is the source of truth, so a missed push notification loses nothing.
+
+### `dsterm --self-update` (server mode)
+
+Opt-in supervised updating: launch with the flag and the background
+update check, on finding a newer version, downloads it, verifies it with
+the exact checks `dsterm update` applies (size, sha256 when published,
+magic bytes), and stages it as `<binary>.new` — **without activating or
+restarting**. Activation (rename over the live binary, restart) is a
+separate, supervisor-driven step and deliberately out of scope here.
+
+```bash
+dsterm --self-update -p 8767
+```
+
+- Without the flag, launch behavior is byte-for-byte what it was
+  (print-only update notice).
+- The flag is server-mode only; combining it with any subcommand exits
+  with code 2.
+- An interrupted/failed stage never leaves a broken `.new` behind
+  (temp file + atomic rename; partial state removed best-effort).
+
+#### Supervisor contract: `update_ready` push
+
+When staging finishes, `{"type": "update_ready", "version": "1.9.2"}` is
+pushed as a JSON **text** frame to every currently open terminal
+WebSocket — the same carrier as the existing `command_exit`/`exit`
+control messages (binary frames stay pure PTY output, so clients must
+keep distinguishing text control frames from binary output, as they
+already do).
+
+Best-effort by design: if no terminal is connected, the push goes
+nowhere. Supervisors must treat `dsterm update status` (above) as the
+authoritative query and the push as a wake-up hint. No supervisor
+identity is required — any launcher that starts dsterm with
+`--self-update` gets this behavior.
+
 ### `dsterm lsp <server> [args...]`
 
 Starts a **standalone LSP WebSocket proxy**. See [BRIDGES.md](./BRIDGES.md#standalone-lsp-mode-dsterm-lsp) for full details.
@@ -121,6 +173,12 @@ dsterm -p 8080 -i -c /usr/bin/bash --allow-any-origin
 
 # Check for updates
 dsterm update
+
+# Staged-candidate status (for --self-update supervisors)
+dsterm update status
+
+# Supervised server: stage updates as dsterm.new, notify on ready
+dsterm --self-update -p 8767
 
 # Start standalone LSP proxy
 dsterm lsp rust-analyzer

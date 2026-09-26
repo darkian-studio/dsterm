@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`--self-update` launch flag** — supervised, restart-free updating: when
+  the launch-time check finds a newer version, dsterm downloads it, verifies
+  it with the exact checks `dsterm update` applies (size, sha256 when
+  published, magic bytes), and stages it as `<binary>.new` without activating
+  or restarting. On completion, `{"type": "update_ready", "version": "…"}` is
+  pushed as a JSON text frame to every open terminal WebSocket (best-effort;
+  same carrier as `command_exit`). Without the flag, launch behavior is
+  unchanged (print-only). Activation stays supervisor-driven and out of scope.
+- **`dsterm update status`** — reports the staged candidate (`<binary>.new`
+  + `<binary>.new.meta.json`, size- and sha256-re-verified) or "none". Disk
+  state is the source of truth, so a missed `update_ready` push loses nothing;
+  a `.new` from a crashed stage reads as "none", never as ready.
+
 ## [1.8.5] - 2026-08-01
 
 ### Added
