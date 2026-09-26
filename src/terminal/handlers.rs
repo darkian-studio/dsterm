@@ -26,7 +26,7 @@ use std::{
     sync::{mpsc, Arc},
     time::Duration,
 };
-use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::{broadcast, Mutex};
 use tokio::task::spawn_blocking;
@@ -1228,6 +1228,114 @@ pub async fn silent_exec_stream(ws: WebSocketUpgrade) -> impl IntoResponse {
     })
 }
 
+/// Splits a decodable UTF-8 prefix off `pending`, returning it and leaving
+/// the rest (a trailing truncated sequence, or nothing) for the next read.
+/// Genuinely invalid bytes are dropped one at a time so a corrupt stream
+/// can never wedge the forwarder. Returns `None` when nothing decodable is
+/// available yet — the caller must read more, not spin.
+fn take_decodable_prefix(pending: &mut Vec<u8>) -> Option<String> {
+    loop {
+        if pending.is_empty() {
+            return None;
+        }
+        match std::str::from_utf8(pending) {
+            Ok(s) => {
+                let out = s.to_owned();
+                pending.clear();
+                return Some(out);
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    let head: Vec<u8> = pending.drain(..valid).collect();
+                    // `valid_up_to` guarantees this prefix is valid UTF-8.
+                    return Some(String::from_utf8(head).expect("valid_up_to prefix must decode"));
+                }
+                if e.error_len().is_some() {
+                    // Invalid byte rather than truncation: skip it.
+                    pending.remove(0);
+                    continue;
+                }
+                return None;
+            }
+        }
+    }
+}
+
+/// Forwards a child pipe as `silent_exec_chunk` frames the moment bytes
+/// arrive — deliberately NOT line-buffered. Interactive progress (`git
+/// --progress`, apt/curl bars) rewrites one line with `\r` and no `\n`,
+/// which `read_line` would hold until process exit: live consumers would
+/// see nothing for minutes and trip their stall timeouts on a healthy
+/// command. Torn lines across chunks are the consumer's problem (it splits
+/// on `\r`/`\n` and takes the last match, so the next intact line heals).
+async fn forward_pipe_chunks<R>(
+    mut reader: R,
+    id: String,
+    stream: &'static str,
+    tx: tokio::sync::mpsc::Sender<String>,
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut buf = [0u8; 8192];
+    let mut pending: Vec<u8> = Vec::new();
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                pending.extend_from_slice(&buf[..n]);
+                // Pathological guard: a stream of never-decodable bytes
+                // must not grow `pending` without bound.
+                if pending.len() > 65536 {
+                    let raw = std::mem::take(&mut pending);
+                    let chunk = SilentExecChunk {
+                        msg_type: "silent_exec_chunk".to_string(),
+                        id: id.clone(),
+                        stream: stream.to_string(),
+                        data: String::from_utf8_lossy(&raw).into_owned(),
+                    };
+                    if tx
+                        .send(serde_json::to_string(&chunk).unwrap())
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                while let Some(text) = take_decodable_prefix(&mut pending) {
+                    let chunk = SilentExecChunk {
+                        msg_type: "silent_exec_chunk".to_string(),
+                        id: id.clone(),
+                        stream: stream.to_string(),
+                        data: text,
+                    };
+                    if tx
+                        .send(serde_json::to_string(&chunk).unwrap())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    // A truncated tail (if any) stays in `pending`; loop
+                    // back only when progress was made to avoid spinning.
+                    // `take_decodable_prefix` returns None in that case.
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    if !pending.is_empty() {
+        let chunk = SilentExecChunk {
+            msg_type: "silent_exec_chunk".to_string(),
+            id,
+            stream: stream.to_string(),
+            data: String::from_utf8_lossy(&pending).into_owned(),
+        };
+        let _ = tx.send(serde_json::to_string(&chunk).unwrap()).await;
+    }
+}
+
 async fn handle_silent_exec_stream(socket: WebSocket) {
     let (mut sender, mut receiver) = socket.split();
 
@@ -1355,60 +1463,15 @@ async fn handle_silent_exec_stream(socket: WebSocket) {
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
 
-    let mut stdout_reader = tokio::io::BufReader::new(stdout);
-    let mut stderr_reader = tokio::io::BufReader::new(stderr);
-
     let (stdout_tx, mut stdout_rx) = tokio::sync::mpsc::channel::<String>(100);
     let (stderr_tx, mut stderr_rx) = tokio::sync::mpsc::channel::<String>(100);
 
     let id_stdout = id.clone();
     let id_stderr = id.clone();
 
-    let stdout_task = tokio::spawn(async move {
-        let mut buf = String::new();
-        while let Ok(n) = stdout_reader.read_line(&mut buf).await {
-            if n == 0 {
-                break;
-            }
-            let chunk = SilentExecChunk {
-                msg_type: "silent_exec_chunk".to_string(),
-                id: id_stdout.clone(),
-                stream: "stdout".to_string(),
-                data: buf.clone(),
-            };
-            if stdout_tx
-                .send(serde_json::to_string(&chunk).unwrap())
-                .await
-                .is_err()
-            {
-                break;
-            }
-            buf.clear();
-        }
-    });
+    let stdout_task = tokio::spawn(forward_pipe_chunks(stdout, id_stdout, "stdout", stdout_tx));
 
-    let stderr_task = tokio::spawn(async move {
-        let mut buf = String::new();
-        while let Ok(n) = stderr_reader.read_line(&mut buf).await {
-            if n == 0 {
-                break;
-            }
-            let chunk = SilentExecChunk {
-                msg_type: "silent_exec_chunk".to_string(),
-                id: id_stderr.clone(),
-                stream: "stderr".to_string(),
-                data: buf.clone(),
-            };
-            if stderr_tx
-                .send(serde_json::to_string(&chunk).unwrap())
-                .await
-                .is_err()
-            {
-                break;
-            }
-            buf.clear();
-        }
-    });
+    let stderr_task = tokio::spawn(forward_pipe_chunks(stderr, id_stderr, "stderr", stderr_tx));
 
     // Use a single deadline so timeout does not reset each loop iteration.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
