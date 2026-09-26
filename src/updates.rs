@@ -125,7 +125,7 @@ impl UpdateChecker {
     pub async fn check_update(
         &self,
         force: bool,
-    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
         if !force {
             if let Some(cache) = Self::get_cache().await {
                 let elapsed = SystemTime::now()
@@ -165,7 +165,9 @@ impl UpdateChecker {
     /// anything. Same checks the in-place updater applies (size, sha256
     /// when published, magic bytes) — shared by `update` and `--self-update`
     /// so staging can never be weaker than replacing.
-    pub async fn fetch_update(&self) -> Result<FetchedUpdate, Box<dyn std::error::Error>> {
+    pub async fn fetch_update(
+        &self,
+    ) -> Result<FetchedUpdate, Box<dyn std::error::Error + Send + Sync>> {
         let release: GithubRelease = self
             .client
             .get(GITHUB_API_URL)
@@ -296,7 +298,7 @@ impl UpdateChecker {
     /// Atomic in-place replace of the running binary. Split out from, and
     /// behavior-identical to, the historical `update()` — staging reuses
     /// the fetch half without inheriting the replace half.
-    async fn activate(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    async fn activate(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let current_exe = std::env::current_exe()?;
         let temp_path = current_exe.with_extension("new");
 
@@ -335,14 +337,14 @@ impl UpdateChecker {
         Ok(())
     }
 
-    pub async fn update(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn update(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let fetched = self.fetch_update().await?;
         Self::activate(&fetched.bytes).await
     }
 
     /// Single home of `<binary>.new` naming (preserves `.exe`, unlike
     /// `with_extension`), so stage and status can never disagree on paths.
-    fn binary_file_name() -> Result<String, Box<dyn std::error::Error>> {
+    fn binary_file_name() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         std::env::current_exe()?
             .file_name()
             .and_then(|n| n.to_str())
@@ -355,7 +357,7 @@ impl UpdateChecker {
     /// (temp file + atomic rename; partial state removed best-effort).
     pub async fn stage_update(
         fetched: &FetchedUpdate,
-    ) -> Result<StagedUpdate, Box<dyn std::error::Error>> {
+    ) -> Result<StagedUpdate, Box<dyn std::error::Error + Send + Sync>> {
         let current_exe = std::env::current_exe()?;
         let dir = current_exe
             .parent()
@@ -365,7 +367,7 @@ impl UpdateChecker {
         let meta_path = dir.join(format!("{bin_name}.new.meta.json"));
         let temp_path = dir.join(format!(".{bin_name}.update-{}.tmp", std::process::id()));
 
-        let staged: Result<StagedUpdate, Box<dyn std::error::Error>> = async {
+        let staged: Result<StagedUpdate, Box<dyn std::error::Error + Send + Sync>> = async {
             let mut file = File::create(&temp_path).await?;
             file.write_all(&fetched.bytes).await?;
             file.sync_all().await?;
