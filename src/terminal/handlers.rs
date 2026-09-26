@@ -684,7 +684,6 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
         )
     };
 
-    // Check if process already exited
     let already_exited = {
         let guard = exit_status_arc.lock().unwrap();
         let v = *guard;

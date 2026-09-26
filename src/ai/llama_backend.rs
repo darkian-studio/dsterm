@@ -475,13 +475,10 @@ fn run_generation(
             continue;
         }
 
-        // Byte-level BPE (Qwen3 et al.) splits multi-byte UTF-8 chars across
-        // tokens, so pieces must be decoded incrementally, not per token.
         match ctx.token_to_piece_bytes(token_id) {
             Ok(piece_bytes) => {
                 let piece = decode_incremental(&mut pending_bytes, &piece_bytes);
                 if piece.is_empty() {
-                    // incomplete UTF-8 sequence so far; wait for next token
                     if generated >= max_tokens {
                         stopped_by_max = true;
                         break;
@@ -540,7 +537,6 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
         return Ok(Vec::new());
     }
 
-    // Create context with mean pooling for embeddings
     // D4: modern llama.cpp configures pooling and embedding extraction through
     // the context params (llama_set_pooling_type no longer exists).
     let ctx_config = crate::ai::llama::bindings::DstermCtxConfig {
@@ -555,8 +551,7 @@ fn run_embedding(model: Arc<LlamaModel>, texts: &[String]) -> BackendResult<Vec<
         offload_kqv: true,
         rope_scaling_type: 0,
     };
-    // Embedding contexts use their own config (512 batch); chunk the
-    // decode so a long text never exceeds llama_decode's n_batch assert.
+    // Same n_batch assert as the generation path above: chunk the decode.
     let n_batch = ctx_config.n_batch.max(1) as usize;
     let mut ctx = model
         .create_context(ctx_config)

@@ -542,10 +542,8 @@ impl ModelPoolInner {
     }
 
     pub fn load(&mut self, path: &str) -> Result<LoadedModel, String> {
-        // Check file changes
         let file_info = self.check_file_unchanged(path)?;
 
-        // Inspect GGUF
         let meta =
             inspect::inspect_model(path).map_err(|e| format!("Failed to inspect model: {e}"))?;
 
@@ -555,7 +553,6 @@ impl ModelPoolInner {
             .to_string();
         let model_hash = compute_model_hash(&meta);
 
-        // Check if already loaded by registry_id
         let mut found = None;
         for model in self.models.values_mut() {
             if model.metadata.registry_id == registry_id {
@@ -578,7 +575,6 @@ impl ModelPoolInner {
             });
         }
 
-        // Check model_hash for dedup
         for model in self.models.values() {
             if model.metadata.model_hash == model_hash && model.metadata.registry_id != registry_id
             {
@@ -590,7 +586,6 @@ impl ModelPoolInner {
             }
         }
 
-        // Check capacity / memory
         let current_count = self.models.len();
         let current_memory: u64 = self
             .models
@@ -611,7 +606,6 @@ impl ModelPoolInner {
             self.evict_for_memory(needed)?;
         }
 
-        // Initialize llama.cpp backend
         let rt = {
             #[cfg(feature = "llama")]
             {
@@ -632,7 +626,6 @@ impl ModelPoolInner {
 
         let pool_id = self.next_pool_id_str();
 
-        // Cache file info
         self.file_cache
             .insert(Self::canonical_key(path), file_info.clone());
 
@@ -712,8 +705,8 @@ impl ModelPoolInner {
                 from: LifecycleState::Loaded,
                 to: LifecycleState::Unloading,
             });
-            // Cache metadata before removing the model entry.
-            // This ensures ModelMetadata survives runtime destruction.
+            // Metadata must outlive the runtime: reloads and queries read
+            // the cache, never the destroyed backend.
             self.metadata_cache
                 .insert(meta_cached.registry_id.clone(), meta_cached);
             self.models.remove(pool_id);
@@ -859,7 +852,6 @@ impl ModelPoolInner {
 
     #[allow(dead_code)]
     pub fn verify(&self) -> bool {
-        // Check no duplicate pool_ids
         let mut seen_pool = std::collections::HashSet::new();
         let mut seen_reg = std::collections::HashSet::new();
         let mut memory_sum = 0u64;
@@ -878,14 +870,14 @@ impl ModelPoolInner {
             memory_sum = memory_sum.saturating_add(model.metadata.memory_estimate.total_bytes);
         }
 
-        // Check memory totals match
+        // Invariant: aggregate stats must match the walked sum.
         let stats_models: Vec<&LoadedModel> = self.models.values().collect();
         let stats_memory = MemoryBreakdown::aggregate(&stats_models);
         if stats_memory.total_bytes != memory_sum {
             ok = false;
         }
 
-        // Check LRU ordering (timestamps should be non-decreasing by access order)
+        // Invariant: access order is timestamp order (LRU depends on it).
         let mut sorted: Vec<&LoadedModel> = self.models.values().collect();
         sorted.sort_by_key(|m| m.lifecycle.last_accessed_at);
         for i in 1..sorted.len() {

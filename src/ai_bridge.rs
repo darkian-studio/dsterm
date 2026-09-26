@@ -326,7 +326,6 @@ async fn ai_unload(
     let pool = state.model_pool.clone();
     let mut guard = pool.write().await;
 
-    // Resolve pool_id: try as direct pool_id, then as registry_id
     let pool_id = if guard.get(id).is_some() {
         id.to_string()
     } else if let Some(model) = guard.get_by_registry_id(id) {
@@ -757,7 +756,6 @@ async fn ai_complete(
         .unwrap_or("")
         .to_string();
 
-    // If no model_id provided, use the first loaded model
     let model_id = resolve_model_id(&state, &model_id).await?;
 
     #[cfg(feature = "llama")]
@@ -1051,7 +1049,6 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     let cancel = Arc::new(AtomicBool::new(false));
     let session_state = Arc::new(RwLock::new(SessionState::Idle));
 
-    // Wait for first message with generation params
     let msg = match receiver.next().await {
         Some(Ok(Message::Text(text))) => text,
         _ => {
@@ -1151,7 +1148,6 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         }
     };
 
-    // Session setup
     if !session_id.is_empty() {
         let mut ssl = session_state.write().await;
         if !ssl.can_transition_to(SessionState::Generating) {
@@ -1178,7 +1174,6 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     // FIM priority: FIM requests run at higher priority for responsive editor
     let priority = if mode == "fim" { 10i32 } else { 0i32 };
 
-    // Start generation
     let result = run_generation(
         &mut sender,
         &mut receiver,
@@ -1192,7 +1187,6 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
     )
     .await;
 
-    // Cleanup
     if !session_id.is_empty() {
         state.cancel_tokens.write().await.remove(&session_id);
         let mut ssl = session_state.write().await;
@@ -1232,7 +1226,6 @@ async fn run_generation(
 ) -> Result<(), String> {
     let start_time = Instant::now();
     let mut req = crate::ai::inference_request::InferenceRequest::from_value(params);
-    // Auto-load & pool acquire
     let (llama_model, pool_id, arch, mem) = {
         let mut pool = state.model_pool.write().await;
         let found = pool
@@ -1275,7 +1268,6 @@ async fn run_generation(
         }
     };
 
-    // Send protocol frame
     let protocol = GenerationEvent::Protocol {
         protocol_version: 1,
         backend: "llama".into(),
@@ -1463,7 +1455,6 @@ async fn run_generation(
             .await;
     }
 
-    // Pool release
     {
         let mut pool = state.model_pool.write().await;
         let _ = pool.unload(&pool_id);
@@ -1543,7 +1534,6 @@ impl TokenSink for GenerationWsSink {
         }
         self.first_token.store(true, Ordering::Relaxed);
 
-        // Feed token to tool call parser — it extracts tool calls from the raw output
         let tool_events = self.tool_parser.push(token);
         for event in &tool_events {
             self.send_tool_call(event);

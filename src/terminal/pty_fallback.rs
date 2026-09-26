@@ -261,14 +261,12 @@ pub fn fallback_open_and_spawn(
 ) -> anyhow::Result<(Box<dyn MasterPty + Send>, Box<dyn Child + Send + Sync>)> {
     use std::os::unix::process::CommandExt;
 
-    // 1. Open master PTY
     let master_fd = unsafe { libc::open(c"/dev/ptmx".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
     if master_fd < 0 {
         bail!("open(/dev/ptmx) failed: {:?}", io::Error::last_os_error());
     }
     let master = OwnedFd(master_fd);
 
-    // 2. Grant & unlock
     if unsafe { libc::grantpt(master.as_raw_fd()) } != 0 {
         bail!("grantpt failed: {:?}", io::Error::last_os_error());
     }
@@ -276,7 +274,8 @@ pub fn fallback_open_and_spawn(
         bail!("unlockpt failed: {:?}", io::Error::last_os_error());
     }
 
-    // 3. Obtain slave fd via TIOCGPTPEER (bypasses /dev/pts)
+    // TIOCGPTPEER instead of open(/dev/pts/N): the SELinux-blocked path
+    // this whole module exists to avoid.
     let slave_fd = unsafe {
         libc::ioctl(
             master.as_raw_fd(),
@@ -291,8 +290,8 @@ pub fn fallback_open_and_spawn(
         );
     }
 
-    // 4. Set window size (non-fatal — the first resize from the client will
-    //    correct it anyway, so we only log on failure rather than aborting).
+    // Non-fatal: the first client resize corrects it, so log rather
+    // than abort on failure.
     let ws = libc::winsize {
         ws_row: size.rows,
         ws_col: size.cols,
@@ -306,9 +305,8 @@ pub fn fallback_open_and_spawn(
         );
     }
 
-    // 5. Prepare Stdio from slave fd (one dup per stream).
-    //    Wrap slave_fd in OwnedFd so it is closed on all paths
-    //    (including early ? returns from mk_stdio).
+    // One dup per stream; OwnedFd closes the original on every path,
+    // including early `?` returns from mk_stdio.
     let (child_stdin, child_stdout, child_stderr) = {
         let slave = OwnedFd(slave_fd);
         let mk_stdio = || -> anyhow::Result<std::process::Stdio> {
@@ -322,10 +320,8 @@ pub fn fallback_open_and_spawn(
         let stdout = mk_stdio()?;
         let stderr = mk_stdio()?;
         (stdin, stdout, stderr)
-        // `slave` (OwnedFd) is dropped here, closing the original slave_fd.
     };
 
-    // 6. Spawn command
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
     if let Some(dir) = cwd {
@@ -336,7 +332,8 @@ pub fn fallback_open_and_spawn(
             .stdout(child_stdout)
             .stderr(child_stderr)
             .pre_exec(|| {
-                // Reset signal dispositions
+                // Inherit nothing signal-related: the daemon may have
+                // handlers/masks the shell must not see.
                 for signo in &[
                     libc::SIGCHLD,
                     libc::SIGHUP,
@@ -350,18 +347,17 @@ pub fn fallback_open_and_spawn(
                 let empty_set: libc::sigset_t = std::mem::zeroed();
                 libc::sigprocmask(libc::SIG_SETMASK, &empty_set, std::ptr::null_mut());
 
-                // New session
+                // Detach into our own session and take the slave as
+                // controlling terminal; a job-control shell requires both.
                 if libc::setsid() == -1 {
                     return Err(io::Error::last_os_error());
                 }
 
-                // Set controlling terminal
                 #[allow(clippy::cast_lossless)]
                 if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
                     return Err(io::Error::last_os_error());
                 }
 
-                // Close leaked fds
                 close_fds_above_stderr();
 
                 Ok(())
@@ -372,7 +368,8 @@ pub fn fallback_open_and_spawn(
         .spawn()
         .map_err(|e| anyhow::anyhow!("spawn '{}' failed: {}", program, e))?;
 
-    // Detach child stdio handles (master side is our I/O path)
+    // Drop the child's stdio handles: our I/O path is the master side,
+    // and holding these keeps the slave open past the child's exit.
     child.stdin.take();
     child.stdout.take();
     child.stderr.take();

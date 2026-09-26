@@ -383,7 +383,8 @@ pub async fn file_search(
                     }
                 }
                 if path.is_dir() {
-                    // depth guard via visited set size
+                    // Symlink cycles would recurse forever; bound the walk
+                    // by visited-set size instead of tracking depth.
                     if visited.len() > 5000 {
                         continue;
                     }

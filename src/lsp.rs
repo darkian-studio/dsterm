@@ -77,7 +77,8 @@ fn get_port_file_path(program: &str, session: Option<&str>) -> std::path::PathBu
         .join(".dsterm")
         .join("lsp_ports");
 
-    // Use just the binary name (not full path)
+    // Discovery keys are binary names: full paths would fork a new
+    // discovery file per install location for the same server.
     let server_name = std::path::Path::new(program)
         .file_name()
         .and_then(|n| n.to_str())
@@ -155,7 +156,6 @@ pub async fn start_lsp_server(
         )
         .layer(cors);
 
-    // Use specified port or 0 for auto-selection
     let bind_port = port.unwrap_or(0);
     let addr: std::net::SocketAddr = (host, bind_port).into();
 
@@ -174,7 +174,6 @@ pub async fn start_lsp_server(
                 tracing::info!("Port file: {:?}", port_file_path);
             }
 
-            // Guard will clean up port file on drop
             let _guard = PortFileGuard {
                 path: port_file_path,
             };
@@ -304,14 +303,11 @@ async fn run_bridge(
 
     let cleanup_processes = processes.clone();
 
-    // Create framed readers/writers
     let mut server_send = FramedWrite::new(stdin, LspFrameCodec::default());
     let mut server_recv = FramedRead::new(stdout, LspFrameCodec::default());
 
-    // Split WebSocket
     let (mut client_send, client_recv) = socket.split();
 
-    // Process client messages, filtering to just what we care about
     let mut client_recv = client_recv.filter_map(filter_map_ws_message).boxed();
 
     let mut client_msg = client_recv.next();
@@ -319,10 +315,8 @@ async fn run_bridge(
 
     loop {
         tokio::select! {
-            // From Client
             from_client = &mut client_msg => {
                 match from_client {
-                    // Text message from client
                     Some(Ok(ClientMessage::Text(text))) => {
                         tracing::trace!("-> {}", if text.len() > 200 { &text[..200] } else { &text });
                         if let Err(e) = server_send.send(text).await {
@@ -331,31 +325,25 @@ async fn run_bridge(
                         }
                     }
 
-                    // Ping from client
-                    Some(Ok(ClientMessage::Ping(data))) => {
-                        if client_send.send(Message::Pong(data.into())).await.is_err() {
+                    Some(Ok(ClientMessage::Ping(data))) => {                        if client_send.send(Message::Pong(data.into())).await.is_err() {
                             break;
                         }
                     }
 
-                    // Pong from client (keep-alive response)
                     Some(Ok(ClientMessage::Pong)) => {
                         tracing::trace!("received pong");
                     }
 
-                    // Close from client
                     Some(Ok(ClientMessage::Close)) => {
                         tracing::info!("received Close message");
                         break;
                     }
 
-                    // WebSocket error
                     Some(Err(e)) => {
                         tracing::error!(error = %e, "websocket error");
                         break;
                     }
 
-                    // Connection closed
                     None => {
                         tracing::info!("connection closed");
                         break;
@@ -365,10 +353,8 @@ async fn run_bridge(
                 client_msg = client_recv.next();
             }
 
-            // From Server
             from_server = &mut server_msg => {
                 match from_server {
-                    // Serialized LSP message
                     Some(Ok(text)) => {
                         tracing::trace!("<- {}", if text.len() > 200 { &text[..200] } else { &text });
                         if client_send.send(Message::Text(text.into())).await.is_err() {
@@ -377,12 +363,10 @@ async fn run_bridge(
                         }
                     }
 
-                    // Codec error
                     Some(Err(e)) => {
                         tracing::error!(error = %e, "codec error");
                     }
 
-                    // Server exited
                     None => {
                         tracing::error!("server process exited unexpectedly");
                         let _ = client_send.send(Message::Close(None)).await;
@@ -418,7 +402,6 @@ async fn filter_map_ws_message(
     match msg {
         Ok(Message::Text(text)) => Some(Ok(ClientMessage::Text(text.to_string()))),
         Ok(Message::Binary(data)) => {
-            // Try to decode as text
             match String::from_utf8(data.to_vec()) {
                 Ok(text) => Some(Ok(ClientMessage::Text(text))),
                 Err(_) => None, // Ignore non-UTF8 binary
@@ -509,7 +492,7 @@ impl Decoder for LspFrameCodec {
                 let len = src.len() - remaining.len();
                 src.advance(len);
                 self.remaining_bytes = 0;
-                // Ignore empty frame
+                // A zero-length body is legal framing, not a message.
                 if message.is_empty() {
                     Ok(None)
                 } else {

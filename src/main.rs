@@ -577,7 +577,6 @@ async fn main() {
             }
         },
         None => {
-            // Load runtime config (defaults if no --config supplied).
             let mut cfg = if let Some(ref path) = config_path {
                 match DstermConfig::load(path) {
                     Ok(c) => {
