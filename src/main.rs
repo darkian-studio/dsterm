@@ -153,27 +153,35 @@ async fn stage_updates_in_background() {
             return;
         }
     };
-    match checker.fetch_update().await {
-        Ok(fetched) => match UpdateChecker::stage_update(&fetched).await {
-            Ok(staged) => {
-                println!(
-                    "{} {} {}",
-                    "↓".bright_green().bold(),
-                    "Update staged:".green().bold(),
-                    staged.version.green()
-                );
-                notify_update_ready(&staged.version);
-            }
-            Err(e) => eprintln!(
+    // The temporary from `fetch_update().await` holds a non-Send
+    // `Box<dyn Error>`; it must not live across the `stage_update` await
+    // below (this future is `tokio::spawn`ed, hence `Send`). Unwrap into
+    // an owned `FetchedUpdate` first — errors return before any await.
+    let fetched = match checker.fetch_update().await {
+        Ok(fetched) => fetched,
+        Err(e) => {
+            eprintln!(
                 "{} {}",
                 "✗".red().bold(),
-                format!("Failed to stage update: {e}").red()
-            ),
-        },
+                format!("Failed to fetch update: {e}").red()
+            );
+            return;
+        }
+    };
+    match UpdateChecker::stage_update(&fetched).await {
+        Ok(staged) => {
+            println!(
+                "{} {} {}",
+                "↓".bright_green().bold(),
+                "Update staged:".green().bold(),
+                staged.version.green()
+            );
+            notify_update_ready(&staged.version);
+        }
         Err(e) => eprintln!(
             "{} {}",
             "✗".red().bold(),
-            format!("Failed to fetch update: {e}").red()
+            format!("Failed to stage update: {e}").red()
         ),
     }
 }
