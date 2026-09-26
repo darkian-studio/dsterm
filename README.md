@@ -1,5 +1,7 @@
 # DSTerm
 
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/darkian-studio/dsterm/total)
+
 `dsterm` is a Rust-based backend server that exposes a pseudo-terminal (PTY),
 protocol bridges, and command execution over HTTP and WebSocket.
 It runs anywhere you have a terminal — **Termux on Android**, any **Linux** distribution,
