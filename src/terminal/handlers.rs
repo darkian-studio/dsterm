@@ -609,6 +609,37 @@ pub async fn terminal_websocket(
     ws.on_upgrade(move |socket| handle_socket(socket, pid, sessions))
 }
 
+/// Process-wide bus for server-initiated supervisor notifications
+/// (`update_ready`, ...). Terminal sockets are per-session PTY byte
+/// streams, so there is no natural "control connection" — instead every
+/// open terminal socket subscribes here and forwards these JSON text
+/// frames alongside the existing `command_exit`/`exit` control messages.
+/// Binary PTY output is untouched; clients already must distinguish text
+/// control frames from binary output.
+///
+/// Best-effort by design: when no terminal is connected the message goes
+/// nowhere. Durability lives on disk (`<binary>.new` + sidecar), queryable
+/// via `dsterm update status` — the push is a courtesy, not the contract.
+static UPDATE_BUS: std::sync::OnceLock<tokio::sync::broadcast::Sender<String>> =
+    std::sync::OnceLock::new();
+
+fn update_bus() -> tokio::sync::broadcast::Sender<String> {
+    UPDATE_BUS
+        .get_or_init(|| tokio::sync::broadcast::channel::<String>(16).0)
+        .clone()
+}
+
+/// Pushes `{"type":"update_ready","version":"..."}` to every currently
+/// open terminal socket. Never fails (no subscribers is fine).
+pub fn notify_update_ready(version: &str) {
+    let msg = serde_json::json!({
+        "type": "update_ready",
+        "version": version,
+    })
+    .to_string();
+    let _ = update_bus().send(msg);
+}
+
 async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let (mut sender, mut receiver) = socket.split();
     tracing::info!(
@@ -696,6 +727,9 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
 
     let mut ws_output_rx = output_tx.subscribe();
     let mut cmd_exit_rx = command_exit_tx.subscribe();
+    // Supervisor notifications (update_ready, ...): forwarded as JSON text
+    // frames like command_exit — never mixed into the binary PTY stream.
+    let mut update_rx = update_bus().subscribe();
 
     // Send full scrollback history (client should clear terminal before connecting)
     let mut first_ws_output = true;
@@ -793,6 +827,19 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                     Err(broadcast::error::RecvError::Closed) => {
                         break "command_exit broadcast closed";
                     }
+                }
+            }
+            maybe_note = update_rx.recv() => {
+                match maybe_note {
+                    Ok(json) => {
+                        if sender.send(Message::Text(json.into())).await.is_err() {
+                            break "update notification send failed";
+                        }
+                    }
+                    // Lagged (slow terminal) skips stale notifications;
+                    // durability lives in `dsterm update status` anyway.
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => continue,
                 }
             }
             _ = exit_notify.notified() => {

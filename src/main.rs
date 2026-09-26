@@ -29,7 +29,7 @@ use config::DstermConfig;
 use lsp::{start_lsp_server, LspBridgeConfig};
 use relay::{clients::ClientStore, crypto::Secretbox, pairing};
 use std::net::Ipv4Addr;
-use terminal::{init_config, set_default_command, start_server};
+use terminal::{init_config, notify_update_ready, set_default_command, start_server};
 use updates::UpdateChecker;
 use utils::get_ip_address;
 
@@ -51,13 +51,24 @@ struct Cli {
     config_path: Option<String>,
     #[arg(long = "remote", global = true)]
     remote: bool,
+    /// Stage updates automatically as `<binary>.new` without activating:
+    /// when the launch-time check finds a newer version it is downloaded,
+    /// verified, and staged, and open terminal sockets get an
+    /// `update_ready` notification. Server mode only — rejected with any
+    /// subcommand. Supervisors (DS, ...) opt in per launch; nothing
+    /// restarts automatically (see `update status`).
+    #[arg(long = "self-update")]
+    self_update: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    Update,
+    Update {
+        #[command(subcommand)]
+        action: Option<UpdateAction>,
+    },
     Downgrade,
     Lsp {
         #[arg(short = 's', long)]
@@ -79,6 +90,14 @@ enum Commands {
     Register,
     Host,
     Startup,
+}
+
+#[derive(Subcommand)]
+enum UpdateAction {
+    /// Report the staged update candidate, if any (`<binary>.new` +
+    /// sidecar, re-verified). Reads disk only — works whether or not the
+    /// `update_ready` push was ever received.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -109,6 +128,50 @@ async fn check_updates_in_background() {
             format!("Failed to check for updates: {e}").red()
         ),
         _ => {}
+    }
+}
+
+/// `--self-update` worker: same launch-time check as
+/// [check_updates_in_background], but a newer version is downloaded,
+/// verified, and staged as `<binary>.new` (no activation, no restart),
+/// then announced to open terminal sockets. Errors are printed; the
+/// server keeps running either way.
+async fn stage_updates_in_background() {
+    let checker = UpdateChecker::new(env!("CARGO_PKG_VERSION"));
+    match checker.check_update(false).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!(
+                "{} {}",
+                "⚠️".yellow(),
+                format!("Failed to check for updates: {e}").red()
+            );
+            return;
+        }
+    };
+    match checker.fetch_update().await {
+        Ok(fetched) => match UpdateChecker::stage_update(&fetched).await {
+            Ok(staged) => {
+                println!(
+                    "{} {} {}",
+                    "↓".bright_green().bold(),
+                    "Update staged:".green().bold(),
+                    staged.version.green()
+                );
+                notify_update_ready(&staged.version);
+            }
+            Err(e) => eprintln!(
+                "{} {}",
+                "✗".red().bold(),
+                format!("Failed to stage update: {e}").red()
+            ),
+        },
+        Err(e) => eprintln!(
+            "{} {}",
+            "✗".red().bold(),
+            format!("Failed to fetch update: {e}").red()
+        ),
     }
 }
 
@@ -145,65 +208,107 @@ async fn main() {
         allow_any_origin,
         config_path,
         remote,
+        self_update,
         command,
     } = cli;
 
+    if self_update && command.is_some() {
+        eprintln!(
+            "{} --self-update only applies to server mode (no subcommand).",
+            "✗".red().bold()
+        );
+        std::process::exit(2);
+    }
+
     match command {
-        Some(Commands::Update) => {
-            println!("{} {}", "⟳".blue().bold(), "Checking for updates...".blue());
-
-            let checker = UpdateChecker::new(env!("CARGO_PKG_VERSION"));
-
-            match checker.check_update(true).await {
-                Ok(Some(version)) => {
-                    println!(
-                        "{} Found new version: {}",
-                        "↓".bright_green(),
-                        version.green()
-                    );
-                    println!(
-                        "{} {}",
-                        "⟳".blue(),
-                        "Downloading and installing update...".blue()
-                    );
-
-                    match checker.update().await {
-                        Ok(()) => {
-                            println!(
-                                "\n{} {}",
-                                "✓".bright_green().bold(),
-                                "Update successful! Please restart dsterm.".green().bold()
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "\n{} {} {}",
-                                "✗".red().bold(),
-                                "Update failed:".red().bold(),
-                                e
-                            );
-                            std::process::exit(1);
-                        }
+        Some(Commands::Update { action }) => match action {
+            Some(UpdateAction::Status) => {
+                println!(
+                    "{} {}",
+                    "⟳".blue().bold(),
+                    "Checking staged update...".blue()
+                );
+                match UpdateChecker::staged_update().await {
+                    Some(staged) => {
+                        println!(
+                            "{} {} {} {}",
+                            "↓".bright_green(),
+                            "Staged update:".green(),
+                            staged.version.green().bold(),
+                            format!("({})", staged.path.display()).bright_black(),
+                        );
+                        println!(
+                            "  {}",
+                            "Activate it with a supervisor restart (see --self-update docs)."
+                                .bright_black(),
+                        );
+                    }
+                    None => {
+                        println!(
+                            "{} {} {}",
+                            "✓".bright_green().bold(),
+                            "No staged update.".green(),
+                            format!("(running {})", env!("CARGO_PKG_VERSION")).bright_black(),
+                        );
                     }
                 }
-                Ok(None) => {
-                    println!(
-                        "{} {}",
-                        "✓".bright_green().bold(),
-                        "You're already on the latest version!".green().bold()
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "{} {} {}",
-                        "✗".red().bold(),
-                        "Failed to check for updates:".red().bold(),
-                        e
-                    );
-                    std::process::exit(1);
+            }
+            None => {
+                println!("{} {}", "⟳".blue().bold(), "Checking for updates...".blue());
+
+                let checker = UpdateChecker::new(env!("CARGO_PKG_VERSION"));
+
+                match checker.check_update(true).await {
+                    Ok(Some(version)) => {
+                        println!(
+                            "{} Found new version: {}",
+                            "↓".bright_green(),
+                            version.green()
+                        );
+                        println!(
+                            "{} {}",
+                            "⟳".blue(),
+                            "Downloading and installing update...".blue()
+                        );
+
+                        match checker.update().await {
+                            Ok(()) => {
+                                println!(
+                                    "\n{} {}",
+                                    "✓".bright_green().bold(),
+                                    "Update successful! Please restart dsterm.".green().bold()
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "\n{} {} {}",
+                                    "✗".red().bold(),
+                                    "Update failed:".red().bold(),
+                                    e
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        println!(
+                            "{} {}",
+                            "✓".bright_green().bold(),
+                            "You're already on the latest version!".green().bold()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "{} {} {}",
+                            "✗".red().bold(),
+                            "Failed to check for updates:".red().bold(),
+                            e
+                        );
+                        std::process::exit(1);
+                    }
                 }
             }
-        }
+        },
         Some(Commands::Downgrade) => {
             let current_exe = match std::env::current_exe() {
                 Ok(p) => p,
@@ -487,7 +592,11 @@ async fn main() {
             cfg.apply_remote_flag(remote);
             init_config(cfg);
 
-            tokio::task::spawn(check_updates_in_background());
+            if self_update {
+                tokio::task::spawn(stage_updates_in_background());
+            } else {
+                tokio::task::spawn(check_updates_in_background());
+            }
 
             if let Some(cmd) = command_override {
                 set_default_command(cmd);

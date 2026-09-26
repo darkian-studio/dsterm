@@ -23,6 +23,7 @@ use crate::{
     agent_bridge, ai_bridge, ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge,
     fs, lsp_bridge, mcp_bridge, ports, process_bridge, proxy, sysmon,
 };
+pub use handlers::notify_update_ready;
 use handlers::*;
 use types::Sessions;
 

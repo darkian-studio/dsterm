@@ -1,11 +1,11 @@
 use reqwest::Client;
 use semver::Version;
 use serde::Deserialize;
+use serde_json::json;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
-
 const GITHUB_API_URL: &str = "https://api.github.com/repos/darkian-studio/dsterm/releases/latest";
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const CACHE_FILE: &str = ".dsterm_update_cache";
@@ -26,6 +26,33 @@ struct GithubAsset {
 struct UpdateCache {
     last_check: SystemTime,
     latest_version: String,
+}
+
+/// A downloaded, fully verified update candidate: correct size, matching
+/// sha256 (when the release publishes one), and the expected magic bytes.
+/// Verification happens BEFORE anything touches the disk beside it.
+pub struct FetchedUpdate {
+    /// Normalized version (`1.6.7`, no `v` prefix).
+    pub version: String,
+    pub bytes: Vec<u8>,
+    pub sha256_hex: String,
+}
+
+/// A staged candidate on disk: `<binary>.new` plus its sidecar. Both must
+/// be present for `staged_update()` to report it — a `.new` without a
+/// sidecar (crashed stage) reads as "none", never as ready.
+pub struct StagedUpdate {
+    pub version: String,
+    pub path: PathBuf,
+}
+
+/// Sidecar schema (`<binary>.new.meta.json`). Written only after `.new`
+/// itself is complete and renamed into place.
+#[derive(Deserialize)]
+struct StagedMeta {
+    version: String,
+    sha256_hex: String,
+    size: u64,
 }
 
 pub struct UpdateChecker {
@@ -133,7 +160,12 @@ impl UpdateChecker {
         }
     }
 
-    pub async fn update(&self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Downloads and verifies the latest release asset for this
+    /// platform/arch WITHOUT touching the installed binary or staging
+    /// anything. Same checks the in-place updater applies (size, sha256
+    /// when published, magic bytes) — shared by `update` and `--self-update`
+    /// so staging can never be weaker than replacing.
+    pub async fn fetch_update(&self) -> Result<FetchedUpdate, Box<dyn std::error::Error>> {
         let release: GithubRelease = self
             .client
             .get(GITHUB_API_URL)
@@ -245,11 +277,33 @@ impl UpdateChecker {
             .into());
         }
 
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(response.as_ref());
+        let sha256_hex: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        // Normalized version for sidecars and notifications (`1.6.7`).
+        let version = release.tag_name.trim_start_matches('v').to_string();
+
+        Ok(FetchedUpdate {
+            version,
+            bytes: response.to_vec(),
+            sha256_hex,
+        })
+    }
+
+    /// Atomic in-place replace of the running binary (the historical
+    /// `dsterm update` behavior, unchanged).
+    async fn activate(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         let current_exe = std::env::current_exe()?;
         let temp_path = current_exe.with_extension("new");
 
         let mut file = File::create(&temp_path).await?;
-        file.write_all(&response).await?;
+        file.write_all(bytes).await?;
         file.sync_all().await?;
 
         #[cfg(unix)]
@@ -281,5 +335,115 @@ impl UpdateChecker {
         }
 
         Ok(())
+    }
+
+    pub async fn update(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let fetched = self.fetch_update().await?;
+        Self::activate(&fetched.bytes).await
+    }
+
+    /// File name of the running binary (`dsterm` / `dsterm.exe`).
+    fn binary_file_name() -> Result<String, Box<dyn std::error::Error>> {
+        std::env::current_exe()?
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.to_string())
+            .ok_or_else(|| "Cannot determine binary file name".into())
+    }
+
+    /// Stages a verified candidate as `<binary>.new` WITHOUT activating it:
+    /// temp file in the same directory, then atomic rename — partial data
+    /// never lands on `.new` itself. A JSON sidecar
+    /// (`<binary>.new.meta.json`) records version + sha256; `staged_update`
+    /// requires both. Any failure removes temp/partial state best-effort so
+    /// an interrupted stage never leaves a broken `.new` behind.
+    pub async fn stage_update(
+        fetched: &FetchedUpdate,
+    ) -> Result<StagedUpdate, Box<dyn std::error::Error>> {
+        let current_exe = std::env::current_exe()?;
+        let dir = current_exe
+            .parent()
+            .ok_or("Cannot determine binary directory")?;
+        let bin_name = Self::binary_file_name()?;
+        let new_path = dir.join(format!("{bin_name}.new"));
+        let meta_path = dir.join(format!("{bin_name}.new.meta.json"));
+        let temp_path = dir.join(format!(".{bin_name}.update-{}.tmp", std::process::id()));
+
+        let staged: Result<StagedUpdate, Box<dyn std::error::Error>> = async {
+            let mut file = File::create(&temp_path).await?;
+            file.write_all(&fetched.bytes).await?;
+            file.sync_all().await?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let metadata = fs::metadata(&temp_path).await?;
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&temp_path, perms).await?;
+            }
+
+            fs::rename(&temp_path, &new_path).await?;
+
+            let meta = json!({
+                "version": fetched.version,
+                "sha256_hex": fetched.sha256_hex,
+                "size": fetched.bytes.len() as u64,
+                "staged_at": SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            });
+            fs::write(&meta_path, meta.to_string()).await?;
+
+            Ok(StagedUpdate {
+                version: fetched.version.clone(),
+                path: new_path.clone(),
+            })
+        }
+        .await;
+
+        if staged.is_err() {
+            // Best-effort: temp (rename failed), `.new` (sidecar failed
+            // after rename), sidecar. A crashed stage can only leave the
+            // pid-tagged temp behind, which `staged_update` ignores.
+            let _ = fs::remove_file(&temp_path).await;
+            let _ = fs::remove_file(&new_path).await;
+            let _ = fs::remove_file(&meta_path).await;
+        }
+        staged
+    }
+
+    /// Reports the staged candidate, if any. Requires BOTH `<binary>.new`
+    /// and its sidecar, plus a size match AND a sha256 re-verification —
+    /// a `.new` without a sidecar (crashed stage), with size drift, or
+    /// with bit rot reads as "none", never ready.
+    pub async fn staged_update() -> Option<StagedUpdate> {
+        let current_exe = std::env::current_exe().ok()?;
+        let dir = current_exe.parent()?;
+        let bin_name = current_exe.file_name().and_then(|n| n.to_str())?;
+        let new_path = dir.join(format!("{bin_name}.new"));
+        let meta_path = dir.join(format!("{bin_name}.new.meta.json"));
+        let meta_raw = fs::read_to_string(&meta_path).await.ok()?;
+        let meta: StagedMeta = serde_json::from_str(&meta_raw).ok()?;
+        let on_disk = fs::read(&new_path).await.ok()?;
+        if on_disk.len() as u64 != meta.size {
+            return None;
+        }
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&on_disk);
+        let actual: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if actual != meta.sha256_hex {
+            return None;
+        }
+        Some(StagedUpdate {
+            version: meta.version,
+            path: new_path,
+        })
     }
 }
