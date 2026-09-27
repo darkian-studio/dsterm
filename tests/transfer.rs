@@ -92,7 +92,7 @@ fn file_transfer_to_auto_receiver() {
     let send = Command::new(dsterm())
         .args([
             "transfer",
-            &src_dir.join("hello.txt").to_string_lossy().to_string(),
+            src_dir.join("hello.txt").to_string_lossy().as_ref(),
             &format!("127.0.0.1:{port}"),
         ])
         .output()
@@ -110,7 +110,7 @@ fn file_transfer_to_auto_receiver() {
     let again = Command::new(dsterm())
         .args([
             "transfer",
-            &src_dir.join("hello.txt").to_string_lossy().to_string(),
+            src_dir.join("hello.txt").to_string_lossy().as_ref(),
             &format!("127.0.0.1:{port}"),
         ])
         .output()
@@ -160,7 +160,7 @@ fn directory_with_symlink_and_dangling_link_roundtrips() {
     let send = Command::new(dsterm())
         .args([
             "transfer",
-            &src.to_string_lossy().to_string(),
+            src.to_string_lossy().as_ref(),
             &format!("127.0.0.1:{port}"),
         ])
         .output()

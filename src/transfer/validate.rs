@@ -20,9 +20,7 @@ fn lexical_parts(path: &str) -> Option<Vec<String>> {
         match comp {
             "" | "." => continue,
             ".." => {
-                if parts.pop().is_none() {
-                    return None;
-                }
+                parts.pop()?;
             }
             c => parts.push(c.to_string()),
         }

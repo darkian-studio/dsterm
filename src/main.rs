@@ -693,11 +693,11 @@ async fn main() {
                 }
                 let opts = crate::transfer::ReceiverOptions {
                     port: transfer_port,
-                    auto_receive: auto_receive,
+                    auto_receive,
                     dest,
-                    overwrite: overwrite,
-                    rename: rename,
-                    allow_remote: allow_remote,
+                    overwrite,
+                    rename,
+                    allow_remote,
                     confirm_timeout_secs: confirm_timeout
                         .unwrap_or(crate::transfer::DEFAULT_CONFIRM_TIMEOUT_SECS),
                     expose: ip,
