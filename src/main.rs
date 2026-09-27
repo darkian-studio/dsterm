@@ -19,6 +19,7 @@ mod relay;
 mod startup;
 mod sysmon;
 mod terminal;
+mod transfer;
 mod updates;
 mod utils;
 mod web_routes;
@@ -39,8 +40,8 @@ const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 #[derive(Parser)]
 #[command(name = "dsterm", version, author = "Darkian Studio <darkian.studio@gmail.com>", about = "CLI/Server backend to serve pty over socket", long_about = None)]
 struct Cli {
-    #[arg(short, long, default_value_t = DEFAULT_PORT, value_parser = clap::value_parser!(u16).range(1..), global = true)]
-    port: u16,
+    #[arg(short, long, global = true, value_parser = clap::value_parser!(u16).range(1..))]
+    port: Option<u16>,
     #[arg(short, long, global = true)]
     ip: bool,
     #[arg(short = 'c', long = "command")]
@@ -51,14 +52,22 @@ struct Cli {
     config_path: Option<String>,
     #[arg(long = "remote", global = true)]
     remote: bool,
-    /// Stage updates automatically as `<binary>.new` without activating:
-    /// when the launch-time check finds a newer version it is downloaded,
-    /// verified, and staged, and open terminal sockets get an
-    /// `update_ready` notification. Server mode only — rejected with any
-    /// subcommand. Supervisors (DS, ...) opt in per launch; nothing
-    /// restarts automatically (see `update status`).
     #[arg(long = "self-update")]
     self_update: bool,
+    #[arg(long = "listen-transfer")]
+    listen_transfer: bool,
+    #[arg(long = "auto-receive")]
+    auto_receive: bool,
+    #[arg(long = "dest")]
+    dest: Option<String>,
+    #[arg(long = "overwrite")]
+    overwrite: bool,
+    #[arg(long = "rename")]
+    rename: bool,
+    #[arg(long = "allow-remote")]
+    allow_remote: bool,
+    #[arg(long = "confirm-timeout")]
+    confirm_timeout: Option<u64>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -90,6 +99,12 @@ enum Commands {
     Register,
     Host,
     Startup,
+    Transfer {
+        path: String,
+        endpoint: String,
+        #[arg(long = "as")]
+        as_name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -186,6 +201,36 @@ async fn stage_updates_in_background() {
     }
 }
 
+// Self-update must finish before the transfer socket opens: replacing the
+// binary mid-transfer leaves the outcome undefined on every platform.
+async fn run_self_update_before_listen() {
+    let checker = UpdateChecker::new(env!("CARGO_PKG_VERSION"));
+    match checker.check_update(false).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("{} Failed to check for updates: {e}", "⚠️".yellow());
+            return;
+        }
+    }
+    let fetched = match checker.fetch_update().await {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{} Failed to fetch update: {e}", "✗".red().bold());
+            return;
+        }
+    };
+    match UpdateChecker::stage_update(&fetched).await {
+        Ok(staged) => println!(
+            "{} {} {}",
+            "↓".bright_green().bold(),
+            "Update staged:".green().bold(),
+            staged.version.green()
+        ),
+        Err(e) => eprintln!("{} Failed to stage update: {e}", "✗".red().bold()),
+    }
+}
+
 fn load_config_or_default(path: Option<&str>, announce: bool) -> DstermConfig {
     if let Some(path) = path {
         match DstermConfig::load(path) {
@@ -213,15 +258,50 @@ async fn main() {
     let cli: Cli = Cli::parse();
 
     let Cli {
-        port,
+        port: port_opt,
         ip,
         command_override,
         allow_any_origin,
         config_path,
         remote,
         self_update,
+        listen_transfer,
+        auto_receive,
+        dest,
+        overwrite,
+        rename,
+        allow_remote,
+        confirm_timeout,
         command,
     } = cli;
+
+    if auto_receive && !listen_transfer {
+        eprintln!(
+            "{} {}",
+            "✗".red().bold(),
+            "error: --auto-receive requires --listen-transfer".red()
+        );
+        std::process::exit(2);
+    }
+    if (overwrite || rename || dest.is_some() || allow_remote || confirm_timeout.is_some())
+        && !listen_transfer
+        && !matches!(command, Some(Commands::Transfer { .. }))
+    {
+        eprintln!(
+            "{} {}",
+            "✗".red().bold(),
+            "transfer receiver flags require --listen-transfer".red()
+        );
+        std::process::exit(2);
+    }
+    if overwrite && rename {
+        eprintln!(
+            "{} {}",
+            "✗".red().bold(),
+            "--overwrite and --rename are mutually exclusive".red()
+        );
+        std::process::exit(2);
+    }
 
     if self_update && command.is_some() {
         // clap can't express "flag conflicts with any subcommand" here
@@ -404,11 +484,7 @@ async fn main() {
                 args: server_args,
             };
 
-            let lsp_port = if port != DEFAULT_PORT {
-                Some(port)
-            } else {
-                None
-            };
+            let lsp_port = port_opt;
 
             start_lsp_server(host, lsp_port, session, allow_any_origin, config).await;
         }
@@ -514,7 +590,32 @@ async fn main() {
                 }
             }
         }
+        Some(Commands::Transfer {
+            path,
+            endpoint,
+            as_name,
+        }) => {
+            let port_default = crate::transfer::DEFAULT_TRANSFER_PORT;
+            let _ = port_default;
+            let ep = match crate::transfer::parse_endpoint(&endpoint) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("{} {e}", "✗".red().bold());
+                    std::process::exit(2);
+                }
+            };
+            let opts = crate::transfer::SenderOptions {
+                source: std::path::PathBuf::from(path),
+                endpoint: ep,
+                dest_hint: as_name,
+            };
+            if let Err(e) = crate::transfer::run_sender(opts).await {
+                eprintln!("{} {e}", "✗".red().bold());
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Host) => {
+            let port = port_opt.unwrap_or(DEFAULT_PORT);
             let mut cfg = load_config_or_default(config_path.as_deref(), true);
             cfg.apply_remote_flag(remote);
             init_config(cfg.clone());
@@ -585,6 +686,42 @@ async fn main() {
             }
         },
         None => {
+            if listen_transfer {
+                let transfer_port = port_opt.unwrap_or(crate::transfer::DEFAULT_TRANSFER_PORT);
+                if self_update {
+                    run_self_update_before_listen().await;
+                }
+                let opts = crate::transfer::ReceiverOptions {
+                    port: transfer_port,
+                    auto_receive: auto_receive,
+                    dest,
+                    overwrite: overwrite,
+                    rename: rename,
+                    allow_remote: allow_remote,
+                    confirm_timeout_secs: confirm_timeout
+                        .unwrap_or(crate::transfer::DEFAULT_CONFIRM_TIMEOUT_SECS),
+                    expose: ip,
+                };
+                if let Err(e) = crate::transfer::run_listener(opts).await {
+                    eprintln!("{} {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+                return;
+            }
+            if auto_receive
+                || dest.is_some()
+                || overwrite
+                || rename
+                || allow_remote
+                || confirm_timeout.is_some()
+            {
+                eprintln!(
+                    "{} transfer receiver flags require --listen-transfer",
+                    "✗".red().bold()
+                );
+                std::process::exit(2);
+            }
+            let port = port_opt.unwrap_or(DEFAULT_PORT);
             let mut cfg = if let Some(ref path) = config_path {
                 match DstermConfig::load(path) {
                     Ok(c) => {
