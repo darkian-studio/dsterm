@@ -1671,4 +1671,104 @@ mod tests {
         assert!(stderr.contains("error"));
         assert!(!timed_out);
     }
+
+    /// Regression test for the welcome-screen clone stall: `git --progress`
+    /// rewrites one line with `\r` and no `\n` for the whole transfer. The
+    /// forwarder must emit those bytes while the pipe is still open — under
+    /// the old `read_line` reader this first `recv` would time out.
+    #[tokio::test]
+    async fn forward_pipe_chunks_streams_carriage_return_progress() {
+        use tokio::io::{duplex, AsyncWriteExt};
+
+        let (mut writer, reader) = duplex(65536);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(100);
+        let task = tokio::spawn(super::forward_pipe_chunks(
+            reader,
+            "id".to_string(),
+            "stderr",
+            tx,
+        ));
+
+        writer
+            .write_all(b"Receiving objects:  10% (1/10)\r")
+            .await
+            .unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("no chunk arrived while the pipe was open: output is line-buffered again")
+            .expect("forwarder dropped the channel");
+        let body: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(body["stream"], "stderr");
+        let first_data = body["data"].as_str().unwrap().to_string();
+        assert!(first_data.contains("10%"));
+
+        writer
+            .write_all(b"Receiving objects: 100% (10/10), done.\n")
+            .await
+            .unwrap();
+        drop(writer);
+        task.await.unwrap();
+
+        let mut rest = String::new();
+        while let Ok(text) = rx.try_recv() {
+            let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+            rest.push_str(body["data"].as_str().unwrap());
+        }
+        // Byte-exact forwarding: concatenated chunks equal the input.
+        assert_eq!(
+            format!("{first_data}{rest}"),
+            "Receiving objects:  10% (1/10)\rReceiving objects: 100% (10/10), done.\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_pipe_chunks_flushes_partial_line_at_eof() {
+        use tokio::io::{duplex, AsyncWriteExt};
+
+        let (mut writer, reader) = duplex(65536);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(100);
+        let task = tokio::spawn(super::forward_pipe_chunks(
+            reader,
+            "id".to_string(),
+            "stdout",
+            tx,
+        ));
+
+        writer.write_all(b"partial").await.unwrap();
+        drop(writer);
+        task.await.unwrap();
+
+        let text = rx.recv().await.expect("EOF flush missing");
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["data"], "partial");
+    }
+
+    #[test]
+    fn take_decodable_prefix_holds_split_multibyte_chars() {
+        // 'é' = [0xC3, 0xA9] split across two reads.
+        let mut pending = vec![0x68, 0xC3];
+        assert_eq!(
+            super::take_decodable_prefix(&mut pending),
+            Some("h".to_string())
+        );
+        assert_eq!(pending, vec![0xC3]);
+        pending.push(0xA9);
+        assert_eq!(
+            super::take_decodable_prefix(&mut pending),
+            Some("é".to_string())
+        );
+        assert!(pending.is_empty());
+        assert_eq!(super::take_decodable_prefix(&mut pending), None);
+    }
+
+    #[test]
+    fn take_decodable_prefix_drops_invalid_bytes_not_streams() {
+        // 0xFF is invalid; it is dropped, but the following bytes still decode.
+        let mut pending = vec![0xFF, 0x41];
+        assert_eq!(
+            super::take_decodable_prefix(&mut pending),
+            Some("A".to_string())
+        );
+        assert!(pending.is_empty());
+    }
 }
