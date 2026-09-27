@@ -151,13 +151,29 @@ async fn check_updates_in_background() {
 /// verified, and staged as `<binary>.new` (no activation, no restart),
 /// then announced to open terminal sockets. Errors are printed; the
 /// server keeps running either way.
+///
+/// Repeats hourly: a launch-time-only check would never notice releases
+/// published mid-life (long-running daemons), which is the entire point
+/// of supervised updating. Each round is cheap when nothing changed (one
+/// cached API read, one disk probe).
 async fn stage_updates_in_background() {
+    loop {
+        stage_updates_once().await;
+        tokio::time::sleep(SELF_UPDATE_RECHECK).await;
+    }
+}
+
+/// Hourly re-check interval for `--self-update`. GitHub's unauthenticated
+/// API budget (60 req/h per IP) dwarfs one forced check per hour.
+const SELF_UPDATE_RECHECK: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+async fn stage_updates_once() {
     let checker = UpdateChecker::new(env!("CARGO_PKG_VERSION"));
     // Deliberate double resolution: the cheap cached check gates the
     // expensive fetch, which re-resolves authoritatively (a lot can change
     // between cache write and stage, and staging must never trust cache).
-    match checker.check_update(false).await {
-        Ok(Some(_)) => {}
+    let tag = match checker.check_update(true).await {
+        Ok(Some(tag)) => tag,
         Ok(None) => return,
         Err(e) => {
             eprintln!(
@@ -168,6 +184,14 @@ async fn stage_updates_in_background() {
             return;
         }
     };
+    // Already staged this exact version (e.g. last hour's round did it):
+    // skip the re-download. Activation clears the stage, which re-arms us.
+    let wanted = tag.trim_start_matches('v');
+    if let Some(staged) = UpdateChecker::staged_update().await {
+        if staged.version == wanted {
+            return;
+        }
+    }
     // The temporary from `fetch_update().await` holds a non-Send
     // `Box<dyn Error>`; it must not live across the `stage_update` await
     // below (this future is `tokio::spawn`ed, hence `Send`). Unwrap into
