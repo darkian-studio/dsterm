@@ -310,8 +310,7 @@ mod tests {
     /// nightly follow-up (DZ-26).
     #[test]
     fn mutated_headers_never_panic() {
-        let original =
-            std::fs::read(fixture("lit.zim")).expect("fixture bytes");
+        let original = std::fs::read(fixture("lit.zim")).expect("fixture bytes");
         // Xorshift64*: deterministic without a rng dependency.
         let mut state: u64 = 0x12345678;
         let mut next = move || {
@@ -332,11 +331,8 @@ mod tests {
                 let idx = (base + k * 7919) % mutated.len();
                 mutated[idx] ^= 0xFF;
             }
-            let dir = std::env::temp_dir().join(format!(
-                "dsterm-mut-{}-{}",
-                std::process::id(),
-                round
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("dsterm-mut-{}-{}", std::process::id(), round));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("m.zim");
             std::fs::write(&path, &mutated).unwrap();
