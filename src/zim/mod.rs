@@ -531,6 +531,16 @@ impl ZimState {
 /// by path, so a same-UID swap between this check and `Zim::new` is a
 /// residual race (reviewed, not fenced — the path allowlist still
 /// bounds it to configured roots).
+/// Lexical prefix check for the open gate: true when `raw` names the
+/// root itself or something beneath it (sibling escapes like
+/// `/data/zim2` vs root `/data/zim` do not match). The authoritative
+/// containment check runs later on the canonical path.
+fn is_under_or_equal(raw: &str, root: &Path) -> bool {
+    let root = root.to_string_lossy();
+    let root = root.trim_end_matches('/');
+    raw == root || raw.starts_with(&format!("{root}/"))
+}
+
 fn resolve_archive_file(roots: &[PathBuf], raw: &str) -> Result<PathBuf, ZimError> {
     if raw.is_empty() || raw.len() > 4096 || raw.contains('\0') {
         return Err(ZimError::bad_request("malformed archive path"));
@@ -690,18 +700,23 @@ async fn open_archive(
     State(state): State<ZimState>,
     Json(body): Json<OpenBody>,
 ) -> Result<impl IntoResponse, ZimError> {
-    if !state.roots_configured() {
+    // Server-managed payloads are inherently allowlisted (dsterm wrote
+    // them through fetch+validation), so they open with zero config.
+    // Arbitrary paths still need configured roots (D28): without them
+    // the answer is unsupported_operation, not a misleading 404.
+    let mut effective_roots = state.inner.roots.clone();
+    effective_roots.push(state.inner.fetch.collections_dir().to_path_buf());
+    if effective_roots
+        .iter()
+        .all(|root| !is_under_or_equal(&body.path, root))
+        && !state.roots_configured()
+    {
         return Err(ZimError::new(
             "unsupported_operation",
             StatusCode::NOT_IMPLEMENTED,
             "no archive roots configured",
         ));
     }
-    let mut effective_roots = state.inner.roots.clone();
-    // Server-managed payloads are inherently allowlisted: dsterm wrote
-    // them through fetch+validation (D28 — the allowlist still governs
-    // everything else).
-    effective_roots.push(state.inner.fetch.collections_dir().to_path_buf());
     let canonical = resolve_archive_file(&effective_roots, &body.path)?;
 
     state.sweep_idle();
@@ -2099,6 +2114,53 @@ mod tests {
                 call(router.clone(), "POST", "/zim/v1/fetch", Some(body), TOKEN).await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
         }
+    }
+
+    #[tokio::test]
+    async fn server_managed_payloads_open_without_configured_roots() {
+        // The standard flow needs no [zim] archive_roots: payloads dsterm
+        // fetched itself open unconditionally; arbitrary paths still
+        // require configured roots (D28).
+        let base = std::env::temp_dir().join(format!("dsterm-roots-test-{}", std::process::id()));
+        let collections = base.join("col");
+        std::fs::create_dir_all(&collections).unwrap();
+        std::fs::copy(
+            "tests/fixtures/zim/lit.zim",
+            collections.join("lit-docs.zim"),
+        )
+        .unwrap();
+        let config = crate::config::ZimConfig {
+            enabled: true,
+            archive_roots: vec![],
+            max_open_archives: 3,
+            idle_ttl_secs: 600,
+            collections_dir: Some(collections.to_string_lossy().into_owned()),
+        };
+        let state = ZimState::new(&config, "test-token".to_string(), &base).expect("test state");
+        let router = zim_routes().with_state(state);
+        let payload = collections.join("lit-docs.zim");
+
+        let (status, _, _) = call(
+            router.clone(),
+            "POST",
+            "/zim/v1/archives",
+            Some(serde_json::json!({"path": payload.to_string_lossy()})),
+            TOKEN,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let outside = std::fs::canonicalize("tests/fixtures/zim/lit.zim").unwrap();
+        let (status, _, _) = call(
+            router.clone(),
+            "POST",
+            "/zim/v1/archives",
+            Some(serde_json::json!({"path": outside.to_string_lossy()})),
+            TOKEN,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[tokio::test]

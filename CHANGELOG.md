@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Server-managed payloads open with zero config** — archives dsterm
+  fetched itself were wrongly rejected with `unsupported_operation`
+  when no `[zim] archive_roots` were configured (the open gate ran
+  before the server-managed allowlist). Fetched payloads are now
+  inherently allowlisted; arbitrary paths still require configured
+  roots.
+
 ### Added
 - **Native ZIM reader subsystem (`zim` feature, `/zim/v1`)** — archive
   open/status/close, entry lookup with redirect resolution, title-prefix
