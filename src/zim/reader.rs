@@ -303,4 +303,52 @@ mod tests {
         let zim = opened.zim.unwrap();
         assert!(lookup_entry(&zim, "no-such-entry").unwrap().is_none());
     }
+
+    /// Deterministic mutation sweep (fuzz-lite): flipping header and
+    /// offset bytes must yield controlled errors, never a panic. This
+    /// runs on stable (no libFuzzer here); `cargo-fuzz` remains the
+    /// nightly follow-up (DZ-26).
+    #[test]
+    fn mutated_headers_never_panic() {
+        let original =
+            std::fs::read(fixture("lit.zim")).expect("fixture bytes");
+        // Xorshift64*: deterministic without a rng dependency.
+        let mut state: u64 = 0x12345678;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for round in 0..200 {
+            let mut mutated = original.clone();
+            // Bias mutations at the header and pointer tables.
+            let base = if round % 2 == 0 {
+                (next() % 512) as usize
+            } else {
+                (next() % mutated.len() as u64) as usize
+            };
+            for k in 0..4 {
+                let idx = (base + k * 7919) % mutated.len();
+                mutated[idx] ^= 0xFF;
+            }
+            let dir = std::env::temp_dir().join(format!(
+                "dsterm-mut-{}-{}",
+                std::process::id(),
+                round
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("m.zim");
+            std::fs::write(&path, &mutated).unwrap();
+            let opened = open_validated(&path);
+            std::fs::remove_dir_all(&dir).ok();
+            // Either outcome is fine; panicking is not (fails the test).
+            if let Ok(opened) = opened {
+                if let Some(zim) = opened.zim {
+                    let _ = title_lists(&zim);
+                    let _ = lookup_entry(&zim, "index");
+                }
+            }
+        }
+    }
 }
