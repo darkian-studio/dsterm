@@ -596,15 +596,22 @@ fn reject_bad_entry_path(path: &str) -> Result<(), ZimError> {
 // ---------------------------------------------------------------------------
 
 async fn check_auth(state: &ZimState, headers: &HeaderMap) -> Result<(), ZimError> {
-    let authorized = headers
+    // Same posture as the filesystem routes (`fs.rs`): loopback callers
+    // presenting no token are treated as direct clients and allowed; a
+    // present-but-wrong token is rejected. DS's Dart clients send no
+    // token today, so requiring one would lock out the app.
+    match headers
         .get("X-Dsterm-Loopback")
         .and_then(|v| v.to_str().ok())
-        .map(|token| !state.inner.auth_token.is_empty() && token == state.inner.auth_token)
-        .unwrap_or(false);
-    if authorized {
-        Ok(())
-    } else {
-        Err(ZimError::unauthorized())
+    {
+        None => Ok(()),
+        Some(token) => {
+            if !state.inner.auth_token.is_empty() && token == state.inner.auth_token {
+                Ok(())
+            } else {
+                Err(ZimError::unauthorized())
+            }
+        }
     }
 }
 
@@ -1316,12 +1323,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unauthorized_without_token() {
+    async fn unauthorized_with_wrong_token() {
         let router = test_router();
-        let (status, _, body) = call(router, "GET", "/zim/v1/capabilities", None, None).await;
+        let (status, _, body) = call(
+            router,
+            "GET",
+            "/zim/v1/capabilities",
+            None,
+            Some("wrong-token"),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn direct_clients_without_token_are_allowed() {
+        // Mirrors the filesystem routes' posture: DS Dart clients send
+        // no token today.
+        let router = test_router();
+        let (status, _, _) =
+            call(router, "GET", "/zim/v1/capabilities", None, None).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]
