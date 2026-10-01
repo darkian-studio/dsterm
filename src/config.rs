@@ -134,6 +134,9 @@ pub struct ZimConfig {
     pub max_open_archives: usize,
     /// Idle seconds before an unused archive is evicted (default 600).
     pub idle_ttl_secs: u64,
+    /// Server-managed collections dir (fetched payloads). Defaults to
+    /// `<data-home>/.cache/ds-zim-collections` resolved by the caller.
+    pub collections_dir: Option<String>,
 }
 
 impl Default for ZimConfig {
@@ -143,6 +146,7 @@ impl Default for ZimConfig {
             archive_roots: Vec::new(),
             max_open_archives: 3,
             idle_ttl_secs: 600,
+            collections_dir: None,
         }
     }
 }

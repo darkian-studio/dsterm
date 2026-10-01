@@ -10,6 +10,7 @@
 //! (bounded wait, else `busy`), so no mapped ZIM outlives a successful
 //! DELETE. DS deletes files only after close succeeds (UNI-1).
 
+mod fetch;
 mod reader;
 
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ use std::time::{Duration, Instant};
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use dashmap::DashMap;
 use lru::LruCache;
@@ -30,6 +31,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::ZimConfig;
 
+use fetch::FetchManager;
 use reader::{
     lookup_entry, mime_of, read_entry_bytes, read_metadata, resolve_chain, title_lists,
     titles_in_order, Fault,
@@ -244,6 +246,7 @@ struct Inner {
     global_sem: Arc<Semaphore>,
     decomp_budget: Arc<Semaphore>,
     exec: tokio::runtime::Handle,
+    fetch: Arc<FetchManager>,
     boot_secs: u64,
 }
 
@@ -266,9 +269,11 @@ pub struct ZimState {
 
 impl ZimState {
     /// Canonicalizes allowed roots (unresolvable roots are skipped with
-    /// a warning) and builds the dedicated blocking pool. Fails only if
-    /// the executor itself cannot start.
-    pub fn new(config: &ZimConfig, auth_token: String) -> anyhow::Result<Self> {
+    /// a warning) and builds the dedicated blocking pool. `data_home`
+    /// anchors the server-managed collections dir when the config does
+    /// not name one explicitly. Fails only if the executor itself
+    /// cannot start.
+    pub fn new(config: &ZimConfig, auth_token: String, data_home: &Path) -> anyhow::Result<Self> {
         let mut roots = Vec::new();
         for root in &config.archive_roots {
             match std::fs::canonicalize(root) {
@@ -302,6 +307,13 @@ impl ZimState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let collections_dir = match config.collections_dir.as_deref() {
+            Some(dir) => PathBuf::from(dir),
+            // Server-managed payloads live outside user archives;
+            // resolved against the explicit data home (never CWD).
+            None => data_home.join(".cache/ds-zim-collections"),
+        };
+        let fetch = Arc::new(FetchManager::new(collections_dir, exec.clone())?);
         Ok(Self {
             inner: Arc::new(Inner {
                 config: config.clone(),
@@ -314,6 +326,7 @@ impl ZimState {
                 global_sem: Arc::new(Semaphore::new(GLOBAL_INFLIGHT as usize)),
                 decomp_budget: Arc::new(Semaphore::new(DECOMP_BUDGET_BYTES as usize)),
                 exec,
+                fetch,
                 boot_secs,
             }),
         })
@@ -330,8 +343,15 @@ impl ZimState {
                 .collect(),
             max_open_archives: 3,
             idle_ttl_secs: 600,
+            collections_dir: Some(
+                std::env::temp_dir()
+                    .join(format!("dsterm-zim-test-{}", std::process::id()))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
         };
-        Self::new(&config, "test-token".to_string()).expect("test state")
+        let data_home = std::env::temp_dir();
+        Self::new(&config, "test-token".to_string(), &data_home).expect("test state")
     }
 
     fn roots_configured(&self) -> bool {
@@ -630,6 +650,9 @@ pub fn zim_routes() -> Router<ZimState> {
         .route("/zim/v1/archives/{id}/content/{*path}", get(content))
         .route("/zim/v1/archives/{id}/suggest", get(suggest))
         .route("/zim/v1/archives/{id}/verify", post(verify))
+        .route("/zim/v1/fetch", post(fetch_start))
+        .route("/zim/v1/fetch/{op}", get(fetch_status).delete(fetch_cancel))
+        .route("/zim/v1/staged/{name}", delete(remove_staged))
 }
 
 async fn capabilities(
@@ -1254,6 +1277,116 @@ async fn verify(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+#[derive(Debug, Deserialize)]
+struct FetchBody {
+    url: String,
+    #[serde(default)]
+    mirrors: Vec<String>,
+    sha256: String,
+    size_bytes: u64,
+    collection_id: String,
+}
+
+fn fetch_phase_name(phase: &fetch::FetchPhase) -> &'static str {
+    match phase {
+        fetch::FetchPhase::Queued => "queued",
+        fetch::FetchPhase::Downloading => "downloading",
+        fetch::FetchPhase::Verifying => "verifying",
+        fetch::FetchPhase::Validating => "validating",
+        fetch::FetchPhase::Done => "done",
+        fetch::FetchPhase::Cancelled => "cancelled",
+        fetch::FetchPhase::Failed { .. } => "failed",
+    }
+}
+
+async fn fetch_start(
+    State(state): State<ZimState>,
+    headers: HeaderMap,
+    Json(body): Json<FetchBody>,
+) -> Result<impl IntoResponse, ZimError> {
+    check_auth(&state, &headers).await?;
+    if !body.url.starts_with("https://") {
+        return Err(ZimError::bad_request("fetch url must be HTTPS"));
+    }
+    if body.collection_id.is_empty() || body.collection_id.len() > 128 {
+        return Err(ZimError::bad_request("invalid collection id"));
+    }
+    if body.size_bytes == 0 {
+        return Err(ZimError::bad_request("invalid expected size"));
+    }
+    let clean = body.sha256.trim().to_lowercase();
+    if clean.len() != 64 || !clean.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ZimError::bad_request("invalid SHA-256"));
+    }
+    let id = state.inner.fetch.start(fetch::FetchRequest {
+        urls: vec![body.url],
+        mirrors: body
+            .mirrors
+            .into_iter()
+            .filter(|u| u.starts_with("https://"))
+            .collect(),
+        sha256: clean,
+        size_bytes: body.size_bytes,
+        collection_id: body.collection_id,
+    });
+    Ok(Json(serde_json::json!({"op": id, "state": "queued"})))
+}
+
+async fn fetch_status(
+    State(state): State<ZimState>,
+    headers: HeaderMap,
+    UrlPath(op): UrlPath<String>,
+) -> Result<impl IntoResponse, ZimError> {
+    check_auth(&state, &headers).await?;
+    let Some(snapshot) = state.inner.fetch.snapshot(&op).await else {
+        return Err(ZimError::new(
+            "invalid_request",
+            StatusCode::NOT_FOUND,
+            "unknown fetch op",
+        ));
+    };
+    Ok(Json(serde_json::json!({
+        "op": snapshot.id,
+        "state": fetch_phase_name(&snapshot.phase),
+        "bytes_received": snapshot.bytes_received,
+        "total_bytes": snapshot.total_bytes,
+        "report": snapshot.report.map(|r| serde_json::json!({
+            "uuid": r.uuid,
+            "title": r.title,
+            "description": r.description,
+            "languages": r.languages,
+            "article_count": r.article_count,
+            "has_title_index": r.has_title_index,
+            "payload_name": r.payload_name,
+            "size_bytes": r.size_bytes,
+        })),
+        "failure": snapshot.failure.map(|(code, message)| serde_json::json!({
+            "code": code,
+            "message": message,
+        })),
+    })))
+}
+
+async fn fetch_cancel(
+    State(state): State<ZimState>,
+    headers: HeaderMap,
+    UrlPath(op): UrlPath<String>,
+) -> Result<impl IntoResponse, ZimError> {
+    check_auth(&state, &headers).await?;
+    let cancelled = state.inner.fetch.cancel(&op).await;
+    Ok(Json(serde_json::json!({ "cancelled": cancelled })))
+}
+
+async fn remove_staged(
+    State(state): State<ZimState>,
+    headers: HeaderMap,
+    UrlPath(name): UrlPath<String>,
+) -> Result<impl IntoResponse, ZimError> {
+    check_auth(&state, &headers).await?;
+    let removed = state.inner.fetch.remove_staged(&name);
+    Ok(Json(serde_json::json!({ "removed": removed })))
+}
+
 // ---------------------------------------------------------------------------
 // Tests (HTTP-level, tower oneshot — no TCP)
 // ---------------------------------------------------------------------------
@@ -1343,8 +1476,7 @@ mod tests {
         // Mirrors the filesystem routes' posture: DS Dart clients send
         // no token today.
         let router = test_router();
-        let (status, _, _) =
-            call(router, "GET", "/zim/v1/capabilities", None, None).await;
+        let (status, _, _) = call(router, "GET", "/zim/v1/capabilities", None, None).await;
         assert_eq!(status, StatusCode::OK);
     }
 
@@ -1670,5 +1802,240 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["type"], "content");
+    }
+
+    /// Local static file server for fetch tests (no external network).
+    async fn file_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_route = Arc::clone(&hits);
+        let app = Router::new()
+            .route(
+                "/lit.zim",
+                get(|| async {
+                    let bytes = std::fs::read("tests/fixtures/zim/lit.zim").unwrap();
+                    (
+                        [(axum::http::header::CONTENT_LENGTH, bytes.len().to_string())],
+                        axum::body::Body::from(bytes),
+                    )
+                }),
+            )
+            .route(
+                "/flaky.zim",
+                get(move || {
+                    let hits_route = Arc::clone(&hits_route);
+                    async move {
+                        let n = hits_route.fetch_add(1, Ordering::SeqCst);
+                        if n == 0 {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "boom".to_string());
+                        }
+                        let bytes = std::fs::read("tests/fixtures/zim/lit.zim").unwrap();
+                        (StatusCode::OK, format!("{} bytes", bytes.len()))
+                    }
+                }),
+            )
+            .route(
+                "/slow.zim",
+                get(|| async {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    (StatusCode::OK, "too late".to_string())
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://{addr}"), hits)
+    }
+
+    /// Fetch tests drive the manager directly: the HTTP layer refuses
+    /// non-HTTPS URLs (KC-7), while the loopback file server is plain
+    /// HTTP. Handler shape validation stays HTTP-level (see below).
+    fn test_manager() -> (Arc<FetchManager>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("dsterm-fetch-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = FetchManager::new(dir.clone(), tokio::runtime::Handle::current())
+            .expect("fetch manager");
+        (Arc::new(manager), dir)
+    }
+
+    async fn await_done(manager: &Arc<FetchManager>, op: &str) -> fetch::FetchSnapshot {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let snapshot = manager.snapshot(op).await.expect("op snapshot");
+            match &snapshot.phase {
+                fetch::FetchPhase::Done
+                | fetch::FetchPhase::Failed { .. }
+                | fetch::FetchPhase::Cancelled => return snapshot,
+                _ => {}
+            }
+            assert!(Instant::now() < deadline, "fetch op stuck");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_verifies_validates_and_reports() {
+        let (manager, _dir) = test_manager();
+        let (files, _) = file_server().await;
+        let op = manager.start(fetch::FetchRequest {
+            urls: vec![format!("{files}/lit.zim")],
+            mirrors: vec![],
+            sha256: "a00095a3aca3e4bfe92843b59e641ad370a7a77dd1af4d85194a1ef4b2f52cd3".to_string(),
+            size_bytes: 739061,
+            collection_id: "lit-docs".to_string(),
+        });
+        let snapshot = await_done(&manager, &op).await;
+        assert!(
+            matches!(snapshot.phase, fetch::FetchPhase::Done),
+            "unexpected: {:?}",
+            snapshot.failure,
+        );
+        let report = snapshot.report.expect("report on done");
+        assert_eq!(report.uuid, "0002ed21-81ff-39eb-7274-d80240a8ea78");
+        assert_eq!(report.title, "Lit Docs");
+        assert!(report.has_title_index);
+        assert_eq!(report.payload_name, "lit-docs.zim");
+        assert!(manager
+            .collections_dir()
+            .join(&report.payload_name)
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn fetch_fails_over_mirrors_and_rejects_bad_hash() {
+        let (manager, _) = test_manager();
+        let (files, _) = file_server().await;
+        // Primary 500s once, mirror serves: failover path.
+        let op = manager.start(fetch::FetchRequest {
+            urls: vec![format!("{files}/flaky.zim")],
+            mirrors: vec![format!("{files}/lit.zim")],
+            sha256: "a00095a3aca3e4bfe92843b59e641ad370a7a77dd1af4d85194a1ef4b2f52cd3".to_string(),
+            size_bytes: 739061,
+            collection_id: "flaky-docs".to_string(),
+        });
+        let snapshot = await_done(&manager, &op).await;
+        assert!(
+            matches!(snapshot.phase, fetch::FetchPhase::Done),
+            "unexpected: {:?}",
+            snapshot.failure,
+        );
+
+        // Wrong hash with correct size: fail-closed, no payload kept.
+        let op = manager.start(fetch::FetchRequest {
+            urls: vec![format!("{files}/lit.zim")],
+            mirrors: vec![],
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            size_bytes: 739061,
+            collection_id: "bad-docs".to_string(),
+        });
+        let snapshot = await_done(&manager, &op).await;
+        assert!(
+            matches!(snapshot.phase, fetch::FetchPhase::Failed { .. }),
+            "expected failure, got {:?}",
+            snapshot.phase
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_cancel_and_staged_remove() {
+        let (manager, dir) = test_manager();
+        let (files, _) = file_server().await;
+        let op = manager.start(fetch::FetchRequest {
+            urls: vec![format!("{files}/slow.zim")],
+            mirrors: vec![],
+            sha256: "a00095a3aca3e4bfe92843b59e641ad370a7a77dd1af4d85194a1ef4b2f52cd3".to_string(),
+            size_bytes: 739061,
+            collection_id: "slow-docs".to_string(),
+        });
+        assert!(manager.cancel(&op).await);
+        let snapshot = await_done(&manager, &op).await;
+        assert!(
+            matches!(snapshot.phase, fetch::FetchPhase::Cancelled),
+            "unexpected: {:?}",
+            snapshot.phase
+        );
+
+        // Staged removal is confined: traversal and non-zim names refuse.
+        assert!(!manager.remove_staged("../evil.zim"));
+        assert!(!manager.remove_staged("nope.txt"));
+        // Unknown but well-formed names report false, never error.
+        assert!(!manager.remove_staged("ghost.zim"));
+        let _ = &dir;
+    }
+
+    #[tokio::test]
+    async fn fetch_start_validates_shape() {
+        let router = test_router();
+        // Non-HTTPS fetch URLs are refused up front (KC-7).
+        let (status, _, _) = call(
+            router.clone(),
+            "POST",
+            "/zim/v1/fetch",
+            Some(serde_json::json!({
+                "url": "http://example.com/x.zim",
+                "mirrors": [],
+                "sha256": "a00095a3aca3e4bfe92843b59e641ad370a7a77dd1af4d85194a1ef4b2f52cd3",
+                "size_bytes": 739061,
+                "collection_id": "plain-docs",
+            })),
+            TOKEN,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Malformed hash and empty size likewise.
+        for body in [
+            serde_json::json!({
+                "url": "https://example.com/x.zim",
+                "mirrors": [],
+                "sha256": "not-hex",
+                "size_bytes": 739061,
+                "collection_id": "x",
+            }),
+            serde_json::json!({
+                "url": "https://example.com/x.zim",
+                "mirrors": [],
+                "sha256": "a00095a3aca3e4bfe92843b59e641ad370a7a77dd1af4d85194a1ef4b2f52cd3",
+                "size_bytes": 0,
+                "collection_id": "x",
+            }),
+        ] {
+            let (status, _, _) =
+                call(router.clone(), "POST", "/zim/v1/fetch", Some(body), TOKEN).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_remove_is_confined() {
+        let router = test_router();
+        // Traversal and absolute paths never reach the handler: the
+        // router itself rejects them (defense in depth with the
+        // server-side name check).
+        for name in ["../evil.zim", "/abs.zim"] {
+            let (status, _, _) = call(
+                router.clone(),
+                "DELETE",
+                &format!("/zim/v1/staged/{name}"),
+                None,
+                TOKEN,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+        // Well-formed but unknown names report false, never error.
+        let (status, _, body) = call(
+            router.clone(),
+            "DELETE",
+            "/zim/v1/staged/ghost.zim",
+            None,
+            TOKEN,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["removed"], false);
     }
 }

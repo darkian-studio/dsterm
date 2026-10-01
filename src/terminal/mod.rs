@@ -202,8 +202,11 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .with_state(sessions);
 
     #[cfg(feature = "zim")]
-    let zim_state = match crate::zim::ZimState::new(&get_config().zim, loopback_token().to_string())
-    {
+    let zim_state = match crate::zim::ZimState::new(
+        &get_config().zim,
+        loopback_token().to_string(),
+        std::path::Path::new(&get_config().home),
+    ) {
         Ok(state) => Some(state),
         Err(e) => {
             tracing::error!(error = %e, "zim: executor failed to start; /zim/v1 disabled");
