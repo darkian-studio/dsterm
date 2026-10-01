@@ -39,6 +39,19 @@ jobs:
       - name: Run tests
         run: cargo test
 
+  test-zim:
+    name: Test with zim feature
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests with zim feature
+        run: cargo test --features zim
+
   build-llama:
     name: Build & test with llama feature
     runs-on: ubuntu-latest

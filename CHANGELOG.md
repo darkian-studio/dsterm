@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Native ZIM reader subsystem (`zim` feature, `/zim/v1`)** — archive
+  open/status/close, entry lookup with redirect resolution, title-prefix
+  suggestions, ranged content serving, checksum verification, and a
+  fetch/verify/validate service (SHA-256 + size + reader validation),
+  behind loopback auth and an archive-roots allowlist with close-drain
+  lifecycle. Build with `cargo build --features zim`; release builds
+  now include it. Pure-Rust `zim` 0.5.0 reader (MIT/Apache-2.0), no
+  libzim anywhere in the tree.
 - **`--self-update` launch flag** — supervised, restart-free updating: when
   the launch-time check finds a newer version, dsterm downloads it, verifies
   it with the exact checks `dsterm update` applies (size, sha256 when
