@@ -615,6 +615,18 @@ fn reject_bad_entry_path(path: &str) -> Result<(), ZimError> {
 // Routes
 // ---------------------------------------------------------------------------
 
+fn require_enabled(state: &ZimState) -> Result<(), ZimError> {
+    if state.inner.config.enabled {
+        Ok(())
+    } else {
+        Err(ZimError::new(
+            "unsupported_operation",
+            StatusCode::NOT_IMPLEMENTED,
+            "zim subsystem disabled",
+        ))
+    }
+}
+
 async fn check_auth(state: &ZimState, headers: &HeaderMap) -> Result<(), ZimError> {
     // Same posture as the filesystem routes (`fs.rs`): loopback callers
     // presenting no token are treated as direct clients and allowed; a
@@ -805,6 +817,8 @@ async fn archive_status(
     UrlPath(id): UrlPath<String>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
+    require_enabled(&state)?;
     let archive = state.get_archive(&id)?;
     state.touch(&archive);
     let _guard = ActiveGuard::hold(&archive);
@@ -847,6 +861,7 @@ async fn close_archive(
     UrlPath(id): UrlPath<String>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     let archive = match state.inner.archives.get(&id) {
         Some(entry) => Arc::clone(entry.value()),
         // Idempotent close (contract): unknown handles succeed.
@@ -884,6 +899,7 @@ async fn lookup_entry_route(
     Query(query): Query<LookupQuery>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     reject_bad_entry_path(&query.path)?;
     let archive = state.get_archive(&id)?;
     state.touch(&archive);
@@ -1006,6 +1022,7 @@ async fn suggest(
     Query(query): Query<SuggestQuery>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     if query.q.len() > 256 {
         return Err(ZimError::bad_request("query exceeds 256 bytes"));
     }
@@ -1056,6 +1073,7 @@ async fn content(
     Query(query): Query<ContentQuery>,
 ) -> Result<Response, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     reject_bad_entry_path(&path)?;
     let archive = state.get_archive(&id)?;
     state.touch(&archive);
@@ -1252,6 +1270,7 @@ async fn verify(
     UrlPath(id): UrlPath<String>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     let archive = state.get_archive(&id)?;
     state.touch(&archive);
     let _guard = ActiveGuard::hold(&archive);
@@ -1305,6 +1324,7 @@ async fn fetch_start(
     Json(body): Json<FetchBody>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     if !body.url.starts_with("https://") {
         return Err(ZimError::bad_request("fetch url must be HTTPS"));
     }
@@ -1338,6 +1358,7 @@ async fn fetch_status(
     UrlPath(op): UrlPath<String>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     let Some(snapshot) = state.inner.fetch.snapshot(&op).await else {
         return Err(ZimError::new(
             "invalid_request",
@@ -1373,6 +1394,7 @@ async fn fetch_cancel(
     UrlPath(op): UrlPath<String>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     let cancelled = state.inner.fetch.cancel(&op).await;
     Ok(Json(serde_json::json!({ "cancelled": cancelled })))
 }
@@ -1383,6 +1405,7 @@ async fn remove_staged(
     UrlPath(name): UrlPath<String>,
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
+    require_enabled(&state)?;
     let removed = state.inner.fetch.remove_staged(&name);
     Ok(Json(serde_json::json!({ "removed": removed })))
 }
