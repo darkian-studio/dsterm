@@ -23,6 +23,8 @@ mod transfer;
 mod updates;
 mod utils;
 mod web_routes;
+#[cfg(feature = "zim")]
+mod zim;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;

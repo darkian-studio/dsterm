@@ -118,6 +118,35 @@ pub struct PortsConfig {
     pub kill_enabled: bool,
 }
 
+/// ZIM archive reading (`zim` Cargo feature, `/zim/v1`).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ZimConfig {
+    /// Master switch. With the feature compiled in but this false, the
+    /// archive routes report `unsupported_operation`.
+    pub enabled: bool,
+    /// Allowed archive roots. Empty (default) disables archive opening
+    /// entirely (D28): every open fails with `unsupported_operation`.
+    /// Entries resolve to regular files under these roots only; symlinks
+    /// are rejected and nothing else on the filesystem is readable.
+    pub archive_roots: Vec<String>,
+    /// Max concurrently open archives (default 3, Rev 2 ZIM-5).
+    pub max_open_archives: usize,
+    /// Idle seconds before an unused archive is evicted (default 600).
+    pub idle_ttl_secs: u64,
+}
+
+impl Default for ZimConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            archive_roots: Vec::new(),
+            max_open_archives: 3,
+            idle_ttl_secs: 600,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct ProxyConfig {
@@ -146,6 +175,7 @@ pub struct DstermConfig {
     pub proxy: ProxyConfig,
     pub ports: PortsConfig,
     pub exec: ExecConfig,
+    pub zim: ZimConfig,
 }
 
 impl DstermConfig {

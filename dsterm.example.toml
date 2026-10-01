@@ -32,3 +32,9 @@ enabled = false                 # Localhost proxy (implemented in a later phase)
 
 [ports]
 kill_enabled = false            # Must be true to allow POST /ports/kill
+
+[zim]
+enabled = true                  # Master switch for /zim/v1 (requires the `zim` Cargo feature)
+archive_roots = []              # Allowed archive roots, e.g. ["/data/zim"]. Empty disables opening
+max_open_archives = 3           # Concurrently open archives (evicts idle oldest)
+idle_ttl_secs = 600             # Idle seconds before an unused archive is evicted

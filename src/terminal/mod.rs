@@ -201,7 +201,18 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .route("/metrics", get(get_metrics))
         .with_state(sessions);
 
-    let app = Router::new()
+    #[cfg(feature = "zim")]
+    let zim_state = match crate::zim::ZimState::new(&get_config().zim, loopback_token().to_string())
+    {
+        Ok(state) => Some(state),
+        Err(e) => {
+            tracing::error!(error = %e, "zim: executor failed to start; /zim/v1 disabled");
+            None
+        }
+    };
+
+    #[cfg_attr(not(feature = "zim"), allow(unused_mut))]
+    let mut app = Router::new()
         .merge(terminal_router)
         .merge(lsp_bridge::lsp_routes().with_state(lsp_registry.clone()))
         .merge(dap_bridge::dap_routes().with_state(dap_registry.clone()))
@@ -217,12 +228,14 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .merge(sysmon::sysmon_routes())
         .merge(ports::ports_routes())
         .merge(proxy::proxy_routes())
-        .merge(crate::web_routes::web_routes().with_state(web_provider))
-        .layer(cors)
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::default().include_headers(true)),
-        );
+        .merge(crate::web_routes::web_routes().with_state(web_provider));
+    #[cfg(feature = "zim")]
+    if let Some(zim_state) = zim_state {
+        app = app.merge(crate::zim::zim_routes().with_state(zim_state));
+    }
+    let app = app.layer(cors).layer(
+        TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::default().include_headers(true)),
+    );
 
     let addr: std::net::SocketAddr = (host, port).into();
 
