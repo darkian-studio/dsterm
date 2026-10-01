@@ -697,7 +697,12 @@ async fn open_archive(
             "no archive roots configured",
         ));
     }
-    let canonical = resolve_archive_file(&state.inner.roots, &body.path)?;
+    let mut effective_roots = state.inner.roots.clone();
+    // Server-managed payloads are inherently allowlisted: dsterm wrote
+    // them through fetch+validation (D28 — the allowlist still governs
+    // everything else).
+    effective_roots.push(state.inner.fetch.collections_dir().to_path_buf());
+    let canonical = resolve_archive_file(&effective_roots, &body.path)?;
 
     state.sweep_idle();
 
@@ -1325,7 +1330,7 @@ async fn fetch_start(
 ) -> Result<impl IntoResponse, ZimError> {
     check_auth(&state, &headers).await?;
     require_enabled(&state)?;
-    if !body.url.starts_with("https://") {
+    if !fetch::url_allowed(&body.url) {
         return Err(ZimError::bad_request("fetch url must be HTTPS"));
     }
     if body.collection_id.is_empty() || body.collection_id.len() > 128 {

@@ -92,6 +92,10 @@ impl FetchManager {
         })
     }
 
+    pub fn collections_dir(&self) -> &Path {
+        &self.collections_dir
+    }
+
     /// Starts a fetch in the background; returns the op id immediately.
     /// Payload lands at `collections/<safe-id>.zim` on success.
     pub fn start(self: &Arc<Self>, request: FetchRequest) -> String {
@@ -342,6 +346,14 @@ impl FetchManager {
     }
 }
 
+/// URLs the fetch boundary accepts: HTTPS anywhere, plain HTTP only
+/// to loopback hosts (tests, on-device loopback servers — no MITM
+/// exposure there). The catalogue layer already filters; this is
+/// defense in depth shared by the route validator below.
+pub(crate) fn url_allowed(url: &str) -> bool {
+    url.starts_with("https://") || loopback_url(url)
+}
+
 fn candidate_urls(request: &FetchRequest) -> Vec<&str> {
     // HTTPS only (KC-7), except loopback test servers: loopback is not
     // the network, so plain HTTP there carries no MITM exposure. The
@@ -351,7 +363,7 @@ fn candidate_urls(request: &FetchRequest) -> Vec<&str> {
         .iter()
         .chain(request.mirrors.iter())
         .map(String::as_str)
-        .filter(|url| url.starts_with("https://") || loopback_url(url))
+        .filter(|url| url_allowed(url))
         .collect()
 }
 
