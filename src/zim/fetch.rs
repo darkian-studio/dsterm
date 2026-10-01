@@ -41,6 +41,9 @@ pub struct FetchReport {
     pub article_count: u32,
     pub has_title_index: bool,
     pub payload_name: String,
+    /// Server-canonical payload path for later `open` calls (recorded
+    /// in the DS manifest install record; never guessed client-side).
+    pub payload_path: String,
     pub size_bytes: u64,
 }
 
@@ -89,10 +92,6 @@ impl FetchManager {
         })
     }
 
-    pub fn collections_dir(&self) -> &Path {
-        &self.collections_dir
-    }
-
     /// Starts a fetch in the background; returns the op id immediately.
     /// Payload lands at `collections/<safe-id>.zim` on success.
     pub fn start(self: &Arc<Self>, request: FetchRequest) -> String {
@@ -137,6 +136,7 @@ impl FetchManager {
                 article_count: r.article_count,
                 has_title_index: r.has_title_index,
                 payload_name: r.payload_name.clone(),
+                payload_path: r.payload_path.clone(),
                 size_bytes: r.size_bytes,
             }),
             failure,
@@ -262,7 +262,8 @@ impl FetchManager {
                     languages: report_fields.languages,
                     article_count: report_fields.article_count,
                     has_title_index: report_fields.has_title_index,
-                    payload_name,
+                    payload_name: payload_name.clone(),
+                    payload_path: final_path.to_string_lossy().into_owned(),
                     size_bytes: request.size_bytes,
                 });
                 *op.phase.lock().await = FetchPhase::Done;
@@ -499,5 +500,6 @@ pub struct FetchReportView {
     pub article_count: u32,
     pub has_title_index: bool,
     pub payload_name: String,
+    pub payload_path: String,
     pub size_bytes: u64,
 }

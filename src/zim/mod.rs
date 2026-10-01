@@ -1371,16 +1371,17 @@ async fn fetch_status(
         "state": fetch_phase_name(&snapshot.phase),
         "bytes_received": snapshot.bytes_received,
         "total_bytes": snapshot.total_bytes,
-        "report": snapshot.report.map(|r| serde_json::json!({
-            "uuid": r.uuid,
-            "title": r.title,
-            "description": r.description,
-            "languages": r.languages,
-            "article_count": r.article_count,
-            "has_title_index": r.has_title_index,
-            "payload_name": r.payload_name,
-            "size_bytes": r.size_bytes,
-        })),
+            "report": snapshot.report.map(|r| serde_json::json!({
+                "uuid": r.uuid,
+                "title": r.title,
+                "description": r.description,
+                "languages": r.languages,
+                "article_count": r.article_count,
+                "has_title_index": r.has_title_index,
+                "payload_name": r.payload_name,
+                "payload_path": r.payload_path,
+                "size_bytes": r.size_bytes,
+            })),
         "failure": snapshot.failure.map(|(code, message)| serde_json::json!({
             "code": code,
             "message": message,
@@ -1828,19 +1829,62 @@ mod tests {
     }
 
     /// Local static file server for fetch tests (no external network).
+    /// `/lit.zim` honors Range (206 partial / 416 past end) so resume
+    /// paths are exercised, not just fresh downloads.
     async fn file_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use axum::body::Body;
+        use axum::http::{HeaderMap, HeaderValue};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_route = Arc::clone(&hits);
         let app = Router::new()
             .route(
                 "/lit.zim",
-                get(|| async {
+                get(|headers: HeaderMap| async move {
+                    use axum::http::header::{CONTENT_LENGTH, CONTENT_RANGE};
                     let bytes = std::fs::read("tests/fixtures/zim/lit.zim").unwrap();
-                    (
-                        [(axum::http::header::CONTENT_LENGTH, bytes.len().to_string())],
-                        axum::body::Body::from(bytes),
-                    )
+                    let mut response_headers = HeaderMap::new();
+                    if let Some(range) = headers
+                        .get(axum::http::header::RANGE)
+                        .and_then(|v| v.to_str().ok())
+                    {
+                        if let Some(spec) = range.strip_prefix("bytes=") {
+                            let start: usize = spec
+                                .split('-')
+                                .next()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(0);
+                            if start >= bytes.len() {
+                                return (
+                                    StatusCode::RANGE_NOT_SATISFIABLE,
+                                    HeaderMap::new(),
+                                    Body::empty(),
+                                );
+                            }
+                            let partial = bytes[start..].to_vec();
+                            let total = bytes.len();
+                            let end = total - 1;
+                            response_headers.insert(
+                                CONTENT_RANGE,
+                                HeaderValue::from_str(&format!("bytes {start}-{end}/{total}"))
+                                    .unwrap(),
+                            );
+                            response_headers.insert(
+                                CONTENT_LENGTH,
+                                HeaderValue::from_str(&partial.len().to_string()).unwrap(),
+                            );
+                            return (
+                                StatusCode::PARTIAL_CONTENT,
+                                response_headers,
+                                Body::from(partial),
+                            );
+                        }
+                    }
+                    response_headers.insert(
+                        CONTENT_LENGTH,
+                        HeaderValue::from_str(&bytes.len().to_string()).unwrap(),
+                    );
+                    (StatusCode::OK, response_headers, Body::from(bytes))
                 }),
             )
             .route(
@@ -1900,7 +1944,7 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_verifies_validates_and_reports() {
-        let (manager, _dir) = test_manager();
+        let (manager, dir) = test_manager();
         let (files, _) = file_server().await;
         let op = manager.start(fetch::FetchRequest {
             urls: vec![format!("{files}/lit.zim")],
@@ -1920,10 +1964,7 @@ mod tests {
         assert_eq!(report.title, "Lit Docs");
         assert!(report.has_title_index);
         assert_eq!(report.payload_name, "lit-docs.zim");
-        assert!(manager
-            .collections_dir()
-            .join(&report.payload_name)
-            .exists());
+        assert!(dir.join(&report.payload_name).exists());
     }
 
     #[tokio::test]
@@ -1986,6 +2027,30 @@ mod tests {
         // Unknown but well-formed names report false, never error.
         assert!(!manager.remove_staged("ghost.zim"));
         let _ = &dir;
+    }
+
+    #[tokio::test]
+    async fn fetch_resumes_partial_downloads() {
+        let (manager, dir) = test_manager();
+        let (files, _) = file_server().await;
+        // Seed a partial file: the first 1000 bytes of the fixture.
+        let lit = std::fs::read("tests/fixtures/zim/lit.zim").unwrap();
+        std::fs::write(dir.join("resume-docs.zim.part"), &lit[..1000]).unwrap();
+        let op = manager.start(fetch::FetchRequest {
+            urls: vec![format!("{files}/lit.zim")],
+            mirrors: vec![],
+            sha256: "a00095a3aca3e4bfe92843b59e641ad370a7a77dd1af4d85194a1ef4b2f52cd3".to_string(),
+            size_bytes: 739061,
+            collection_id: "resume-docs".to_string(),
+        });
+        let snapshot = await_done(&manager, &op).await;
+        assert!(
+            matches!(snapshot.phase, fetch::FetchPhase::Done),
+            "unexpected: {:?}",
+            snapshot.failure,
+        );
+        let payload = std::fs::read(dir.join("resume-docs.zim")).unwrap();
+        assert_eq!(payload, lit);
     }
 
     #[tokio::test]
