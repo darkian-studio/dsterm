@@ -859,11 +859,20 @@ async fn archive_status(
                             .collect()
                     })
                     .unwrap_or_default();
-                Ok((metadata, languages, article_list || entry_list))
+                // Header main page, redirect-resolved (DS RH-1 home
+                // chain). Degrades to null when absent or unreadable:
+                // status is metadata and must not fail for it.
+                let main_path: Option<String> = archive
+                    .zim
+                    .main_page()
+                    .ok()
+                    .flatten()
+                    .map(|entry| entry.url);
+                Ok((metadata, languages, article_list || entry_list, main_path))
             }
         })
         .await?;
-    let (metadata, languages, has_title_index) = info;
+    let (metadata, languages, has_title_index, main_path) = info;
     Ok(Json(serde_json::json!({
         "identity": {"uuid": archive.identity_uuid, "file_size": archive.file_size},
         "title": metadata.get("Title").cloned().unwrap_or_default(),
@@ -871,6 +880,7 @@ async fn archive_status(
         "languages": languages,
         "article_count": archive.zim.header.article_count,
         "has_title_index": has_title_index,
+        "main_path": main_path,
         "metadata": metadata,
     })))
 }
@@ -1652,6 +1662,25 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["title"], "Lit Docs");
         assert_eq!(json["has_title_index"], true);
+
+        // Header main page for the reader home chain (RH-1): present
+        // as a string when the archive declares one, null otherwise —
+        // never an error.
+        assert!(json.get("main_path").is_some());
+        if let Some(main) = json["main_path"].as_str() {
+            assert!(!main.is_empty());
+            let (status, _, body) = call(
+                router.clone(),
+                "GET",
+                &format!("/zim/v1/archives/{id}/entries/lookup?path={main}&resolve=true"),
+                None,
+                TOKEN,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let lookup: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(lookup["exists"], true);
+        }
 
         // Redirect unresolved, then resolved (old-scheme fixture whose
         // favicon entry is a redirect).

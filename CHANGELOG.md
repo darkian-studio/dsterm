@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.2] - 2026-10-02
+
+### Added
+- **`main_path` in archive status** — the header main page entry key,
+  redirect-resolved, for the DS reader home chain (RH-1). Present as a
+  string when the archive declares a main page, `null` otherwise; status
+  never fails for an absent or unreadable main page. Purely additive
+  inside `/zim/v1`.
+
+## [1.12.1] - 2026-10-01
+
 ### Fixed
 - **Server-managed payloads open with zero config** — archives dsterm
   fetched itself were wrongly rejected with `unsupported_operation`
@@ -14,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the server-managed allowlist). Fetched payloads are now
   inherently allowlisted; arbitrary paths still require configured
   roots.
+
+## [1.12.0] - 2026-10-01
 
 ### Added
 - **Native ZIM reader subsystem (`zim` feature, `/zim/v1`)** — archive
@@ -24,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lifecycle. Build with `cargo build --features zim`; release builds
   now include it. Pure-Rust `zim` 0.5.0 reader (MIT/Apache-2.0), no
   libzim anywhere in the tree.
+
+## [1.11.0] - 2026-09-27
+
+### Added
+- **Native file and directory transfer** — send/receive files and
+  directory trees between client and host.
+
+## [1.10.0] - 2026-09-26
+
+### Added
 - **`--self-update` launch flag** — supervised, restart-free updating: when
   the launch-time check finds a newer version, dsterm downloads it, verifies
   it with the exact checks `dsterm update` applies (size, sha256 when
