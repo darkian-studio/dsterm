@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-05
+
 ### Added
 - **`GET /assets/v1/discover`** — installed-asset inventory over the
   runtime `~/.ds` standard layout (`models/**/*.gguf`,
