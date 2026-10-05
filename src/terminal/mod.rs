@@ -227,6 +227,7 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
         .merge(ast_bridge::ast_routes().with_state(ast_registry))
         .merge(agent_bridge::agent_routes().with_state(agent_registry.clone()))
         .merge(ai_bridge::ai_routes().with_state(ai_state))
+        .merge(crate::assets::assets_routes())
         .merge(fs::fs_routes())
         .merge(sysmon::sysmon_routes())
         .merge(ports::ports_routes())

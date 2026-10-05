@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`GET /assets/v1/discover`** — installed-asset inventory over the
+  runtime `~/.ds` standard layout (`models/**/*.gguf`,
+  `dspacks/*/` with manifest). DS discovers through dsterm and caches
+  in memory; missing roots yield an empty list. See
+  `docs/assets-discovery-v1.md` in the DS repo for the frozen contract.
+
+### Removed
+- **Model-registry disk persistence** — `ai_model_registry.json` is
+  neither read nor written. The in-memory registry (load pool
+  bookkeeping, id resolution) is unchanged; install records now live
+  as files under `~/.ds` and re-derive from discovery.
+
 ## [1.12.2] - 2026-10-02
 
 ### Added

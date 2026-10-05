@@ -10,7 +10,6 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "llama")]
@@ -109,39 +108,19 @@ impl std::fmt::Display for ModelStatus {
 
 pub struct ModelRegistryInner {
     pub models: Vec<ModelRegistration>,
-    storage_path: PathBuf,
 }
 
 impl ModelRegistryInner {
-    fn storage_path() -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(home).join(".ds/ai_model_registry.json")
-    }
-
+    /// In-memory only: install records live as files under the runtime
+    /// `~/.ds` layout and are discovered via `GET /assets/v1/discover`,
+    /// never persisted here. A restart starts empty; DS refills from
+    /// discovery. The stale `ai_model_registry.json` on disk is simply
+    /// never read or written again.
     pub fn load() -> Self {
-        let path = Self::storage_path();
-        let models = if path.exists() {
-            std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        Self {
-            models,
-            storage_path: path,
-        }
+        Self { models: Vec::new() }
     }
 
-    fn save(&self) {
-        if let Some(parent) = self.storage_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(json) = serde_json::to_string(&self.models) {
-            let _ = std::fs::write(&self.storage_path, json);
-        }
-    }
+    fn save(&self) {}
 
     pub fn register(&mut self, model: ModelRegistration) {
         self.models.retain(|m| m.id != model.id);
