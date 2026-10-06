@@ -49,9 +49,10 @@ struct FsError {
     error: String,
 }
 
-/// Windows `canonicalize()` returns extended-length (`\\?\`) verbatim paths,
-/// which the OS treats literally (no `.`/`..` normalization). Strip the prefix
-/// so downstream joins, lexical normalization, and `read_dir` behave normally.
+/// Windows `canonicalize()` returns extended-length (`\\?\`)
+/// verbatim paths, which the OS treats literally (no `.`/`..`
+/// normalization). Strip the prefix so downstream joins,
+/// lexical normalization, and `read_dir` behave normally.
 fn strip_extended_length_prefix(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
@@ -83,7 +84,8 @@ fn lexical_normalize(path: &StdPath) -> PathBuf {
             Component::RootDir => out.push(component.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                // Never pop past RootDir/Prefix — out.parent()==None means we're at root
+                // Never pop past RootDir/Prefix —
+                // out.parent()==None means we're at root
                 if out.parent().is_some() {
                     out.pop();
                 }
@@ -142,7 +144,8 @@ fn is_loopback_authorized(headers: &HeaderMap) -> bool {
         }
         return false;
     }
-    // No loopback header — treat as direct client, allow (dispatch always sends header)
+    // No loopback header — treat as direct client, allow
+    // (dispatch always sends header)
     true
 }
 
@@ -199,31 +202,47 @@ pub async fn write_file(headers: HeaderMap, Json(req): Json<WriteRequest>) -> im
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let path = match safe_path(&req.path) {
         Ok(path) => path,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::BAD_REQUEST, e
+        ),
     };
     if let Some(parent) = path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
-            return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e);
+            return fs_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                e
+            );
         }
         if let Err(e) = safe_path(&req.path) {
-            return fs_error(axum::http::StatusCode::BAD_REQUEST, e);
+            return fs_error(
+                axum::http::StatusCode::BAD_REQUEST, e
+            );
         }
     }
     let bytes = if req.encoding.as_deref() == Some("base64") {
         match BASE64.decode(req.content.as_bytes()) {
             Ok(bytes) => bytes,
-            Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+            Err(e) => return fs_error(
+                axum::http::StatusCode::BAD_REQUEST, e
+            ),
         }
     } else {
         req.content.into_bytes()
     };
     match fs::write(path, bytes) {
-        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
-        Err(e) => fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+        Ok(()) => Json(serde_json::json!({
+            "success": true
+        })).into_response(),
+        Err(e) => fs_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR, e
+        ),
     }
 }
 
@@ -232,15 +251,24 @@ pub async fn mkdir(headers: HeaderMap, Json(req): Json<MkdirRequest>) -> impl In
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let path = match safe_path(&req.path) {
         Ok(path) => path,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::BAD_REQUEST, e
+        ),
     };
     match fs::create_dir_all(path) {
-        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
-        Err(e) => fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+        Ok(()) => Json(serde_json::json!({
+            "success": true
+        })).into_response(),
+        Err(e) => fs_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR, e
+        ),
     }
 }
 
@@ -249,16 +277,23 @@ pub async fn delete(headers: HeaderMap, Json(req): Json<DeleteRequest>) -> impl 
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let path = match safe_path(&req.path) {
         Ok(path) => path,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::BAD_REQUEST, e
+        ),
     };
     if path
         == match workspace_root() {
             Ok(root) => root,
-            Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+            Err(e) => return fs_error(
+                axum::http::StatusCode::BAD_REQUEST, e
+            ),
         }
     {
         return fs_error(
@@ -276,8 +311,12 @@ pub async fn delete(headers: HeaderMap, Json(req): Json<DeleteRequest>) -> impl 
         fs::remove_file(path)
     };
     match result {
-        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
-        Err(e) => fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+        Ok(()) => Json(serde_json::json!({
+            "success": true
+        })).into_response(),
+        Err(e) => fs_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR, e
+        ),
     }
 }
 
@@ -286,19 +325,30 @@ pub async fn rename(headers: HeaderMap, Json(req): Json<RenameRequest>) -> impl 
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let from = match safe_path(&req.from) {
         Ok(path) => path,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::BAD_REQUEST, e
+        ),
     };
     let to = match safe_path(&req.to) {
         Ok(path) => path,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::BAD_REQUEST, e
+        ),
     };
     match fs::rename(from, to) {
-        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
-        Err(e) => fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+        Ok(()) => Json(serde_json::json!({
+            "success": true
+        })).into_response(),
+        Err(e) => fs_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR, e
+        ),
     }
 }
 
@@ -307,15 +357,22 @@ pub async fn stat(headers: HeaderMap, Query(query): Query<PathQuery>) -> impl In
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let path = match safe_path(&query.path) {
         Ok(path) => path,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::BAD_REQUEST, e
+        ),
     };
     let metadata = match fs::metadata(&path) {
         Ok(metadata) => metadata,
-        Err(e) => return fs_error(axum::http::StatusCode::NOT_FOUND, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::NOT_FOUND, e
+        ),
     };
     let modified = metadata
         .modified()
@@ -340,14 +397,19 @@ pub async fn file_search(
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let needle = query.query.to_lowercase();
     let limit = query.limit.unwrap_or(100).min(1000);
     let root_res = workspace_root();
     let root = match root_res {
         Ok(r) => r,
-        Err(e) => return fs_error(axum::http::StatusCode::BAD_REQUEST, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::BAD_REQUEST, e
+        ),
     };
     let root_clone = root.clone();
     let res = tokio::task::spawn_blocking(move || {
@@ -370,7 +432,10 @@ pub async fn file_search(
             };
             for entry in entries.flatten() {
                 let path = entry.path();
-                let name = entry.file_name().to_string_lossy().to_lowercase();
+                let name = entry
+                    .file_name()
+                    .to_string_lossy()
+                    .to_lowercase();
                 if name == ".git" || name == "target" {
                     continue;
                 }
@@ -383,8 +448,9 @@ pub async fn file_search(
                     }
                 }
                 if path.is_dir() {
-                    // Symlink cycles would recurse forever; bound the walk
-                    // by visited-set size instead of tracking depth.
+                    // Symlink cycles would recurse forever;
+                    // bound the walk by visited-set size
+                    // instead of tracking depth.
                     if visited.len() > 5000 {
                         continue;
                     }
@@ -396,8 +462,12 @@ pub async fn file_search(
     })
     .await;
     match res {
-        Ok(results) => Json(serde_json::json!({ "results": results })).into_response(),
-        Err(e) => fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+        Ok(results) => Json(serde_json::json!({
+            "results": results
+        })).into_response(),
+        Err(e) => fs_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR, e
+        ),
     }
 }
 
@@ -429,15 +499,22 @@ pub async fn git_status(headers: HeaderMap) -> impl IntoResponse {
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let branch = match run_git(&["rev-parse", "--abbrev-ref", "HEAD"]) {
         Ok(value) => value.trim().to_string(),
-        Err(e) => return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR, e
+        ),
     };
     let porcelain = match run_git(&["status", "--porcelain"]) {
         Ok(value) => value,
-        Err(e) => return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR, e
+        ),
     };
     let files = porcelain
         .lines()
@@ -447,7 +524,9 @@ pub async fn git_status(headers: HeaderMap) -> impl IntoResponse {
             path: line[3..].to_string(),
         })
         .collect::<Vec<_>>();
-    Json(serde_json::json!({ "branch": branch, "files": files })).into_response()
+    Json(serde_json::json!({
+        "branch": branch, "files": files
+    })).into_response()
 }
 
 pub async fn list_dir(headers: HeaderMap, Query(query): Query<PathQuery>) -> impl IntoResponse {
@@ -455,7 +534,10 @@ pub async fn list_dir(headers: HeaderMap, Query(query): Query<PathQuery>) -> imp
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let path = match safe_path(&query.path) {
         Ok(path) => path,
@@ -468,7 +550,9 @@ pub async fn list_dir(headers: HeaderMap, Query(query): Query<PathQuery>) -> imp
     );
     let read_dir = match fs::read_dir(&path) {
         Ok(read_dir) => read_dir,
-        Err(e) => return fs_error(axum::http::StatusCode::NOT_FOUND, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::NOT_FOUND, e
+        ),
     };
     let mut entries = Vec::new();
     for entry in read_dir.flatten() {
@@ -489,7 +573,9 @@ pub async fn list_dir(headers: HeaderMap, Query(query): Query<PathQuery>) -> imp
             "modified": modified,
         }));
     }
-    Json(serde_json::json!({ "path": query.path, "entries": entries })).into_response()
+    Json(serde_json::json!({
+        "path": query.path, "entries": entries
+    })).into_response()
 }
 
 pub async fn root_info(headers: HeaderMap) -> impl IntoResponse {
@@ -497,11 +583,16 @@ pub async fn root_info(headers: HeaderMap) -> impl IntoResponse {
         return filesystem_disabled_response();
     }
     if !is_loopback_authorized(&headers) {
-        return fs_error(axum::http::StatusCode::FORBIDDEN, "Invalid loopback token");
+        return fs_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "Invalid loopback token"
+        );
     }
     let root = match workspace_root() {
         Ok(root) => root,
-        Err(e) => return fs_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => return fs_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR, e
+        ),
     };
     let path_display = root.to_string_lossy();
     let cleaned = path_display
@@ -512,7 +603,9 @@ pub async fn root_info(headers: HeaderMap) -> impl IntoResponse {
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| cleaned.clone());
-    Json(serde_json::json!({ "path": cleaned, "name": name })).into_response()
+    Json(serde_json::json!({
+        "path": cleaned, "name": name
+    })).into_response()
 }
 
 pub fn fs_routes() -> axum::Router {

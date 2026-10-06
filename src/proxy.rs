@@ -1,5 +1,6 @@
-//! Localhost proxy: forwards HTTP requests and tunnels WebSocket connections to
-//! services bound on the local machine. Targets are restricted to localhost.
+//! Localhost proxy: forwards HTTP requests and tunnels
+//! WebSocket connections to services bound on the local
+//! machine. Targets are restricted to localhost.
 use crate::terminal::get_config;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::Query;
@@ -59,7 +60,9 @@ pub fn is_localhost(url: &str) -> bool {
 fn forbidden() -> axum::response::Response {
     (
         axum::http::StatusCode::FORBIDDEN,
-        Json(serde_json::json!({ "error": "Proxy is disabled" })),
+        Json(serde_json::json!({
+            "error": "Proxy is disabled"
+        })),
     )
         .into_response()
 }
@@ -77,7 +80,9 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
         return forbidden();
     }
     if !is_localhost(&req.url) {
-        return bad_request("Only localhost targets are allowed");
+        return bad_request(
+            "Only localhost targets are allowed"
+        );
     }
     let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
     let method = match reqwest::Method::from_bytes(method.as_bytes()) {
@@ -100,7 +105,9 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
             tracing::warn!("proxy upstream failed: {e}");
             return (
                 axum::http::StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": "Upstream request failed" })),
+                Json(serde_json::json!({
+                    "error": "Upstream request failed"
+                })),
             )
                 .into_response();
         }
@@ -117,7 +124,11 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
         if len > MAX_PROXY_RESPONSE_BYTES as u64 {
             return (
                 axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-                Json(serde_json::json!({ "error": format!("Upstream body too large: {len} bytes (limit {MAX_PROXY_RESPONSE_BYTES})") })),
+                Json(serde_json::json!({
+                    "error": format!(
+                        "Upstream body too large: {len} bytes (limit {MAX_PROXY_RESPONSE_BYTES})"
+                    )
+                })),
             )
                 .into_response();
         }
@@ -131,7 +142,11 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
                 if body.len() + chunk.len() > MAX_PROXY_RESPONSE_BYTES {
                     return (
                         axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-                        Json(serde_json::json!({ "error": format!("Upstream body exceeded limit of {MAX_PROXY_RESPONSE_BYTES} bytes") })),
+                        Json(serde_json::json!({
+                            "error": format!(
+                                "Upstream body exceeded limit of {MAX_PROXY_RESPONSE_BYTES} bytes"
+                            )
+                        })),
                     )
                         .into_response();
                 }
@@ -141,7 +156,9 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
                 tracing::warn!("proxy read body failed: {e}");
                 return (
                     axum::http::StatusCode::BAD_GATEWAY,
-                    Json(serde_json::json!({ "error": "Failed to read upstream body" })),
+                    Json(serde_json::json!({
+                        "error": "Failed to read upstream body"
+                    })),
                 )
                     .into_response();
             }
@@ -163,7 +180,9 @@ pub async fn proxy_ws(
         return forbidden();
     }
     if !is_localhost(&query.url) {
-        return bad_request("Only localhost targets are allowed");
+        return bad_request(
+            "Only localhost targets are allowed"
+        );
     }
     ws.on_upgrade(move |socket| proxy_ws_pump(socket, query.url))
 }
@@ -173,8 +192,12 @@ async fn proxy_ws_pump(socket: WebSocket, url: String) {
     let upstream = match tokio_tungstenite::connect_async(url.as_str()).await {
         Ok((upstream, _)) => upstream,
         Err(e) => {
-            tracing::warn!("proxy upstream connect failed: {e}");
-            let _ = client_send.send(Message::Close(None)).await;
+            tracing::warn!(
+                "proxy upstream connect failed: {e}"
+            );
+            let _ = client_send.send(
+                Message::Close(None)
+            ).await;
             return;
         }
     };

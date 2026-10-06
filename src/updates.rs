@@ -28,26 +28,17 @@ struct UpdateCache {
     latest_version: String,
 }
 
-/// A downloaded update candidate. The constructor is the contract: no
-/// instance exists until size, sha256 (when published), and magic bytes
-/// all pass — so staging and activating can never be weaker than each other.
 pub struct FetchedUpdate {
-    /// Normalized version (`1.6.7`, no `v` prefix).
     pub version: String,
     pub bytes: Vec<u8>,
     pub sha256_hex: String,
 }
 
-/// A staged candidate on disk. Both files must be present for
-/// `staged_update()` to report it — a `.new` without a sidecar (crashed
-/// stage) reads as "none", never as ready.
 pub struct StagedUpdate {
     pub version: String,
     pub path: PathBuf,
 }
 
-/// Sidecar schema (`<binary>.new.meta.json`). Written only after `.new`
-/// itself is complete and renamed into place.
 #[derive(Deserialize)]
 struct StagedMeta {
     version: String,
@@ -160,11 +151,12 @@ impl UpdateChecker {
         }
     }
 
-    /// Downloads and verifies the latest release asset for this
-    /// platform/arch WITHOUT touching the installed binary or staging
-    /// anything. Same checks the in-place updater applies (size, sha256
-    /// when published, magic bytes) — shared by `update` and `--self-update`
-    /// so staging can never be weaker than replacing.
+    /// Downloads and verifies the latest release asset for
+    /// this platform/arch WITHOUT touching the installed
+    /// binary or staging anything. Same checks the in-place
+    /// updater applies (size, sha256 when published, magic
+    /// bytes) — shared by `update` and `--self-update` so
+    /// staging can never be weaker than replacing.
     pub async fn fetch_update(
         &self,
     ) -> Result<FetchedUpdate, Box<dyn std::error::Error + Send + Sync>> {
@@ -177,14 +169,17 @@ impl UpdateChecker {
             .json()
             .await?;
 
-        // The target OS is baked into the binary at compile time; read it
-        // directly instead of probing the filesystem. A `/data/data/...` probe
-        // resolves to `C:\data\data\...` on Windows and mis-detects Android.
+        // The target OS is baked into the binary at compile
+        // time; read it directly instead of probing the
+        // filesystem. A `/data/data/...` probe resolves to
+        // `C:\data\data\...` on Windows and mis-detects
+        // Android.
         let platform = match std::env::consts::OS {
             "android" => "android",
             "linux" => {
-                // A linux-target binary running inside Termux still needs the
-                // Android assets; TERMUX_VERSION is the concrete signal Termux
+                // A linux-target binary running inside Termux 
+                // still needs the Android assets;
+                // TERMUX_VERSION is the concrete signal Termux
                 // always sets (never a path guess).
                 if std::env::var("TERMUX_VERSION").is_ok() {
                     "android"
@@ -193,14 +188,18 @@ impl UpdateChecker {
                 }
             }
             os @ ("macos" | "windows") => os,
-            other => return Err(format!("Unsupported OS: {other}").into()),
+            other => return Err(format!(
+                "Unsupported OS: {other}"
+            ).into()),
         };
 
         let arch_suffix = match std::env::consts::ARCH {
             "arm" => "armv7",
             "aarch64" => "arm64",
             "x86_64" => "x86_64",
-            other => return Err(format!("Unsupported architecture: {other}").into()),
+            other => return Err(format!(
+                "Unsupported architecture: {other}"
+            ).into()),
         };
 
         let ext = if platform == "windows" { ".exe" } else { "" };
@@ -210,7 +209,9 @@ impl UpdateChecker {
             .assets
             .iter()
             .find(|a| a.name == binary_name)
-            .ok_or_else(|| format!("No matching binary found for {binary_name}"))?;
+            .ok_or_else(|| format!(
+                "No matching binary found for {binary_name}"
+            ))?;
 
         let response = self
             .client
@@ -219,11 +220,6 @@ impl UpdateChecker {
             .await?
             .bytes()
             .await?;
-
-        // Verify before touching anything on disk. A bad download here (wrong
-        // platform, truncated transfer, mismatched redirect target) must fail
-        // loudly, never silently replace a working binary. Nothing past this
-        // block runs unless every check passes.
 
         if response.len() as u64 != asset.size {
             return Err(format!(
@@ -268,9 +264,11 @@ impl UpdateChecker {
             }
         }
 
-        // Independent of the checksum: this is the exact failure already observed
-        // (an asset named dsterm-windows-x86_64.exe served ELF bytes). Confirm the
-        // payload's magic number matches the platform before it goes near current_exe.
+        // Independent of the checksum: this is the exact
+        // failure already observed (an asset named
+        // dsterm-windows-x86_64.exe served ELF bytes).
+        // Confirm the payload's magic number matches the
+        // platform before it goes near current_exe.
         if platform == "windows" && !response.starts_with(b"MZ") {
             return Err(format!(
                 "{binary_name} does not have a Windows PE header (expected 'MZ'). \
@@ -295,9 +293,6 @@ impl UpdateChecker {
         })
     }
 
-    /// Atomic in-place replace of the running binary. Split out from, and
-    /// behavior-identical to, the historical `update()` — staging reuses
-    /// the fetch half without inheriting the replace half.
     async fn activate(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let current_exe = std::env::current_exe()?;
         let temp_path = current_exe.with_extension("new");
@@ -315,9 +310,6 @@ impl UpdateChecker {
             fs::set_permissions(&temp_path, perms).await?;
         }
 
-        // A running executable cannot be overwritten on Windows, so move the
-        // current binary aside first, then drop the new one into place. On Unix
-        // an atomic rename over the running binary is fine.
         #[cfg(windows)]
         {
             let old_path = current_exe.with_extension("old");
@@ -342,19 +334,16 @@ impl UpdateChecker {
         Self::activate(&fetched.bytes).await
     }
 
-    /// Single home of `<binary>.new` naming (preserves `.exe`, unlike
-    /// `with_extension`), so stage and status can never disagree on paths.
     fn binary_file_name() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         std::env::current_exe()?
             .file_name()
             .and_then(|n| n.to_str())
             .map(|n| n.to_string())
-            .ok_or_else(|| "Cannot determine binary file name".into())
+            .ok_or_else(
+                || "Cannot determine binary file name".into()
+            )
     }
 
-    /// Stages a verified candidate as `<binary>.new` WITHOUT activating it.
-    /// Contract: an interrupted stage never leaves a broken `.new` behind
-    /// (temp file + atomic rename; partial state removed best-effort).
     pub async fn stage_update(
         fetched: &FetchedUpdate,
     ) -> Result<StagedUpdate, Box<dyn std::error::Error + Send + Sync>> {
@@ -409,8 +398,6 @@ impl UpdateChecker {
         staged
     }
 
-    /// Reports the staged candidate, if any. Contract: `.new` without a
-    /// sidecar (crashed stage), size drift, or bit rot all read as "none".
     pub async fn staged_update() -> Option<StagedUpdate> {
         let current_exe = std::env::current_exe().ok()?;
         let dir = current_exe.parent()?;

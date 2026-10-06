@@ -1,20 +1,17 @@
 //! Runtime configuration loaded from an optional TOML file.
 //!
-//! If no config file is supplied, all fields fall back to their hard-coded
-//! defaults (identical to the values previously baked into the source).
+//! If no config file is supplied, all fields fall back to
+//! their hard-coded defaults (identical to the values
+//! previously baked into the source).
 use serde::Deserialize;
 
 /// Terminal PTY and WebSocket tuning.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct TerminalConfig {
-    /// Maximum bytes kept in the per-session scrollback file (default 256 KB).
     pub max_scrollback_bytes: usize,
-    /// WebSocket output coalescing interval in milliseconds (default 8 ms).
     pub output_coalesce_ms: u64,
-    /// PTY read buffer size in bytes; also used as the coalesce flush trigger (default 8 KB).
     pub read_buffer_bytes: usize,
-    /// Seconds of inactivity before a terminal session is evicted (default 1800 = 30 min).
     pub inactivity_timeout_secs: u64,
 }
 
@@ -29,11 +26,11 @@ impl Default for TerminalConfig {
     }
 }
 
-/// Bridge process lifecycle tuning (LSP, DAP, MCP, Extension Host).
+/// Bridge process lifecycle tuning (LSP, DAP, MCP, Extension
+/// Host).
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct BridgesConfig {
-    /// Seconds to wait for a bridge process to exit before force-killing it (default 2).
     pub kill_timeout_secs: u64,
 }
 
@@ -45,8 +42,9 @@ impl Default for BridgesConfig {
     }
 }
 
-/// Relay transport settings. The transport itself is added incrementally; these
-/// fields are accepted now so config files do not churn later.
+/// Relay transport settings. The transport itself is added
+/// incrementally; these fields are accepted now so config
+/// files do not churn later.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct RelayConfig {
@@ -122,20 +120,13 @@ pub struct PortsConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
 pub struct ZimConfig {
-    /// Master switch. With the feature compiled in but this false, the
-    /// archive routes report `unsupported_operation`.
+    /// Master switch. With the feature compiled in but this
+    /// false, the archive routes report
+    /// `unsupported_operation`.
     pub enabled: bool,
-    /// Allowed archive roots. Empty (default) disables archive opening
-    /// entirely (D28): every open fails with `unsupported_operation`.
-    /// Entries resolve to regular files under these roots only; symlinks
-    /// are rejected and nothing else on the filesystem is readable.
     pub archive_roots: Vec<String>,
-    /// Max concurrently open archives (default 3, Rev 2 ZIM-5).
     pub max_open_archives: usize,
-    /// Idle seconds before an unused archive is evicted (default 600).
     pub idle_ttl_secs: u64,
-    /// Server-managed collections dir (fetched payloads). Defaults to
-    /// `<data-home>/.cache/ds-zim-collections` resolved by the caller.
     pub collections_dir: Option<String>,
 }
 
@@ -160,7 +151,8 @@ pub struct ProxyConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct ExecConfig {
-    /// Optional regex allowlist for exec commands; if set, only matching commands are allowed
+    /// Optional regex allowlist for exec commands; if set,
+    /// only matching commands are allowed
     pub allowlist: Option<String>,
 }
 
@@ -168,8 +160,9 @@ pub struct ExecConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct DstermConfig {
-    /// Authoritative host home directory, resolved once at startup. Empty until
-    /// `init_config` fills it from the OS (`HOME`/`USERPROFILE`, else cwd).
+    /// Authoritative host home directory, resolved once at
+    /// startup. Empty until `init_config` fills it from the
+    /// OS (`HOME`/`USERPROFILE`, else cwd).
     pub home: String,
     pub terminal: TerminalConfig,
     pub bridges: BridgesConfig,
@@ -183,7 +176,8 @@ pub struct DstermConfig {
 }
 
 impl DstermConfig {
-    /// Helper: typed home path (keeps `home` as String for serde compat)
+    /// Helper: typed home path (keeps `home` as String for
+    ///         serde compat)
     #[allow(dead_code)]
     pub fn home_path(&self) -> std::path::PathBuf {
         std::path::PathBuf::from(&self.home)

@@ -1,7 +1,9 @@
-//! Extension-host HTTP+WebSocket bridge — Node.js process lifecycle owned by dsterm.
+//! Extension-host HTTP+WebSocket bridge — Node.js process
+//! lifecycle owned by dsterm.
 //!
-//! Unlike lsp/dap/mcp bridges, the stdio protocol here is newline-delimited JSON.
-//! Wraps ProcessSession with custom handle_node_line for LSP-ready tracking.
+//! Unlike lsp/dap/mcp bridges, the stdio protocol here is
+//! newline-delimited JSON. Wraps ProcessSession with custom
+//! handle_node_line for LSP-ready tracking.
 use crate::process_bridge::{self};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -58,7 +60,9 @@ async fn start_handler(
         if registry.contains_key(&req.id) {
             return (
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "session exists", "id": req.id})),
+                Json(serde_json::json!({
+                    "error": "session exists", "id": req.id
+                })),
             );
         }
     }
@@ -69,14 +73,24 @@ async fn start_handler(
         cwd: None,
         env: Some(
             [
-                ("DS_EXTENSIONS_DIR".into(), req.extensions_dir),
-                ("DS_WORKSPACE_ROOT".into(), req.workspace_root),
-                ("DS_SESSION_ID".into(), req.id.clone()),
+                (
+                    "DS_EXTENSIONS_DIR".into(),
+                    req.extensions_dir
+                ),
+                (
+                    "DS_WORKSPACE_ROOT".into(),
+                    req.workspace_root
+                ),
+                (
+                    "DS_SESSION_ID".into(),
+                    req.id.clone()
+                ),
             ]
             .into(),
         ),
         stderr_target: "extension_host_stderr",
-        // Protocol integrity: extension-host stdout must be pure ndjson
+        // Protocol integrity: extension-host stdout must be
+        // pure ndjson
         isolate_env: true,
     })
     .await
@@ -84,8 +98,11 @@ async fn start_handler(
         Ok(s) => s,
         Err((code, msg)) => {
             return (
-                StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                Json(serde_json::json!({"error": msg, "id": req.id})),
+                StatusCode::from_u16(code)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(serde_json::json!({
+                    "error": msg, "id": req.id
+                })),
             );
         }
     };

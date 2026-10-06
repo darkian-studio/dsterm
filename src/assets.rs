@@ -1,25 +1,22 @@
 //! Installed-asset discovery (`GET /assets/v1/discover`).
 //!
-//! Frozen contract: `docs/assets-discovery-v1.md` in the DS repo. DS
-//! discovers DS-installed assets through dsterm and caches the result
-//! in memory (rebuild on empty, patch on mutation) — no stored
-//! records anywhere, so reinstalling DS cannot orphan payloads.
-//!
-//! dsterm knows the standard layout beneath the given parent dir and
-//! nothing else: `<root>/models/**/*.gguf` are models,
+//! dsterm knows the standard layout beneath the given parent
+//! dir and nothing else: `<root>/models/**/*.gguf` are models,
 //! `<root>/dspacks/*/` dirs holding `manifest.json` are packs.
-//! Everything else is ignored. Missing/unreadable roots yield an
-//! empty list (unknown is not missing).
+//! Everything else is ignored. Missing/unreadable roots yield
+//! an empty list (unknown is not missing).
 
 use axum::{extract::Query, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Cap on walked filesystem entries per discovery call: a hostile or
-/// absurd `$HOME` tree must not turn one request into a full-disk scan.
+/// Cap on walked filesystem entries per discovery call: a
+/// hostile or absurd `$HOME` tree must not turn one request
+/// into a full-disk scan.
 const MAX_WALK_ENTRIES: usize = 20000;
 
-/// Cap on recursion depth below the root (layout is shallow by design).
+/// Cap on recursion depth below the root (layout is shallow
+/// by design).
 const MAX_WALK_DEPTH: usize = 8;
 
 pub fn assets_routes() -> Router {
@@ -90,15 +87,17 @@ fn walk_assets(root: &Path) -> Vec<DiscoveredAsset> {
                 Ok(file_type) => file_type,
                 Err(_) => continue,
             };
-            // Never follow symlinks: same-UID swaps between check and
-            // read are out of scope, and cycles would hang the walk.
+            // Never follow symlinks: same-UID swaps between
+            // check and read are out of scope, and cycles
+            // would hang the walk.
             if file_type.is_symlink() {
                 continue;
             }
             if file_type.is_dir() {
-                // Packs are direct children of `dspacks/` holding a
-                // manifest; they are leaves (entries/ holds thousands of
-                // files the inventory doesn't need).
+                // Packs are direct children of `dspacks/`
+                // holding a manifest; they are leaves
+                // (entries/ holds thousands of files the
+                // inventory doesn't need).
                 if path.parent() == Some(packs_dir.as_path()) && is_pack_dir(&path) {
                     if let Some(name) = dir_name(&path) {
                         assets.push(DiscoveredAsset {
@@ -111,7 +110,6 @@ fn walk_assets(root: &Path) -> Vec<DiscoveredAsset> {
                     }
                     continue;
                 }
-                // Dot-dirs (staging, trash, caches) are never inventory.
                 if dir_name(&path).is_some() {
                     stack.push((path, depth + 1));
                 }
@@ -146,13 +144,10 @@ fn walk_assets(root: &Path) -> Vec<DiscoveredAsset> {
     assets
 }
 
-/// A pack dir holds `manifest.json` directly beneath it.
 fn is_pack_dir(path: &Path) -> bool {
     path.join("manifest.json").is_file()
 }
 
-/// Model files are `.gguf` payloads under the `models/` subtree only —
-/// same-named files elsewhere (caches, staging) are not inventory.
 fn is_model_file(models_dir: &Path, path: &Path) -> bool {
     path.starts_with(models_dir)
         && path
@@ -160,7 +155,6 @@ fn is_model_file(models_dir: &Path, path: &Path) -> bool {
             .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
 }
 
-/// Final path component as UTF-8 (lossy: inventory only, never opened).
 fn dir_name(path: &Path) -> Option<String> {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -204,12 +198,9 @@ mod tests {
         std::fs::create_dir_all(pack_dir.join("entries")).unwrap();
         std::fs::write(pack_dir.join("manifest.json"), b"{}").unwrap();
         std::fs::write(pack_dir.join("entries").join("a.json"), b"{}").unwrap();
-        // Manifest-less dir: not a pack.
         std::fs::create_dir_all(root.join("dspacks").join("empty")).unwrap();
-        // Dot-dir content is never inventory.
         std::fs::create_dir_all(root.join(".staging").join("x")).unwrap();
         std::fs::write(root.join(".staging").join("x").join("y.gguf"), b"nope").unwrap();
-        // Same-named payload outside models/: not a model.
         std::fs::create_dir_all(root.join("downloads")).unwrap();
         std::fs::write(root.join("downloads").join("z.gguf"), b"nope").unwrap();
     }
@@ -236,8 +227,8 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap())
     }
 
-    /// Minimal percent-encoding for absolute Unix paths in tests
-    /// (no extra dependency for one query param).
+    /// Minimal percent-encoding for absolute Unix paths in
+    /// tests (no extra dependency for one query param).
     fn urlencoding_like(path: &str) -> String {
         path.replace('%', "%25").replace(' ', "%20")
     }

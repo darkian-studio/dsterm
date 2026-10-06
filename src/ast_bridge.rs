@@ -1,8 +1,9 @@
 //! AST scope chain HTTP endpoint backed by tree-sitter.
 //!
-//! Single endpoint: `POST /ast/scope`. The request carries the full document
-//! content along with a monotonic `version`; identical-version repeat calls
-//! hit a 256-entry LRU cache and skip parsing entirely.
+//! Single endpoint: `POST /ast/scope`. The request carries
+//! the full document content along with a monotonic
+//! `version`; identical-version repeat calls hit a 256-entry
+//! LRU cache and skip parsing entirely.
 
 mod cache;
 mod languages;
@@ -48,12 +49,15 @@ pub async fn ast_scope(
         }
     }
 
-    const MAX_AST_BYTES: usize = 2 * 1024 * 1024; // 2 MB
-    if req.content.len() > MAX_AST_BYTES {
+    const MAX: usize = 2 * 1024 * 1024;
+    if req.content.len() > MAX {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(serde_json::json!({
-                "error": format!("content too large: {} bytes (limit {MAX_AST_BYTES})", req.content.len())
+                "error": format!(
+                    "content too large: {} bytes (limit {MAX})",
+                    req.content.len()
+                )
             })),
         )
             .into_response();
@@ -63,7 +67,9 @@ pub async fn ast_scope(
     if parser.set_language(&language).is_err() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "failed to set language" })),
+            Json(serde_json::json!({
+                "error": "failed to set language"
+            })),
         )
             .into_response();
     }
@@ -74,7 +80,9 @@ pub async fn ast_scope(
         None => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "parse failed" })),
+                Json(serde_json::json!({
+                    "error": "parse failed"
+                })),
             )
                 .into_response();
         }

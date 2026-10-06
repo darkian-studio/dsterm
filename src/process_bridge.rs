@@ -1,6 +1,7 @@
-//! Shared process-lifecycle bridge used by LSP, DAP, MCP, extension-host, and
-//! agent bridges. Each bridge passes a prefix string; this module provides the
-//! fully-wired axum Router so the per-bridge files are ~5 lines.
+//! Shared process-lifecycle bridge used by LSP, DAP, MCP,
+//! extension-host, and agent bridges. Each bridge passes a
+//! prefix string; this module provides the fully-wired axum
+//! Router so the per-bridge files are ~5 lines.
 
 use crate::proto_frame::{encode_frame, FrameDecoder};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -21,9 +22,9 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task;
 use tokio::time::timeout;
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 // Core types
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 
 #[allow(dead_code)]
 pub struct ProcessSession {
@@ -39,15 +40,13 @@ pub fn new_registry() -> ProcessRegistry {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 // Bridge configuration
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FramingMode {
-    /// Content-Length header framing (LSP, DAP, MCP).
     ContentLength,
-    /// Newline-delimited JSON (extension-host, agent).
     Ndjson,
 }
 
@@ -57,9 +56,9 @@ pub struct BridgeConfig {
     pub framing: FramingMode,
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 // Request / response types (shared across all bridges)
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 
 #[derive(Deserialize)]
 pub struct StartRequest {
@@ -78,9 +77,9 @@ pub struct KillRequest {
     pub all: Option<bool>,
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 // Spawn
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 
 pub struct SpawnConfig {
     pub command: String,
@@ -88,9 +87,10 @@ pub struct SpawnConfig {
     pub cwd: Option<String>,
     pub env: Option<HashMap<String, String>>,
     pub stderr_target: &'static str,
-    /// Protocol integrity: children whose stdout is a strict ndjson stream
-    /// (one JSON object per line, e.g. extension-host) must not inherit
-    /// ambient env that can make them emit non-JSON to that stream.
+    /// Protocol integrity: children whose stdout is a strict
+    /// ndjson stream (one JSON object per line, e.g.
+    /// extension-host) must not inherit ambient env that can
+    /// make them emit non-JSON to that stream.
     pub isolate_env: bool,
 }
 
@@ -148,17 +148,17 @@ pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, 
     }))
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 // Kill helpers
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 
-/// Kill a single session, waiting up to `timeout_secs` for a clean exit.
 pub async fn kill_session(session: &ProcessSession, timeout_secs: u64) {
     let mut child = match session.child.try_lock() {
         Ok(g) => g,
         Err(_) => {
             tracing::warn!(pid = %session.pid, "kill_session: child lock contended, waiting");
-            // Fall back to blocking lock to guarantee kill (avoid silent no-op)
+            // Fall back to blocking lock to guarantee kill
+            // (avoid silent no-op)
             session.child.lock().await
         }
     };
@@ -172,7 +172,6 @@ pub async fn kill_session(session: &ProcessSession, timeout_secs: u64) {
     }
 }
 
-/// Remove and kill every session in the registry. Returns the IDs killed.
 pub async fn kill_all(registry: &ProcessRegistry, timeout_secs: u64) -> Vec<String> {
     let ids: Vec<String> = registry.read().await.keys().cloned().collect();
     let mut killed = Vec::with_capacity(ids.len());
@@ -186,7 +185,6 @@ pub async fn kill_all(registry: &ProcessRegistry, timeout_secs: u64) -> Vec<Stri
     killed
 }
 
-/// Remove and kill a single session by ID. Returns `true` if found.
 pub async fn kill_one(registry: &ProcessRegistry, id: &str, timeout_secs: u64) -> bool {
     let session = registry.write().await.remove(id);
     if let Some(session) = session {
@@ -197,9 +195,9 @@ pub async fn kill_one(registry: &ProcessRegistry, id: &str, timeout_secs: u64) -
     }
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 // Axum handlers (generic over bridge prefix)
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 
 async fn start_handler(
     State(registry): State<ProcessRegistry>,
@@ -222,8 +220,9 @@ async fn start_handler(
         cwd: req.cwd.clone(),
         env: req.env.clone(),
         stderr_target: config.stderr_target,
-        // Protocol integrity: generic bridges (LSP/DAP) need broad env
-        // (CARGO_HOME, GOPATH, venv) — do not isolate.
+        // Protocol integrity: generic bridges (LSP/DAP) need
+        // broad env (CARGO_HOME, GOPATH, venv) — do not
+        // isolate.
         isolate_env: false,
     })
     .await
@@ -237,25 +236,36 @@ async fn start_handler(
         }
     };
 
-    // Re-check under write lock to close race where two concurrent starts passed the read check
+    // Re-check under write lock to close race where two
+    // concurrent starts passed the read check
     {
         let mut registry = registry.write().await;
         if registry.contains_key(&req.id) {
-            // Another task raced us — clean up the process we just spawned
-            let kill_timeout = crate::terminal::get_config().bridges.kill_timeout_secs;
+            // Another task raced us — clean up the process we
+            // just spawned
+            let kill_timeout = crate::terminal::get_config()
+                .bridges.kill_timeout_secs;
             kill_session(&session, kill_timeout).await;
             return (
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "session exists", "id": req.id})),
+                Json(serde_json::json!({
+                    "error": "session exists", "id": req.id
+                })),
             );
         }
         registry.insert(req.id.clone(), session);
     }
-    let ws_path = format!("/{}/{}", config.prefix, urlencoding::encode(&req.id));
+    let ws_path = format!(
+        "/{}/{}",
+        config.prefix,
+        urlencoding::encode(&req.id)
+    );
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({ "id": req.id, "ws_path": ws_path })),
+        Json(serde_json::json!({
+            "id": req.id, "ws_path": ws_path
+        })),
     )
 }
 async fn kill_handler(
@@ -264,12 +274,15 @@ async fn kill_handler(
     body: Option<Json<KillRequest>>,
 ) -> impl IntoResponse {
     let req = body.map(|Json(b)| b).unwrap_or_default();
-    let kill_timeout = crate::terminal::get_config().bridges.kill_timeout_secs;
+    let kill_timeout = crate::terminal::get_config()
+        .bridges.kill_timeout_secs;
 
     if req.id.is_none() && req.all != Some(true) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "must provide id or all:true"})),
+            Json(serde_json::json!({
+                "error": "must provide id or all:true"
+            })),
         )
             .into_response();
     }
@@ -298,12 +311,18 @@ async fn websocket_handler(
 ) -> impl IntoResponse {
     let session = registry.read().await.get(&id).cloned();
     if session.is_none() {
-        return (StatusCode::NOT_FOUND, "session not found").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "session not found"
+        ).into_response();
     }
     let session = session.unwrap();
     let stdout = session.stdout.lock().await.take();
     if stdout.is_none() {
-        return (StatusCode::CONFLICT, "stdout already claimed").into_response();
+        return (
+            StatusCode::CONFLICT,
+            "stdout already claimed"
+        ).into_response();
     }
     let stdout = stdout.unwrap();
     let framing = config.framing;
@@ -311,20 +330,33 @@ async fn websocket_handler(
     ws.on_upgrade(move |socket| async move {
         match framing {
             FramingMode::ContentLength => {
-                content_length_pump(socket, id, registry, session, stdout).await;
+                content_length_pump(
+                    socket,
+                    id,
+                    registry,
+                    session,
+                    stdout
+                ).await;
             }
             FramingMode::Ndjson => {
-                ndjson_pump(socket, id, registry, session, stdout).await;
+                ndjson_pump(
+                    socket,
+                    id,
+                    registry,
+                    session,
+                    stdout
+                ).await;
             }
         }
     })
 }
 
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 // Public: wire everything into an axum Router
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
 
-/// Returns a fully-wired `Router<ProcessRegistry>` for the given bridge prefix.
+/// Returns a fully-wired `Router<ProcessRegistry>` for the
+/// given bridge prefix.
 ///
 /// ```ignore
 /// // In lsp_bridge.rs:
@@ -333,7 +365,9 @@ async fn websocket_handler(
 /// }
 /// ```
 pub fn routes(prefix: &'static str) -> Router<ProcessRegistry> {
-    let stderr_target: &'static str = Box::leak(format!("{prefix}_stderr").into_boxed_str());
+    let stderr_target: &'static str = Box::leak(
+        format!("{prefix}_stderr").into_boxed_str()
+    );
 
     let framing = match prefix {
         "extension-host" | "agents" => FramingMode::Ndjson,
@@ -353,9 +387,10 @@ pub fn routes(prefix: &'static str) -> Router<ProcessRegistry> {
         .layer(Extension(config))
 }
 
-// ---------------------------------------------------------------------------
-// WebSocket pumps (kept here — used by the generic websocket_handler)
-// ---------------------------------------------------------------------------
+// ------------------------------------------------------------
+// WebSocket pumps (kept here — used by the generic
+// websocket_handler)
+// ------------------------------------------------------------
 
 async fn content_length_pump(
     socket: WebSocket,
@@ -374,7 +409,8 @@ async fn content_length_pump(
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         let frame = encode_frame(&text);
-                        let mut stdin = session.stdin.lock().await;
+                        let mut stdin = session.stdin.lock()
+                            .await;
                         let _ = stdin.write_all(&frame).await;
                         let _ = stdin.flush().await;
                     }

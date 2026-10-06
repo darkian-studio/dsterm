@@ -1,6 +1,6 @@
-//! `dsterm startup` — install an OS-native supervisor entry so the relay host
-//! starts on boot. Uses a Termux:Boot script on Android/Termux, a systemd user
-//! unit on Linux, a launchd LaunchAgent on macOS, and a per-user Startup-folder
+//! `dsterm startup` — install an OS-native supervisor entry
+//! so the relay host starts on boot. Uses a Termux:Boot
+//! script on Android/Termux, a systemd user unit on Linux, a //! launchd LaunchAgent on macOS, and a per-user Startup-folder
 //! script on Windows. PM2 is intentionally NOT used.
 use std::path::PathBuf;
 
@@ -13,8 +13,9 @@ pub fn home_dir() -> anyhow::Result<PathBuf> {
 }
 
 fn is_termux() -> bool {
-    // Rely on the env var Termux always sets. A `/data/data/com.termux` path
-    // probe false-positives as `C:\data\data\com.termux` on Windows.
+    // Rely on the env var Termux always sets. A
+    // `/data/data/com.termux` path probe false-positives as
+    // `C:\data\data\com.termux` on Windows.
     std::env::var("TERMUX_VERSION").is_ok()
 }
 
@@ -95,7 +96,9 @@ pub fn install() -> anyhow::Result<String> {
 
     match std::env::consts::OS {
         "macos" => {
-            let dir = home.join("Library").join("LaunchAgents");
+            let dir = home
+                .join("Library")
+                .join("LaunchAgents");
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("io.darkian.dsterm.plist");
             std::fs::write(&path, launchd_plist(&exe))?;
@@ -108,7 +111,9 @@ pub fn install() -> anyhow::Result<String> {
         "windows" => {
             let startup = std::env::var_os("APPDATA")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+                .unwrap_or_else(
+                    || home.join("AppData").join("Roaming")
+                )
                 .join("Microsoft")
                 .join("Windows")
                 .join("Start Menu")

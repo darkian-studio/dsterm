@@ -32,9 +32,10 @@ use crate::ai::pool::{
     LoadLockManager, LoadLockManagerState, ModelPoolInner, ModelPoolState, PoolConfig,
 };
 
-/// Total physical RAM in bytes (MemTotal from /proc/meminfo), used as the
-/// RAM budget for the auto context-size heuristic.
-/// Cached after first read to avoid per-inference /proc parsing.
+/// Total physical RAM in bytes (MemTotal from
+/// /proc/meminfo), used as the RAM budget for the auto
+/// context-size heuristic. Cached after first read to avoid
+/// per-inference /proc parsing.
 #[cfg(feature = "llama")]
 fn read_total_memory_bytes() -> u64 {
     use std::sync::OnceLock;
@@ -111,11 +112,6 @@ pub struct ModelRegistryInner {
 }
 
 impl ModelRegistryInner {
-    /// In-memory only: install records live as files under the runtime
-    /// `~/.ds` layout and are discovered via `GET /assets/v1/discover`,
-    /// never persisted here. A restart starts empty; DS refills from
-    /// discovery. The stale `ai_model_registry.json` on disk is simply
-    /// never read or written again.
     pub fn load() -> Self {
         Self { models: Vec::new() }
     }
@@ -557,9 +553,9 @@ async fn ai_session_state(
     ok_response("inference.sessionState", json!({ "session": data }))
 }
 
-/// Resolve an empty model_id to the pool_id of the first loaded model so
-/// clients that never send a model id (e.g. the DS app's local chat
-/// transport) still work against the loaded model.
+/// Resolve an empty model_id to the pool_id of the first
+/// loaded model so clients that never send a model id still
+/// work against the loaded model.
 async fn resolve_model_id(state: &AiState, model_id: &str) -> Result<String, AiError> {
     if !model_id.is_empty() {
         return Ok(model_id.to_string());
@@ -654,8 +650,9 @@ async fn ai_generate(
     }
 }
 
-/// Run inference through the shared pipeline for HTTP endpoints.
-/// Extracts sampling params from the JSON body and executes via the Scheduler.
+/// Run inference through the shared pipeline for HTTP
+///endpoints. Extracts sampling params from the JSON body and
+/// executes via the Scheduler.
 #[cfg(feature = "llama")]
 async fn ai_generate_shared(
     state: AiState,
@@ -1078,7 +1075,8 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         .unwrap_or("chat")
         .to_string();
 
-    // Validate that prompt or messages are present (will be resolved by run_generation via InferenceRequest)
+    // Validate that prompt or messages are present (will be
+    // resolved by run_generation via InferenceRequest)
     let has_prompt = params
         .get("prompt")
         .and_then(|v| v.as_str())
@@ -1108,8 +1106,8 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
         return;
     }
 
-    // No model_id provided: fall back to the first loaded model so local
-    // clients (DS chat, which never sends a model id) work out of the box.
+    // No model_id provided: fall back to the first loaded
+    // model so local clients work out of the box.
     let model_id = match resolve_model_id(&state, &model_id).await {
         Ok(id) => id,
         Err(e) => {
@@ -1150,7 +1148,8 @@ async fn handle_generate_stream(socket: WebSocket, state: AiState) {
             .insert(session_id.clone(), cancel.clone());
     }
 
-    // FIM priority: FIM requests run at higher priority for responsive editor
+    // FIM priority: FIM requests run at higher priority for
+    // responsive editor
     let priority = if mode == "fim" { 10i32 } else { 0i32 };
 
     let result = run_generation(
@@ -1258,8 +1257,9 @@ async fn run_generation(
         ))
         .await;
 
-    // The backend resolves the prompt itself (native chat template for chat
-    // mode); it needs the architecture for FIM template selection.
+    // The backend resolves the prompt itself (native chat
+    // template for chat mode); it needs the architecture for
+    // FIM template selection.
     req.architecture = arch;
 
     if req.n_ctx == 0 {
@@ -1720,12 +1720,14 @@ mod tests {
             .unwrap();
         #[cfg(not(feature = "llama"))]
         {
-            // Without llama backend, generate must fail loudly, not silently succeed
+            // Without llama backend, generate must fail
+            // loudly, not silently succeed
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         }
         #[cfg(feature = "llama")]
         {
-            // With llama backend but no loaded model, returns model_not_found
+            // With llama backend but no loaded model,
+            // returns model_not_found
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
         }
     }

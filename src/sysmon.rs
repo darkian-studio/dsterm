@@ -52,7 +52,9 @@ fn read_battery() -> Option<BatteryInfo> {
         if !is_battery {
             continue;
         }
-        let percent = match fs::read_to_string(path.join("capacity")) {
+        let percent = match fs::read_to_string(
+            path.join("capacity")
+        ) {
             Ok(value) => match value.trim().parse::<u8>() {
                 Ok(percent) => percent,
                 Err(_) => continue,
@@ -71,7 +73,9 @@ static CACHE: OnceLock<std::sync::Mutex<Option<(Instant, serde_json::Value)>>> =
 static SYSTEM: OnceLock<std::sync::Mutex<System>> = OnceLock::new();
 
 pub fn snapshot_json() -> serde_json::Value {
-    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(None));
+    let cache = CACHE.get_or_init(
+        || std::sync::Mutex::new(None)
+    );
     if let Ok(guard) = cache.lock() {
         if let Some((ts, val)) = guard.as_ref() {
             if ts.elapsed() < Duration::from_secs(1) {
@@ -80,9 +84,9 @@ pub fn snapshot_json() -> serde_json::Value {
         }
     }
     let mut system_guard = SYSTEM
-        .get_or_init(|| std::sync::Mutex::new(System::new_all()))
-        .lock()
-        .unwrap();
+        .get_or_init(
+            || std::sync::Mutex::new(System::new_all())
+        ).lock().unwrap();
     let system = &mut *system_guard;
     system.refresh_all();
     let cpus = system.cpus();
