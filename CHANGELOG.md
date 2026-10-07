@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Repaired a stray line in `src/lsp.rs` that broke parsing of the file;
+  full-crate `cargo fmt` is clean.
+- Stripped process-phase and ticket references from code comments; the
+  reason each comment gives now stands on its own.
+
+### Removed
+- `docs/SHELLULAR_INTEGRATION_TRACKING.md` — it tracked a scratch file
+  (`.tmp/shellular-dsterm.md`) that is not in the repo.
+
 ## [1.13.0] - 2026-10-05
 
 ### Added

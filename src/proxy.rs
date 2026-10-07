@@ -80,9 +80,7 @@ pub async fn proxy_http(Json(req): Json<HttpProxyRequest>) -> impl IntoResponse 
         return forbidden();
     }
     if !is_localhost(&req.url) {
-        return bad_request(
-            "Only localhost targets are allowed"
-        );
+        return bad_request("Only localhost targets are allowed");
     }
     let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
     let method = match reqwest::Method::from_bytes(method.as_bytes()) {
@@ -180,9 +178,7 @@ pub async fn proxy_ws(
         return forbidden();
     }
     if !is_localhost(&query.url) {
-        return bad_request(
-            "Only localhost targets are allowed"
-        );
+        return bad_request("Only localhost targets are allowed");
     }
     ws.on_upgrade(move |socket| proxy_ws_pump(socket, query.url))
 }
@@ -192,12 +188,8 @@ async fn proxy_ws_pump(socket: WebSocket, url: String) {
     let upstream = match tokio_tungstenite::connect_async(url.as_str()).await {
         Ok((upstream, _)) => upstream,
         Err(e) => {
-            tracing::warn!(
-                "proxy upstream connect failed: {e}"
-            );
-            let _ = client_send.send(
-                Message::Close(None)
-            ).await;
+            tracing::warn!("proxy upstream connect failed: {e}");
+            let _ = client_send.send(Message::Close(None)).await;
             return;
         }
     };

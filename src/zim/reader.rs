@@ -34,7 +34,7 @@ impl From<zim_reader::Error> for Fault {
 }
 
 /// Lookup namespaces in order: new scheme first, then legacy homes for
-/// old-scheme content and images (recorded rule, §19 review point 4:
+/// old-scheme content and images (recorded rule:
 /// entry-key space and URL space stay distinct — DS resolves URLs to
 /// these keys client-side before calling lookup).
 const LOOKUP_ORDER: [Namespace; 4] = [

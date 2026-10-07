@@ -96,9 +96,7 @@ pub fn install() -> anyhow::Result<String> {
 
     match std::env::consts::OS {
         "macos" => {
-            let dir = home
-                .join("Library")
-                .join("LaunchAgents");
+            let dir = home.join("Library").join("LaunchAgents");
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("io.darkian.dsterm.plist");
             std::fs::write(&path, launchd_plist(&exe))?;
@@ -111,9 +109,7 @@ pub fn install() -> anyhow::Result<String> {
         "windows" => {
             let startup = std::env::var_os("APPDATA")
                 .map(PathBuf::from)
-                .unwrap_or_else(
-                    || home.join("AppData").join("Roaming")
-                )
+                .unwrap_or_else(|| home.join("AppData").join("Roaming"))
                 .join("Microsoft")
                 .join("Windows")
                 .join("Start Menu")

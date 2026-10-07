@@ -58,7 +58,7 @@ const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Stable §6.10 failure with its HTTP status.
+/// Stable failure with its HTTP status.
 #[derive(Debug)]
 struct ZimError {
     code: &'static str,

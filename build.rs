@@ -34,9 +34,7 @@ fn build_llama() {
 
     let dst = cfg.build();
 
-    println!(
-        "cargo:rustc-link-search=native={}/lib", dst.display()
-    );
+    println!("cargo:rustc-link-search=native={}/lib", dst.display());
     // Order matters for static archives with single-pass
     // linkers (e.g. the binutils 2.32 shipped with musl
     // cross): ggml-backend-reg.cpp in libggml references

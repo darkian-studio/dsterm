@@ -87,9 +87,7 @@ fn get_port_file_path(program: &str, session: Option<&str>) -> std::path::PathBu
 
     let filename = match session {
         Some(s) => format!("{}_{}", server_name, s),
-        None => format!(
-            "{}_{}", server_name, std::process::id()
-        ),
+        None => format!("{}_{}", server_name, std::process::id()),
     };
 
     dir.join(filename)
@@ -155,11 +153,9 @@ pub async fn start_lsp_server(
         .with_state(state)
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(
-                    DefaultMakeSpan::default()
-                        .include_headers(true)
-                ),
-        ).layer(cors);
+                .make_span_with(DefaultMakeSpan::default().include_headers(true)),
+        )
+        .layer(cors);
 
     let bind_port = port.unwrap_or(0);
     let addr: std::net::SocketAddr = (host, bind_port).into();
@@ -172,9 +168,7 @@ pub async fn start_lsp_server(
             tracing::info!("listening on {}", actual_addr);
 
             // Write port to discovery file
-            let port_file_path = get_port_file_path(
-                &config.program, session.as_deref()
-            );
+            let port_file_path = get_port_file_path(&config.program, session.as_deref());
             if let Err(e) = write_port_file(&port_file_path, actual_port) {
                 tracing::warn!("Failed to write port file: {}", e);
             } else {
@@ -247,9 +241,7 @@ async fn get_lsp_status(
     })
 }
 
-/// Run the bridge between a WebSocket client and an LSP
-/// 
-server process
+/// Run the bridge between a WebSocket client and an LSP server process
 async fn run_bridge(
     socket: WebSocket,
     config: Arc<LspBridgeConfig>,
@@ -270,18 +262,13 @@ async fn run_bridge(
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!(
-            "Failed to spawn LSP command '{}': {e}",
-            config.program
-        ))?;
+        .map_err(|e| format!("Failed to spawn LSP command '{}': {e}", config.program))?;
 
     tracing::trace!("running {}", config.program);
 
     let pid = child
         .id()
-        .ok_or_else(
-            || "Failed to get LSP process ID".to_string()
-        )?;
+        .ok_or_else(|| "Failed to get LSP process ID".to_string())?;
 
     {
         let mut procs = processes.write().await;
@@ -297,15 +284,11 @@ async fn run_bridge(
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(
-            || "Failed to capture LSP stdin".to_string()
-        )?;
+        .ok_or_else(|| "Failed to capture LSP stdin".to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(
-            || "Failed to capture LSP stdout".to_string()
-        )?;
+        .ok_or_else(|| "Failed to capture LSP stdout".to_string())?;
 
     if let Some(stderr) = child.stderr.take() {
         let program_name = config.program.clone();
@@ -489,12 +472,7 @@ impl Encoder<String> for LspFrameCodec {
             // + "\r\n\r\n" (4) + body
             dst.reserve(item.len() + number_of_digits(item.len()) + 20);
             let mut writer = dst.writer();
-            write!(
-                writer,
-                "Content-Length: {}\r\n\r\n{}",
-                item.len(),
-                item
-            )?;
+            write!(writer, "Content-Length: {}\r\n\r\n{}", item.len(), item)?;
             writer.flush()?;
         }
         Ok(())

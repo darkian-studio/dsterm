@@ -22,15 +22,9 @@ pub enum FrameError {
 impl std::fmt::Display for FrameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingHeader => write!(
-                f, "missing required `Content-Length` header"
-            ),
-            Self::InvalidLength => write!(
-                f, "unable to parse content length"
-            ),
-            Self::Utf8(e) => write!(
-                f, "frame contains invalid UTF8: {}", e
-            ),
+            Self::MissingHeader => write!(f, "missing required `Content-Length` header"),
+            Self::InvalidLength => write!(f, "unable to parse content length"),
+            Self::Utf8(e) => write!(f, "frame contains invalid UTF8: {}", e),
         }
     }
 }

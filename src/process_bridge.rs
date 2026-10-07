@@ -243,8 +243,7 @@ async fn start_handler(
         if registry.contains_key(&req.id) {
             // Another task raced us — clean up the process we
             // just spawned
-            let kill_timeout = crate::terminal::get_config()
-                .bridges.kill_timeout_secs;
+            let kill_timeout = crate::terminal::get_config().bridges.kill_timeout_secs;
             kill_session(&session, kill_timeout).await;
             return (
                 StatusCode::CONFLICT,
@@ -255,11 +254,7 @@ async fn start_handler(
         }
         registry.insert(req.id.clone(), session);
     }
-    let ws_path = format!(
-        "/{}/{}",
-        config.prefix,
-        urlencoding::encode(&req.id)
-    );
+    let ws_path = format!("/{}/{}", config.prefix, urlencoding::encode(&req.id));
 
     (
         StatusCode::OK,
@@ -274,8 +269,7 @@ async fn kill_handler(
     body: Option<Json<KillRequest>>,
 ) -> impl IntoResponse {
     let req = body.map(|Json(b)| b).unwrap_or_default();
-    let kill_timeout = crate::terminal::get_config()
-        .bridges.kill_timeout_secs;
+    let kill_timeout = crate::terminal::get_config().bridges.kill_timeout_secs;
 
     if req.id.is_none() && req.all != Some(true) {
         return (
@@ -311,18 +305,12 @@ async fn websocket_handler(
 ) -> impl IntoResponse {
     let session = registry.read().await.get(&id).cloned();
     if session.is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            "session not found"
-        ).into_response();
+        return (StatusCode::NOT_FOUND, "session not found").into_response();
     }
     let session = session.unwrap();
     let stdout = session.stdout.lock().await.take();
     if stdout.is_none() {
-        return (
-            StatusCode::CONFLICT,
-            "stdout already claimed"
-        ).into_response();
+        return (StatusCode::CONFLICT, "stdout already claimed").into_response();
     }
     let stdout = stdout.unwrap();
     let framing = config.framing;
@@ -330,22 +318,10 @@ async fn websocket_handler(
     ws.on_upgrade(move |socket| async move {
         match framing {
             FramingMode::ContentLength => {
-                content_length_pump(
-                    socket,
-                    id,
-                    registry,
-                    session,
-                    stdout
-                ).await;
+                content_length_pump(socket, id, registry, session, stdout).await;
             }
             FramingMode::Ndjson => {
-                ndjson_pump(
-                    socket,
-                    id,
-                    registry,
-                    session,
-                    stdout
-                ).await;
+                ndjson_pump(socket, id, registry, session, stdout).await;
             }
         }
     })
@@ -365,9 +341,7 @@ async fn websocket_handler(
 /// }
 /// ```
 pub fn routes(prefix: &'static str) -> Router<ProcessRegistry> {
-    let stderr_target: &'static str = Box::leak(
-        format!("{prefix}_stderr").into_boxed_str()
-    );
+    let stderr_target: &'static str = Box::leak(format!("{prefix}_stderr").into_boxed_str());
 
     let framing = match prefix {
         "extension-host" | "agents" => FramingMode::Ndjson,

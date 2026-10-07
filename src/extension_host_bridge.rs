@@ -73,18 +73,9 @@ async fn start_handler(
         cwd: None,
         env: Some(
             [
-                (
-                    "DS_EXTENSIONS_DIR".into(),
-                    req.extensions_dir
-                ),
-                (
-                    "DS_WORKSPACE_ROOT".into(),
-                    req.workspace_root
-                ),
-                (
-                    "DS_SESSION_ID".into(),
-                    req.id.clone()
-                ),
+                ("DS_EXTENSIONS_DIR".into(), req.extensions_dir),
+                ("DS_WORKSPACE_ROOT".into(), req.workspace_root),
+                ("DS_SESSION_ID".into(), req.id.clone()),
             ]
             .into(),
         ),
@@ -98,8 +89,7 @@ async fn start_handler(
         Ok(s) => s,
         Err((code, msg)) => {
             return (
-                StatusCode::from_u16(code)
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 Json(serde_json::json!({
                     "error": msg, "id": req.id
                 })),

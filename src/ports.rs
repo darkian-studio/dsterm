@@ -54,10 +54,9 @@ fn inode_to_pid() -> HashMap<u64, u32> {
         return map;
     };
     for proc_entry in proc_entries.flatten() {
-        let Ok(pid) = proc_entry
-            .file_name()
-            .to_string_lossy()
-            .parse::<u32>() else { continue };
+        let Ok(pid) = proc_entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
         let fd_dir = proc_entry.path().join("fd");
         let Ok(fd_entries) = fs::read_dir(fd_dir) else {
             continue;
@@ -89,9 +88,7 @@ pub async fn list_ports() -> impl IntoResponse {
         ("/proc/net/udp6", "udp"),
     ]
     .into_iter()
-    .flat_map(
-        |(path, protocol)| parse_proc_net(path, protocol)
-    )
+    .flat_map(|(path, protocol)| parse_proc_net(path, protocol))
     .collect::<Vec<_>>();
     let inode_pid = inode_to_pid();
     let mut system = System::new_all();
@@ -106,12 +103,7 @@ pub async fn list_ports() -> impl IntoResponse {
         let process = pid.and_then(|pid| {
             system
                 .process(Pid::from_u32(pid))
-                .map(
-                    |process| process
-                        .name()
-                        .to_string_lossy()
-                        .into_owned()
-                )
+                .map(|process| process.name().to_string_lossy().into_owned())
         });
         ports.push(PortEntry {
             port,
@@ -142,32 +134,27 @@ pub async fn kill_port(Json(req): Json<KillPortRequest>) -> impl IntoResponse {
         )
             .into_response();
     }
-    let sockets = [
-        ("/proc/net/tcp", "tcp"),
-        ("/proc/net/tcp6", "tcp")
-    ].into_iter().flat_map(
-        |(path, protocol)| parse_proc_net(path, protocol)
-    ).filter(
-        |(port, _, _)| *port == req.port
-    ).collect::<Vec<_>>();
+    let sockets = [("/proc/net/tcp", "tcp"), ("/proc/net/tcp6", "tcp")]
+        .into_iter()
+        .flat_map(|(path, protocol)| parse_proc_net(path, protocol))
+        .filter(|(port, _, _)| *port == req.port)
+        .collect::<Vec<_>>();
     let inode_pid = inode_to_pid();
     let pids = sockets
         .iter()
-        .filter_map(
-            |(_, inode, _)| inode_pid.get(inode).copied()
-        ).collect::<HashSet<_>>();
+        .filter_map(|(_, inode, _)| inode_pid.get(inode).copied())
+        .collect::<HashSet<_>>();
     let mut killed = Vec::new();
     for pid in pids {
-        let result = unsafe {
-            libc::kill(pid as i32, libc::SIGKILL)
-        };
+        let result = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         if result == 0 {
             killed.push(pid);
         }
     }
     Json(serde_json::json!({
         "success": true, "killed": killed
-    })).into_response()
+    }))
+    .into_response()
 }
 
 #[cfg(windows)]
@@ -186,23 +173,14 @@ fn windows_rows_from_buffer<T: Copy>(buffer: &[u8]) -> Vec<T> {
     if row_size == 0 || buffer.len() < mem::size_of::<u32>() {
         return Vec::new();
     }
-    let count = unsafe {
-        ptr::read_unaligned(buffer.as_ptr().cast::<u32>())
-    } as usize;
-    let rows_available = (
-        buffer.len() - mem::size_of::<u32>()
-    ) / row_size;
+    let count = unsafe { ptr::read_unaligned(buffer.as_ptr().cast::<u32>()) } as usize;
+    let rows_available = (buffer.len() - mem::size_of::<u32>()) / row_size;
     let count = count.min(rows_available);
-    let first_row = unsafe {
-        buffer.as_ptr().add(mem::size_of::<u32>())
-    };
+    let first_row = unsafe { buffer.as_ptr().add(mem::size_of::<u32>()) };
 
     (0..count)
-        .map(|index| unsafe {
-            ptr::read_unaligned(
-                first_row.add(index * row_size).cast::<T>()
-            )
-        }).collect()
+        .map(|index| unsafe { ptr::read_unaligned(first_row.add(index * row_size).cast::<T>()) })
+        .collect()
 }
 
 #[cfg(windows)]
@@ -238,9 +216,7 @@ fn windows_table_rows<T: Copy>(
 fn windows_tcp_listeners() -> Vec<WindowsSocket> {
     use windows_sys::Win32::{
         NetworkManagement::IpHelper::{
-            GetExtendedTcpTable,
-            MIB_TCP6ROW_OWNER_PID,
-            MIB_TCPROW_OWNER_PID,
+            GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
             TCP_TABLE_OWNER_PID_LISTENER,
         },
         Networking::WinSock::{AF_INET, AF_INET6},
@@ -285,10 +261,7 @@ fn windows_tcp_listeners() -> Vec<WindowsSocket> {
 fn windows_udp_bindings() -> Vec<WindowsSocket> {
     use windows_sys::Win32::{
         NetworkManagement::IpHelper::{
-            GetExtendedUdpTable,
-            MIB_UDP6ROW_OWNER_PID,
-            MIB_UDPROW_OWNER_PID,
-            UDP_TABLE_OWNER_PID,
+            GetExtendedUdpTable, MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID, UDP_TABLE_OWNER_PID,
         },
         Networking::WinSock::{AF_INET, AF_INET6},
     };
@@ -297,13 +270,7 @@ fn windows_udp_bindings() -> Vec<WindowsSocket> {
         GetExtendedUdpTable(table, size, 0, AF_INET as u32, UDP_TABLE_OWNER_PID, 0)
     });
     let ipv6 = windows_table_rows::<MIB_UDP6ROW_OWNER_PID>(|table, size| unsafe {
-        GetExtendedUdpTable(
-            table,
-            size,
-            0,
-            AF_INET6 as u32,
-            UDP_TABLE_OWNER_PID,
-            0)
+        GetExtendedUdpTable(table, size, 0, AF_INET6 as u32, UDP_TABLE_OWNER_PID, 0)
     });
 
     ipv4.into_iter()
@@ -331,9 +298,7 @@ pub async fn list_ports() -> impl IntoResponse {
     let mut seen = HashSet::new();
     let mut ports = Vec::new();
     for socket in sockets {
-        if !seen.insert((
-            socket.port, socket.pid, socket.protocol
-        )) {
+        if !seen.insert((socket.port, socket.pid, socket.protocol)) {
             continue;
         }
         let process = system
@@ -400,7 +365,8 @@ pub async fn kill_port(Json(req): Json<KillPortRequest>) -> impl IntoResponse {
         .collect::<Vec<_>>();
     Json(serde_json::json!({
         "success": true, "killed": killed
-    })).into_response()
+    }))
+    .into_response()
 }
 
 pub fn ports_routes() -> axum::Router {

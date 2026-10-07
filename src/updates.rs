@@ -177,7 +177,7 @@ impl UpdateChecker {
         let platform = match std::env::consts::OS {
             "android" => "android",
             "linux" => {
-                // A linux-target binary running inside Termux 
+                // A linux-target binary running inside Termux
                 // still needs the Android assets;
                 // TERMUX_VERSION is the concrete signal Termux
                 // always sets (never a path guess).
@@ -188,18 +188,14 @@ impl UpdateChecker {
                 }
             }
             os @ ("macos" | "windows") => os,
-            other => return Err(format!(
-                "Unsupported OS: {other}"
-            ).into()),
+            other => return Err(format!("Unsupported OS: {other}").into()),
         };
 
         let arch_suffix = match std::env::consts::ARCH {
             "arm" => "armv7",
             "aarch64" => "arm64",
             "x86_64" => "x86_64",
-            other => return Err(format!(
-                "Unsupported architecture: {other}"
-            ).into()),
+            other => return Err(format!("Unsupported architecture: {other}").into()),
         };
 
         let ext = if platform == "windows" { ".exe" } else { "" };
@@ -209,9 +205,7 @@ impl UpdateChecker {
             .assets
             .iter()
             .find(|a| a.name == binary_name)
-            .ok_or_else(|| format!(
-                "No matching binary found for {binary_name}"
-            ))?;
+            .ok_or_else(|| format!("No matching binary found for {binary_name}"))?;
 
         let response = self
             .client
@@ -339,9 +333,7 @@ impl UpdateChecker {
             .file_name()
             .and_then(|n| n.to_str())
             .map(|n| n.to_string())
-            .ok_or_else(
-                || "Cannot determine binary file name".into()
-            )
+            .ok_or_else(|| "Cannot determine binary file name".into())
     }
 
     pub async fn stage_update(
