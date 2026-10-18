@@ -175,6 +175,30 @@ fn is_ipv6_private(host: &str) -> Option<String> {
     if let Ok(ip) = addr_str.parse::<std::net::Ipv6Addr>() {
         let segments = ip.segments();
 
+        // An IPv4-mapped or IPv4-compatible address is a v4 address wearing an
+        // IPv6 hat: ::ffff:127.0.0.1 is loopback and ::ffff:169.254.169.254 is
+        // cloud metadata. None of the segment tests below fire on it, because
+        // the v4 address lives in the low 32 bits rather than in any segment
+        // they inspect, and Ipv6Addr::is_loopback() is false for the mapped
+        // form. Unwrap first and apply the v4 rules. src/proxy.rs already
+        // does this; this path did not.
+        //
+        // Deliberately no early `return None` on a public embedded address:
+        // to_ipv4() can also unwrap IPv4-*compatible* forms such as ::1, and
+        // bailing out there would skip the ::1 loopback test further down and
+        // unblock it. Falling through is the safe direction.
+        if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
+            if v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || is_reserved_ipv4(&v4)
+            {
+                return Some(host.to_string());
+            }
+        }
+
         if segments[0] == 0xfe80 {
             return Some(host.to_string());
         }
@@ -261,6 +285,41 @@ mod tests {
     fn blocks_ipv6_loopback() {
         let p = NetworkPermissions::default();
         assert!(p.check("http://[::1]").is_err());
+    }
+
+    /// ::ffff:127.0.0.1 is loopback wearing an IPv6 hat. No segment test
+    /// fires on it and Ipv6Addr::is_loopback() is false for the mapped form,
+    /// so this reached dsterm's own loopback listener through /web/fetch.
+    #[test]
+    fn blocks_ipv4_mapped_ipv6_loopback() {
+        let p = NetworkPermissions::default();
+        assert!(p.check("http://[::ffff:127.0.0.1]").is_err());
+        assert!(p.check("http://[::ffff:7f00:1]").is_err());
+        assert!(p.check("https://[::ffff:127.0.0.1]:8767/fs/read").is_err());
+    }
+
+    /// Same trick aimed at the cloud metadata endpoint.
+    #[test]
+    fn blocks_ipv4_mapped_ipv6_link_local() {
+        let p = NetworkPermissions::default();
+        assert!(p.check("http://[::ffff:169.254.169.254]").is_err());
+        assert!(p.check("http://[::ffff:a9fe:a9fe]").is_err());
+    }
+
+    #[test]
+    fn blocks_ipv4_mapped_ipv6_private_ranges() {
+        let p = NetworkPermissions::default();
+        assert!(p.check("http://[::ffff:192.168.1.1]").is_err());
+        assert!(p.check("http://[::ffff:10.0.0.1]").is_err());
+        assert!(p.check("http://[::ffff:172.16.0.1]").is_err());
+    }
+
+    /// A public v4 address inside an IPv6 literal stays allowed -- the fix
+    /// unwraps and applies the v4 rules rather than rejecting the wrapper.
+    #[test]
+    fn allows_ipv4_mapped_public_address() {
+        let p = NetworkPermissions::default();
+        assert!(p.check("http://[::ffff:93.184.216.34]").is_ok());
     }
 
     #[test]
