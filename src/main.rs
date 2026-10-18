@@ -58,7 +58,7 @@ struct Cli {
     /// it the daemon serves its whole surface, including arbitrary shell
     /// execution and arbitrary process spawn, to anything that can reach the
     /// port. Ignored on loopback-only personal use.
-    #[arg(long = "token", global = true, env = "DSTERM_TOKEN")]
+    #[arg(long = "token", global = true)]
     token: Option<String>,
     #[arg(long = "config", global = true)]
     config_path: Option<String>,
@@ -300,6 +300,7 @@ async fn main() {
         ip,
         command_override,
         allow_any_origin,
+        token,
         config_path,
         remote,
         self_update,
