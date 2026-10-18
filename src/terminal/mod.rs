@@ -7,6 +7,7 @@ mod shell_integration;
 mod types;
 
 use axum::{
+    response::IntoResponse,
     routing::{get, post},
     Router,
 };
@@ -30,12 +31,113 @@ use types::Sessions;
 static DEFAULT_COMMAND: OnceLock<String> = OnceLock::new();
 static CONFIG: OnceLock<DstermConfig> = OnceLock::new();
 static LOOPBACK_TOKEN: OnceLock<String> = OnceLock::new();
+/// True when the operator supplied `--token`, i.e. authentication is actually
+/// in force. Distinct from "a token exists": a random one is always generated,
+/// but it is unknown to every caller, so honouring it would lock the IDE out.
+/// With no configured token the daemon runs unauthenticated and says so.
+static AUTH_REQUIRED: OnceLock<bool> = OnceLock::new();
 
 pub fn loopback_token() -> &'static str {
     LOOPBACK_TOKEN.get().map(|s| s.as_str()).unwrap_or("")
 }
-fn init_loopback_token() {
-    let _ = LOOPBACK_TOKEN.set(uuid::Uuid::new_v4().to_string());
+
+/// Whether every route requires `X-Dsterm-Loopback`.
+pub fn auth_required() -> bool {
+    AUTH_REQUIRED.get().copied().unwrap_or(false)
+}
+
+/// Establish the shared request token.
+///
+/// When [configured] is Some, that value is the token and authentication is
+/// enforced on every route. When it is None a random token is still generated
+/// — the relay and the `/fs` + `/zim` paths reference it — but it is unknown
+/// to any caller, so enforcing it would be equivalent to refusing all clients.
+fn init_loopback_token(configured: Option<String>) {
+    let (token, required) = match configured {
+        Some(value) if !value.trim().is_empty() => (value.trim().to_string(), true),
+        _ => (uuid::Uuid::new_v4().to_string(), false),
+    };
+    let _ = LOOPBACK_TOKEN.set(token);
+    let _ = AUTH_REQUIRED.set(required);
+}
+
+/// Header every authenticated client must present.
+pub const AUTH_HEADER: &str = "X-Dsterm-Loopback";
+
+/// The whole authentication decision, as a pure function of its inputs.
+///
+/// Split out from the middleware so every branch is unit-testable without
+/// mutating the process-global token, which a `OnceLock` can only set once.
+pub fn token_accepted(auth_required: bool, presented: Option<&str>, expected: &str) -> bool {
+    if !auth_required {
+        return true;
+    }
+    match presented {
+        Some(value) => {
+            !expected.is_empty() && constant_time_eq(value.as_bytes(), expected.as_bytes())
+        }
+        None => false,
+    }
+}
+
+/// Rejects any request that does not present the shared token, when one is
+/// configured.
+///
+/// This is the daemon's entire authentication story, and until now there was
+/// none: the router merged fifteen subsystems and layered only CORS and
+/// tracing. Everything below was reachable by anything that could open a
+/// socket — `POST /silent-exec` (arbitrary shell), `/fs/write`, `/ai/load`,
+/// `/lsp/start` (arbitrary executable), `/extension-host/start` (arbitrary
+/// node_path + script_path). On the default loopback bind the reachable caller
+/// is any local process, which for a tool that runs the user's build scripts is
+/// not a narrow set. Under `-i` it is the whole network.
+///
+/// Two properties are deliberate:
+///
+///   - **Fail open when unauthenticated.** With no `--token` the daemon logs a
+///     warning and behaves as before, so a human running `dsterm` from a shell
+///     is not locked out of their own terminal. Loopback binding is the
+///     perimeter in that mode, and that is now stated rather than implied.
+///   - **Full-length comparison.** The token is compared without an early
+///     return on the first differing byte, and a partial match is never
+///     accepted.
+///
+/// CORS preflight is exempt: it carries no credentials and mutates nothing, and
+/// blocking it would break browser clients without adding protection.
+pub async fn require_loopback_token(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if !auth_required() {
+        return next.run(request).await;
+    }
+    if request.method() != axum::http::Method::OPTIONS {
+        let presented = request
+            .headers()
+            .get(AUTH_HEADER)
+            .and_then(|value| value.to_str().ok());
+        if !token_accepted(true, presented, loopback_token()) {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                r#"{"success":false,"error":{"code":"UNAUTHORIZED","message":"missing or invalid X-Dsterm-Loopback token"}}"#,
+            )
+                .into_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// Byte-wise equality without an early return on the first differing byte.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 pub fn set_default_command(cmd: String) {
@@ -89,8 +191,25 @@ async fn shutdown_signal() {
     }
 }
 
-pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
-    init_loopback_token();
+pub async fn start_server(
+    host: Ipv4Addr,
+    port: u16,
+    allow_any_origin: bool,
+    token: Option<String>,
+) {
+    init_loopback_token(token);
+    if !auth_required() {
+        tracing::warn!(
+            "no --token supplied: every route is unauthenticated. Anyone able to reach \
+             {} can run commands and read/write files. Pass --token when a client other \
+             than a local shell is driving this daemon.",
+            if host == Ipv4Addr::new(127, 0, 0, 1) {
+                "this port"
+            } else {
+                "this host"
+            }
+        );
+    }
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -240,9 +359,15 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
     if let Some(zim_state) = zim_state {
         app = app.merge(crate::zim::zim_routes().with_state(zim_state));
     }
-    let app = app.layer(cors).layer(
-        TraceLayer::new_for_http().make_span_with(DefaultMakeSpan::default().include_headers(true)),
-    );
+    let app = app
+        // Outermost: authentication must run before any handler, including
+        // the ones that can spawn a process or touch the filesystem.
+        .layer(axum::middleware::from_fn(require_loopback_token))
+        .layer(cors)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::default().include_headers(true)),
+        );
 
     let addr: std::net::SocketAddr = (host, port).into();
 
@@ -306,5 +431,57 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
                 tracing::error!("Failed to bind: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_everything_when_no_token_is_configured() {
+        // A human running `dsterm` from a shell must not lock themselves out.
+        assert!(token_accepted(false, None, "s3cret"));
+        assert!(token_accepted(false, Some("wrong"), "s3cret"));
+        assert!(token_accepted(false, Some("s3cret"), "s3cret"));
+    }
+
+    #[test]
+    fn rejects_a_missing_header_in_authenticated_mode() {
+        assert!(!token_accepted(true, None, "s3cret"));
+    }
+
+    #[test]
+    fn accepts_only_the_exact_token() {
+        assert!(token_accepted(true, Some("s3cret"), "s3cret"));
+    }
+
+    #[test]
+    fn rejects_wrong_empty_and_truncated_tokens() {
+        assert!(!token_accepted(true, Some("wrong"), "s3cret"));
+        assert!(!token_accepted(true, Some(""), "s3cret"));
+        // A prefix must never pass: this is what made the old header check
+        // look like it was doing something.
+        assert!(!token_accepted(true, Some("s3cre"), "s3cret"));
+        assert!(!token_accepted(true, Some("s3crets"), "s3cret"));
+    }
+
+    #[test]
+    fn rejects_everything_when_the_expected_token_is_empty() {
+        // Belt and braces: a configured-but-empty token must not become a
+        // universal pass.
+        assert!(!token_accepted(true, Some(""), ""));
+        assert!(!token_accepted(true, None, ""));
+    }
+
+    #[test]
+    fn constant_time_eq_agrees_with_equality() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(constant_time_eq(b"", b""));
+        // Non-ASCII must compare byte-wise, not by char count.
+        assert!(constant_time_eq("héllo".as_bytes(), "héllo".as_bytes()));
+        assert!(!constant_time_eq("héllo".as_bytes(), "hello".as_bytes()));
     }
 }

@@ -51,6 +51,15 @@ struct Cli {
     command_override: Option<String>,
     #[arg(long = "allow-any-origin", global = true)]
     allow_any_origin: bool,
+    /// Shared secret every request must present as `X-Dsterm-Loopback`.
+    ///
+    /// Supply this whenever a client other than a human at a shell is talking
+    /// to the daemon — notably the IDE, which launches dsterm itself. Without
+    /// it the daemon serves its whole surface, including arbitrary shell
+    /// execution and arbitrary process spawn, to anything that can reach the
+    /// port. Ignored on loopback-only personal use.
+    #[arg(long = "token", global = true, env = "DSTERM_TOKEN")]
+    token: Option<String>,
     #[arg(long = "config", global = true)]
     config_path: Option<String>,
     #[arg(long = "remote", global = true)]
@@ -693,7 +702,7 @@ async fn main() {
             );
 
             let server = tokio::spawn(async move {
-                start_server(LOCAL_IP, port, allow_any_origin).await;
+                start_server(LOCAL_IP, port, allow_any_origin, token).await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let relay_task = tokio::spawn(async move {
@@ -816,7 +825,7 @@ async fn main() {
                 }
             }
 
-            start_server(ip, port, allow_any_origin).await;
+            start_server(ip, port, allow_any_origin, token).await;
         }
     }
 }

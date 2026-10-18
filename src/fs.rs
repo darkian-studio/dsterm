@@ -137,15 +137,21 @@ fn filesystem_enabled() -> bool {
     get_config().filesystem.enabled
 }
 
+/// Present for handlers that already receive `HeaderMap`. Authentication is
+/// enforced globally by the `require_loopback_token` middleware, so this is a
+/// defence-in-depth re-check rather than the gate itself.
 fn is_loopback_authorized(headers: &HeaderMap) -> bool {
-    if let Some(v) = headers.get("X-Dsterm-Loopback") {
-        if let Ok(s) = v.to_str() {
-            return s == loopback_token() && !loopback_token().is_empty();
-        }
-        return false;
+    if crate::terminal::auth_required() {
+        let Some(v) = headers.get(crate::terminal::AUTH_HEADER) else {
+            return false;
+        };
+        return v
+            .to_str()
+            .map(|s| s == loopback_token() && !loopback_token().is_empty())
+            .unwrap_or(false);
     }
-    // No loopback header — treat as direct client, allow
-    // (dispatch always sends header)
+    // Unauthenticated mode: no token was configured, so there is nothing to
+    // check against. The middleware has already logged that this is the case.
     true
 }
 
