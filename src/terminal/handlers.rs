@@ -585,6 +585,12 @@ pub async fn resize_terminal(
             pixel_height: 0,
         };
 
+        // A resize means the user is looking at this session; rotation and
+        // keyboard show/hide both arrive this way on a phone.
+        if let Ok(mut guard) = session.last_accessed.lock().await {
+            *guard = SystemTime::now();
+        }
+
         match session.master.lock().await.resize(size) {
             Ok(_) => Json(serde_json::json!({"success": true})).into_response(),
             Err(e) => Json(ErrorResponse {
@@ -654,6 +660,7 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
         _osc_leftover_arc,
         exit_status_arc,
         exit_notify,
+        last_accessed,
     ) = {
         let Some(session) = sessions.get(&pid) else {
             tracing::error!(
@@ -681,6 +688,7 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
             session.osc_leftover.clone(),
             session.exit_status.clone(),
             session.exit_notify.clone(),
+            session.last_accessed.clone(),
         )
     };
 
@@ -751,6 +759,10 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
     let (ws_input_tx, ws_input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let write_handle = {
         let writer = writer.clone();
+        // Client keystrokes are the strongest liveness signal a session has.
+        // Without this the reaper evicts a terminal that is being actively
+        // used, 30 minutes after the socket connected.
+        let last_accessed = last_accessed.clone();
         spawn_blocking(move || {
             let mut first_input_logged = false;
             while let Ok(data) = ws_input_rx.recv() {
@@ -762,6 +774,9 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                         data.len()
                     );
                     first_input_logged = true;
+                }
+                if let Ok(mut guard) = last_accessed.blocking_lock() {
+                    *guard = SystemTime::now();
                 }
                 let mut guard = writer.blocking_lock();
                 if guard.write_all(&data).is_err() || guard.flush().is_err() {
@@ -791,6 +806,11 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
             data = ws_output_rx.recv() => {
                 match data {
                     Ok(data) => {
+                        // Output also counts as use: a long build or a `tail -f`
+                        // produces bytes with no keystrokes for hours.
+                        if let Ok(mut guard) = last_accessed.lock().await {
+                            *guard = SystemTime::now();
+                        }
                         coalesce_buf.extend_from_slice(&data);
                         if coalesce_buf.len() >= super::get_config().terminal.read_buffer_bytes {
                             let frame = std::mem::replace(&mut coalesce_buf, Vec::with_capacity(16384));

@@ -128,7 +128,10 @@ pub async fn start_server(host: Ipv4Addr, port: u16, allow_any_origin: bool) {
                         let last = match entry.value().last_accessed.try_lock() {
                             Ok(g) => *g,
                             Err(_) => {
-                                tracing::debug!(pid = %pid, "eviction: last_accessed lock contended, skipping");
+                                // Contention means an input or output path is
+                                // stamping the session right now, i.e. it is
+                                // in use -- so skipping is the safe direction.
+                                tracing::debug!(pid = %pid, "eviction: last_accessed lock contended (session active), skipping");
                                 return None;
                             }
                         };
