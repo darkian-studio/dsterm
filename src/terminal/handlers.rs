@@ -587,7 +587,8 @@ pub async fn resize_terminal(
 
         // A resize means the user is looking at this session; rotation and
         // keyboard show/hide both arrive this way on a phone.
-        if let Ok(mut guard) = session.last_accessed.lock().await {
+        {
+            let mut guard = session.last_accessed.lock().await;
             *guard = SystemTime::now();
         }
 
@@ -775,9 +776,9 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                     );
                     first_input_logged = true;
                 }
-                if let Ok(mut guard) = last_accessed.blocking_lock() {
-                    *guard = SystemTime::now();
-                }
+                let mut touched = last_accessed.blocking_lock();
+                *touched = SystemTime::now();
+                drop(touched);
                 let mut guard = writer.blocking_lock();
                 if guard.write_all(&data).is_err() || guard.flush().is_err() {
                     tracing::error!("[{}] PTY writer failed for PID {}", trace_ts(), pid);
@@ -808,7 +809,8 @@ async fn handle_socket(socket: WebSocket, pid: u32, sessions: Sessions) {
                     Ok(data) => {
                         // Output also counts as use: a long build or a `tail -f`
                         // produces bytes with no keystrokes for hours.
-                        if let Ok(mut guard) = last_accessed.lock().await {
+                        {
+                            let mut guard = last_accessed.lock().await;
                             *guard = SystemTime::now();
                         }
                         coalesce_buf.extend_from_slice(&data);
