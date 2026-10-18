@@ -288,15 +288,26 @@ async fn ai_load(
     }
 }
 
+/// Reads the model identifier from a request body, accepting both
+/// spellings: `model_id` is what the Dart client in the IDE sends
+/// (inference_backend.dart `unloadModel`), `id` is this crate's convention
+/// on every other model route and what the relay path uses. Accepting only
+/// `id` made every unload from the app a 400, so a loaded GGUF could never
+/// be released outside of LRU pressure.
+fn model_id_from(body: &Value) -> Option<&str> {
+    ["model_id", "id"]
+        .iter()
+        .find_map(|key| body.get(*key).and_then(|v| v.as_str()))
+        .filter(|id| !id.is_empty())
+}
+
 async fn ai_unload(
     State(state): State<AiState>,
     body: Option<Json<Value>>,
 ) -> Result<impl IntoResponse, AiError> {
     let body = body.ok_or_else(|| error::bad_request("request body is required"))?;
-    let id = body.0.get("id").and_then(|v| v.as_str()).unwrap_or("");
-    if id.is_empty() {
-        return Err(error::bad_request("model id is required"));
-    }
+    let id = model_id_from(&body.0)
+        .ok_or_else(|| error::bad_request("model id is required (model_id or id)"))?;
 
     let pool = state.model_pool.clone();
     let mut guard = pool.write().await;
@@ -2126,5 +2137,68 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["data"]["healthy"], true);
         assert_eq!(json["data"]["loaded"], 0);
+    }
+
+    /// The Dart client sends `model_id`; this crate's other model routes use
+    /// `id`. Accepting only `id` made every unload from the IDE a 400, so a
+    /// loaded GGUF could never be released outside of LRU pressure.
+    ///
+    /// No model is loaded here, so a correctly-parsed id falls through to
+    /// MODEL_NOT_FOUND. That is the point: the assertion distinguishes
+    /// "the key was read" from the 400 the old code returned.
+    #[tokio::test]
+    async fn unload_accepts_model_id_key() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/unload")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"model_id":"absent"}"#.to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `id` stays accepted: it is this crate's convention on every other
+    /// model route and what the relay path sends.
+    #[tokio::test]
+    async fn unload_accepts_id_key() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/unload")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"id":"absent"}"#.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A body carrying neither key is still a client error.
+    #[tokio::test]
+    async fn unload_without_any_id_is_bad_request() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ai/unload")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}".to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
