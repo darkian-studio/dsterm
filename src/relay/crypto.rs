@@ -211,12 +211,27 @@ fn write_key_file(path: &Path, key: &[u8; KEY_BYTES]) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn write_key_file(path: &Path, key: &[u8; KEY_BYTES]) -> anyhow::Result<()> {
-    // The default path lives under USERPROFILE, whose inherited NTFS DACL is
-    // user-restricted. Configured paths may use a different ACL, so this is a
-    // best-effort Windows equivalent of the Unix 0600 creation mode.
+    use anyhow::Context;
+    use std::io::Write;
+    use std::os::windows::io::AsRawHandle;
+
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
-    std::io::Write::write_all(&mut options.open(path)?, key)?;
+    let file = options.open(path)?;
+
+    // Write an empty file first and only persist the key material after the
+    // DACL is locked down: if the ACL step fails (unsupported filesystem,
+    // missing rights), the empty file is removed and nothing secret was ever
+    // persisted with weak permissions.
+    if let Err(harden_err) = windows_acl::protect(file.as_raw_handle(), path) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(
+            harden_err.context("relay key file DACL could not be restricted; key file not written")
+        );
+    }
+
+    (&file).write_all(key)?;
     Ok(())
 }
 
@@ -224,6 +239,166 @@ fn write_key_file(path: &Path, key: &[u8; KEY_BYTES]) -> anyhow::Result<()> {
 fn write_key_file(path: &Path, key: &[u8; KEY_BYTES]) -> anyhow::Result<()> {
     fs::write(path, key)?;
     Ok(())
+}
+
+/// Windows equivalent of the Unix 0600 creation mode: replaces the file's
+/// DACL with a PROTECTED one (inheritance broken) granting full control to
+/// the file owner, SYSTEM, and BUILTIN\Administrators - the same three-ACE
+/// shape OpenSSH on Windows uses for private keys. Everything else,
+/// including other interactive users, is excluded. Applied at creation only,
+/// mirroring the Unix side's create-time mode.
+///
+/// The FFI path exists because the std OpenOptionsExt has no
+/// SECURITY_ATTRIBUTES support, so the descriptor must be adjusted after
+/// the file is created. Unlike the Unix mode bit (atomic in create), that
+/// leaves a create-then-restrict window; the caller mitigates it by
+/// deleting the still-empty file when this fails.
+#[cfg(windows)]
+mod windows_acl {
+    use anyhow::anyhow;
+    use core::mem::size_of;
+    use core::slice;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS, GENERIC_ALL, HANDLE, HLOCAL};
+    use windows_sys::Win32::Security::Authorization::{
+        GetSecurityInfo, SetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        AddAccessAllowedAceEx, CreateWellKnownSid, GetLengthSid, InitializeAcl,
+        WinBuiltinAdministratorsSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION,
+        DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SECURITY_MAX_SID_SIZE, WELL_KNOWN_SID_TYPE,
+    };
+
+    pub fn protect(handle: HANDLE, path: &std::path::Path) -> anyhow::Result<()> {
+        // Read back the owner the filesystem assigned at creation; granting
+        // that exact SID sidesteps process-token plumbing (OpenProcessToken
+        // is not exposed by windows-sys).
+        let mut owner_sid: PSID = std::ptr::null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let fetch_status = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner_sid,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut sd,
+            )
+        };
+        if fetch_status != ERROR_SUCCESS {
+            return Err(anyhow!("GetSecurityInfo failed with {:#x}", fetch_status));
+        }
+        // The returned SID points inside the LocalFree-managed descriptor;
+        // copy it out before freeing.
+        let owner_len = unsafe { GetLengthSid(owner_sid) };
+        if owner_len == 0 {
+            unsafe { LocalFree(sd as HLOCAL) };
+            return Err(anyhow!("owner SID from GetSecurityInfo has no length"));
+        }
+        let owner_sid_bytes =
+            unsafe { slice::from_raw_parts(owner_sid.cast::<u8>(), owner_len as usize).to_vec() };
+        unsafe { LocalFree(sd as HLOCAL) };
+
+        let system_sid = builtin_sid(WinLocalSystemSid)?;
+        let admin_sid = builtin_sid(WinBuiltinAdministratorsSid)?;
+        build_and_apply(path, &owner_sid_bytes, &system_sid, &admin_sid)
+    }
+
+    fn builtin_sid(kind: WELL_KNOWN_SID_TYPE) -> anyhow::Result<Vec<u8>> {
+        let mut sid = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut len = sid.len() as u32;
+        let created = unsafe {
+            CreateWellKnownSid(
+                kind,
+                std::ptr::null_mut(),
+                sid.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        if created == 0 {
+            return Err(anyhow!("CreateWellKnownSid failed with error {}", unsafe {
+                windows_sys::Win32::Foundation::GetLastError()
+            }));
+        }
+        if len as usize > sid.len() {
+            return Err(anyhow!("well-known SID exceeded the max size"));
+        }
+        Ok(sid)
+    }
+
+    fn build_and_apply(
+        path: &std::path::Path,
+        owner_sid: &[u8],
+        system_sid: &[u8],
+        admin_sid: &[u8],
+    ) -> anyhow::Result<()> {
+        // One ACCESS_ALLOWED ACE per trustee. The API reserves room for the
+        // SID after the struct; SidStart is a u32 placeholder whose offset
+        // marks where the raw SID bytes begin, so the real ACE size is
+        // (SidStart offset) + sid length.
+        let ace_base = size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>();
+        let acl_size =
+            size_of::<ACL>() + 3 * ace_base + owner_sid.len() + system_sid.len() + admin_sid.len();
+
+        // Aligned to u32, not to the byte a Vec<u8> guarantees: ACL and SID
+        // fields downstream keep u16/u32 members.
+        let mut acl_bytes = vec![0u32; (acl_size + size_of::<u32>() - 1) / size_of::<u32>()];
+        let acl = acl_bytes.as_mut_ptr().cast::<ACL>();
+        let acl_ok = unsafe {
+            InitializeAcl(
+                acl,
+                (acl_bytes.len() * size_of::<u32>()) as u32,
+                ACL_REVISION,
+            )
+        };
+        if acl_ok == 0 {
+            return Err(anyhow!("InitializeAcl failed with error {}", unsafe {
+                windows_sys::Win32::Foundation::GetLastError()
+            }));
+        }
+
+        for sid in [owner_sid, system_sid, admin_sid] {
+            let added = unsafe {
+                AddAccessAllowedAceEx(
+                    acl,
+                    ACL_REVISION,
+                    0, // no inheritance flags: files carry their own ACLs
+                    GENERIC_ALL,
+                    sid.as_ptr() as PSID,
+                )
+            };
+            if added == 0 {
+                return Err(anyhow!(
+                    "AddAccessAllowedAceEx failed with error {}",
+                    unsafe { windows_sys::Win32::Foundation::GetLastError() }
+                ));
+            }
+        }
+
+        let wide_path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(core::iter::once(0))
+            .collect();
+        let applied = unsafe {
+            SetNamedSecurityInfoW(
+                wide_path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                acl,
+                std::ptr::null_mut(),
+            )
+        };
+        if applied != ERROR_SUCCESS {
+            return Err(anyhow!("SetNamedSecurityInfoW failed with {:#x}", applied));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
