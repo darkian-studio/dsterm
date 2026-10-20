@@ -26,6 +26,12 @@ fn http_client() -> reqwest::Client {
 
 /// Run the relay client forever, reconnecting with a fixed backoff ladder.
 pub async fn run(config: DstermConfig, secretbox: Secretbox, host_id: String, local_port: u16) {
+    // Fail fast on an unhonorable server_url: no reconnect ladder spinning
+    // over a config that can never connect.
+    if let Err(e) = super::validated_relay_base(&config.relay.server_url) {
+        tracing::error!("relay server_url rejected: {e}");
+        return;
+    }
     if config.relay.server_url == "https://localhost:3000" {
         tracing::warn!("relay server_url is default https://localhost:3000 — set relay.server_url in config for production");
     }
@@ -104,6 +110,9 @@ async fn connect_once(
     local_port: u16,
     replay: &mut ReplayGuard,
 ) -> anyhow::Result<()> {
+    // Re-validate per attempt too: run() fronts the common path, but
+    // connect_once is also called by commands/tests that skip run().
+    super::validated_relay_base(&config.relay.server_url)?;
     let url = cli_url(&config.relay.server_url, host_id);
     tracing::info!("connecting to relay {url}");
     let (ws, _) = tokio_tungstenite::connect_async(url.as_str()).await?;

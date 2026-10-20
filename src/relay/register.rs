@@ -43,7 +43,10 @@ pub async fn register_host(
     configured_file: Option<&str>,
     machine_id: &str,
 ) -> anyhow::Result<String> {
-    let base = server_url.trim_end_matches('/');
+    // Scheme gate first: the register call carries no secret, but an
+    // operator who trusts http:// here would next trust it for the ws
+    // session - refuse the pattern at both doors.
+    let base = crate::relay::validated_relay_base(server_url)?;
     let url = format!("{base}/host/register");
     let body = json!({ "machineId": machine_id, "platform": std::env::consts::OS });
     let resp = http.post(url).json(&body).send().await?;
