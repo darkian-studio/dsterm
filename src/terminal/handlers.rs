@@ -1151,6 +1151,26 @@ pub async fn silent_exec(Json(options): Json<SilentExecRequest>) -> impl IntoRes
             .into_response();
     }
 
+    // The allowlist fence applies here, not only on the relay hop; a
+    // loopback caller POSTing /silent-exec straight at the daemon must
+    // meet the same rule.
+    if let Err(blocked) = crate::terminal::exec_allowlist_check(&command) {
+        tracing::info!(handler = "silent_exec", id = %id, "exec blocked by allowlist");
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            Json(SilentExecResponse {
+                msg_type: "silent_exec_result".to_string(),
+                id,
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: blocked,
+                timed_out: false,
+            }),
+        )
+            .into_response();
+    }
+
     let cwd_path = if let Some(c) = cwd {
         PathBuf::from(c)
     } else {
@@ -1450,6 +1470,28 @@ async fn handle_silent_exec_stream(socket: WebSocket) {
                     exit_code: -1,
                     stdout: String::new(),
                     stderr: "Empty command string".to_string(),
+                    timed_out: false,
+                })
+                .unwrap()
+                .into(),
+            ))
+            .await;
+        return;
+    }
+
+    // Same fence as the POST route and the relay path: the streaming
+    // entry gets the exec.allowlist verdict before anything spawns.
+    if let Err(blocked) = crate::terminal::exec_allowlist_check(&command) {
+        tracing::info!(id = %id, "exec blocked by allowlist (stream)");
+        let _ = sender
+            .send(Message::Text(
+                serde_json::to_string(&SilentExecResponse {
+                    msg_type: "silent_exec_result".to_string(),
+                    id,
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: blocked,
                     timed_out: false,
                 })
                 .unwrap()
