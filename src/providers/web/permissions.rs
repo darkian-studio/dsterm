@@ -96,7 +96,9 @@ fn is_localhost(host: &str) -> bool {
     false
 }
 
-fn is_private_ip_detailed(host: &str) -> Option<String> {
+/// Exposed to the sibling resolver: addresses that have been resolved to
+/// real IP values are screened with the same rules as URL text.
+pub(super) fn is_private_ip_detailed(host: &str) -> Option<String> {
     if let Ok(num) = host.parse::<u32>() {
         let ip = Ipv4Addr::from(num);
         if ip.is_private()
@@ -165,7 +167,7 @@ fn is_reserved_ipv4(ip: &Ipv4Addr) -> bool {
     }
 }
 
-fn is_ipv6_private(host: &str) -> Option<String> {
+pub(super) fn is_ipv6_private(host: &str) -> Option<String> {
     let addr_str = if host.starts_with('[') && host.ends_with(']') {
         &host[1..host.len() - 1]
     } else {

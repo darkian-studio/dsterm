@@ -1,6 +1,7 @@
 use super::cache::{CacheEntry, CacheKey, ContentCache};
 use super::models::FetchResponse;
 use super::permissions::{NetworkPermissions, PermissionError};
+use super::resolver::ValidatingResolver;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::HashMap;
@@ -49,6 +50,7 @@ pub struct HttpService {
 
 impl HttpService {
     pub fn new(permissions: NetworkPermissions, cache: Arc<ContentCache>) -> Self {
+        let resolver = ValidatingResolver::shared(permissions.clone());
         let clients: Vec<Client> = USER_AGENTS
             .iter()
             .map(|ua| {
@@ -64,6 +66,10 @@ impl HttpService {
                     // surface as request errors, mapped to
                     // FetchError::Network by attempt_fetch.
                     .redirect(supervised_redirect_policy(permissions.clone()))
+                    // Bind-time guard: DNS answers are screened against the
+                    // same permission set (resolver.rs), closing the
+                    // rebinding gap the URL-text check cannot see.
+                    .dns_resolver(resolver.clone())
                     .user_agent(*ua)
                     .build()
                     .expect("failed to build HTTP client")
