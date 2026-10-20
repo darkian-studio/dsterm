@@ -55,7 +55,15 @@ impl HttpService {
                 Client::builder()
                     .timeout(Duration::from_secs(30))
                     .connect_timeout(Duration::from_secs(10))
-                    .redirect(reqwest::redirect::Policy::limited(10))
+                    // Redirects are validated hop by hop against the same
+                    // permission set as the original request. The old
+                    // Policy::limited(10) followed up to ten redirects with
+                    // zero scrutiny, so a public URL answering with
+                    // "see 169.254.169.254" (or any internal name) moved the
+                    // request past the SSRF check entirely. Policy errors
+                    // surface as request errors, mapped to
+                    // FetchError::Network by attempt_fetch.
+                    .redirect(supervised_redirect_policy(permissions.clone()))
                     .user_agent(*ua)
                     .build()
                     .expect("failed to build HTTP client")
@@ -256,15 +264,23 @@ impl HttpService {
             bytes_fetched: byte_count,
         })
     }
+}
 
-    #[allow(dead_code)] // part of redirect validation API
-    pub fn check_redirect(&self, original: &str, redirect: &str) -> Result<(), FetchError> {
-        self.permissions.check(redirect).map_err(|e| {
-            FetchError::Network(format!(
-                "redirect from {original} to {redirect} blocked: {e}"
-            ))
-        })
-    }
+fn supervised_redirect_policy(permissions: NetworkPermissions) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        let next = attempt.url().to_string();
+        let original = attempt
+            .previous()
+            .last()
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| attempt.url().to_string());
+        match permissions.check(&next) {
+            Ok(()) => attempt.follow(),
+            Err(e) => attempt.error(FetchError::Network(format!(
+                "redirect from {original} to {next} blocked: {e}"
+            ))),
+        }
+    })
 }
 
 fn detect_encoding(content_type: &str, bytes: &[u8]) -> &'static str {
