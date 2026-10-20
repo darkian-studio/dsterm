@@ -555,7 +555,13 @@ async fn main() {
                 }
             };
 
-            if !no_qr {
+            if no_qr {
+                // --no-qr exists to keep the secret payload off the terminal
+                // (scrollback, screen sharing, session recorders), so the
+                // host:key line stays hidden too; name the host and point
+                // back to the QR flow.
+                println!("{host_id}");
+            } else {
                 match pairing::render_qr(&payload) {
                     Ok(qr) => println!("{qr}"),
                     Err(e) => {
@@ -563,8 +569,8 @@ async fn main() {
                         std::process::exit(1);
                     }
                 }
+                println!("{}", payload.qr_text());
             }
-            println!("{}", payload.qr_text());
         }
         Some(Commands::Clients { action }) => {
             let cfg = load_config_or_default(config_path.as_deref(), false);
