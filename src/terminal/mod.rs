@@ -7,7 +7,9 @@ mod shell_integration;
 mod types;
 
 use axum::{
-    response::IntoResponse,
+    extract::ConnectInfo,
+    http::HeaderMap,
+    response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
@@ -302,6 +304,27 @@ pub async fn start_server(
             .allow_headers(Any)
     };
 
+    /// `GET /status`: liveness is public, the absolute home path is not.
+    /// Every dds flow that needs `home` (workspaceRoot for the sidecars,
+    /// VM/PRoot guest discovery) originates from a loopback connection or
+    /// a remote caller presenting the shared token. An unauthenticated LAN
+    /// peer running against an `-i` binding gets the boolean only - it must
+    /// not learn the host's user layout from a tokenless probe.
+    async fn get_status(
+        ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+        headers: HeaderMap,
+    ) -> Json<serde_json::Value> {
+        let presented = headers
+            .get(AUTH_HEADER)
+            .and_then(|value| value.to_str().ok());
+        let authenticated = token_accepted(true, presented, loopback_token());
+        let mut body = serde_json::json!({ "status": "OK" });
+        if addr.ip().is_loopback() || authenticated {
+            body["home"] = serde_json::Value::String(get_config().home.clone());
+        }
+        Json(body)
+    }
+
     let terminal_router = Router::new()
         .route("/", get(|| async { "Rust based DSTerm server" }))
         .route("/terminals", post(create_terminal).get(list_terminals))
@@ -311,15 +334,7 @@ pub async fn start_server(
         .route("/execute-command", post(execute_command))
         .route("/silent-exec", post(silent_exec))
         .route("/silent-exec-stream", get(silent_exec_stream))
-        .route(
-            "/status",
-            get(|| async {
-                axum::Json(serde_json::json!({
-                    "status": "OK",
-                    "home": get_config().home.clone(),
-                }))
-            }),
-        )
+        .route("/status", get(get_status))
         .route("/metrics", get(get_metrics))
         .with_state(sessions);
 
@@ -414,9 +429,15 @@ pub async fn start_server(
                 );
             };
 
-            if let Err(e) = axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown)
-                .await
+            // ConnectInfo is what get_status reads to tell loopback callers
+            // (device-local or port-forwarded) from remote LAN peers; without
+            // the make-service wrapper the extractor panics at runtime.
+            if let Err(e) = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown)
+            .await
             {
                 tracing::error!("Server error: {}", e);
             }
