@@ -80,6 +80,12 @@ pub struct InferenceRequest {
     pub metadata: Value,
     #[serde(default)]
     pub stream: bool,
+    /// Per-request D1 knob (audit item #38): when true, the model's chat
+    /// template is applied with thinking enabled and the chain-of-thought
+    /// is stripped from the visible text; when false (default), templates
+    /// render with thinking off and the assistant answers directly.
+    #[serde(default)]
+    pub enable_thinking: bool,
 }
 
 fn default_max_tokens() -> i32 {
@@ -229,6 +235,10 @@ impl InferenceRequest {
             metadata: json!({}),
             stream: body
                 .get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            enable_thinking: body
+                .get("enable_thinking")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
         }

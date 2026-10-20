@@ -12,11 +12,6 @@ use crate::ai::llama::bindings::*;
 use crate::ai::llama::{self, backend::LlamaContext, LlamaModel};
 use crate::ai::sampler::{LlamaSampler, Sampler, SamplingConfig};
 
-/// D1: reasoning off by default -- direct answers for an inline coding
-/// assistant. Flip to true to surface the model's chain of thought (which
-/// then gets stripped per D2).
-const ENABLE_THINKING: bool = false;
-
 /// D3: pocketpal-ai's static cross-model-family stop list, ported verbatim.
 /// Costs nothing to carry; dsterm may load other model families later.
 const FALLBACK_STOPS: &[&str] = &[
@@ -234,7 +229,7 @@ impl LlamaBackend {
             .map_err(InferenceError::context_creation_failed)?;
 
         loop {
-            match templates.apply(&messages, ENABLE_THINKING) {
+            match templates.apply(&messages, request.enable_thinking) {
                 Ok(out) => {
                     let tokens = ctx
                         .tokenize(&out.prompt, true)
