@@ -77,14 +77,41 @@ impl ClientStore {
     ) -> anyhow::Result<ApprovalDecision> {
         let now = unix_secs();
         if let Some(record) = self.file.clients.get_mut(client_id) {
+            // Approval is anchored on a relay-supplied plaintext id, and
+            // the stored fingerprint is the only strength that id has.
+            // A join claiming an approved id while presenting a DIFFERENT
+            // platform is a different device (appVersion/device churn
+            // benignly between joins, platform does not): stop inheriting
+            // approval and let the operator see the takeover attempt as a
+            // fresh pending decision. The claimant's fingerprint is kept
+            // so `dsterm clients list` shows who is claiming. Per-client
+            // keys on the wire supersede this once the relay protocol
+            // carries real client identity.
+            let platform_changed = record.approval == ClientApproval::Approved
+                && record.platform.is_some()
+                && info.platform.is_some()
+                && record.platform != info.platform;
+            let stored_platform = record.platform.clone();
             record.last_seen = now;
-            update_info(record, info);
-            let decision = match record.approval {
-                ClientApproval::Approved => ApprovalDecision::Allow,
-                ClientApproval::Rejected => ApprovalDecision::Reject,
-                ClientApproval::Pending => ApprovalDecision::Pending,
+            update_info(record, info.clone());
+            let decision = if platform_changed {
+                record.approval = ClientApproval::Pending;
+                ApprovalDecision::Pending
+            } else {
+                match record.approval {
+                    ClientApproval::Approved => ApprovalDecision::Allow,
+                    ClientApproval::Rejected => ApprovalDecision::Reject,
+                    ClientApproval::Pending => ApprovalDecision::Pending,
+                }
             };
             self.save()?;
+            if platform_changed {
+                tracing::warn!(
+                    "client {client_id} was approved as platform {:?} but now claims {:?}; demoted to pending",
+                    stored_platform,
+                    record.platform
+                );
+            }
             return Ok(decision);
         }
 
@@ -223,6 +250,68 @@ mod tests {
             )
             .unwrap();
         assert_eq!(decision, ApprovalDecision::Allow);
+        let _ = fs::remove_file(path);
+    }
+
+    fn android_join(app_version: &str, device: &str) -> ClientInfo {
+        ClientInfo {
+            platform: Some("android".to_string()),
+            app_version: Some(app_version.to_string()),
+            device: Some(device.to_string()),
+        }
+    }
+
+    /// Approval anchored on a relay-supplied plaintext id legally hinges on
+    /// the stored fingerprint: an approved id re-joining with a different
+    /// platform stops inheriting the approval.
+    #[test]
+    fn platform_change_on_approved_id_demotes_to_pending() {
+        let path = temp_path();
+        let mut store = ClientStore::load_or_default(Some(path.to_str().unwrap())).unwrap();
+        let unknown = UnknownClientPolicy::RequiresApproval;
+
+        store
+            .decide("victim-id", android_join("1.13.0", "Pixel 8"), &unknown)
+            .unwrap();
+        store.approve("victim-id").unwrap();
+        assert_eq!(
+            store
+                .decide("victim-id", android_join("1.13.1", "Pixel 8"), &unknown)
+                .unwrap(),
+            ApprovalDecision::Allow
+        );
+
+        // Same id, different platform: no silent inheritance. Appversion or
+        // device churn alone never triggers this (both are updated in place).
+        let attacker = ClientInfo {
+            platform: Some("ios".to_string()),
+            app_version: Some("1.13.1".to_string()),
+            device: Some("iPhone 15".to_string()),
+        };
+        assert_eq!(
+            store.decide("victim-id", attacker, &unknown).unwrap(),
+            ApprovalDecision::Pending
+        );
+        let record = &store.list()[0];
+        assert_eq!(record.approval, ClientApproval::Pending);
+        // The record keeps the claimant's fingerprint for operator review.
+        assert_eq!(record.platform.as_deref(), Some("ios"));
+
+        // Still pending until the operator decides, no oscillation.
+        assert_eq!(
+            store
+                .decide("victim-id", android_join("1.13.1", "Pixel 8"), &unknown)
+                .unwrap(),
+            ApprovalDecision::Pending
+        );
+        store.approve("victim-id").unwrap();
+        assert_eq!(
+            store
+                .decide("victim-id", android_join("1.13.1", "Pixel 8"), &unknown)
+                .unwrap(),
+            ApprovalDecision::Allow
+        );
+
         let _ = fs::remove_file(path);
     }
 }
