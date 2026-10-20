@@ -10,6 +10,7 @@ use crate::relay::proxy_ws::RelayProxyWs;
 use crate::relay::sysmon::RelaySysmon;
 use crate::relay::terminal::RelayTerminals;
 use crate::relay::wire::ClientCtx;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -34,8 +35,11 @@ pub async fn run(config: DstermConfig, secretbox: Secretbox, host_id: String, lo
         config.relay.reconnect_secs.clone()
     };
     let mut attempt = 0usize;
+    // One nonce cache for the host process, not per connection: a captured
+    // frame replayed into the NEXT reconnect must meet the same memory.
+    let mut replay = ReplayGuard::new(REPLAY_CACHE_ENTRIES);
     loop {
-        match connect_once(&config, &secretbox, &host_id, local_port).await {
+        match connect_once(&config, &secretbox, &host_id, local_port, &mut replay).await {
             Ok(()) => {
                 tracing::info!("relay connection closed");
                 attempt = 0;
@@ -51,11 +55,54 @@ pub async fn run(config: DstermConfig, secretbox: Secretbox, host_id: String, lo
     }
 }
 
+/// Frames are AEAD'd with one shared host key and the nonce roams free in
+/// the envelope: a captured (nonce, ciphertext) pair re-sent verbatim
+/// decrypts perfectly every time, and the read loop could not tell a
+/// replay from a first delivery. This guard remembers decoded nonce bytes
+/// and refuses duplicates, FIFO-evicting the oldest once the window is
+/// full. First-delivery races against a frame-reordering attacker (the
+/// relay itself) remain possible - transport hardening and real
+/// per-client identity each shrink that - the guard's contract is to end
+/// INDEFINITE replay after capture.
+const REPLAY_CACHE_ENTRIES: usize = 65_536;
+
+pub struct ReplayGuard {
+    seen: std::collections::HashSet<Vec<u8>>,
+    order: std::collections::VecDeque<Vec<u8>>,
+    capacity: usize,
+}
+
+impl ReplayGuard {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            seen: std::collections::HashSet::new(),
+            order: std::collections::VecDeque::new(),
+            capacity,
+        }
+    }
+
+    /// Admit a decoded nonce when it is fresh. Returns false for a
+    /// replay (nonce already seen inside the window).
+    pub fn admit(&mut self, nonce: &[u8]) -> bool {
+        if !self.seen.insert(nonce.to_vec()) {
+            return false;
+        }
+        self.order.push_back(nonce.to_vec());
+        while self.order.len() > self.capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.seen.remove(&evicted);
+            }
+        }
+        true
+    }
+}
+
 async fn connect_once(
     config: &DstermConfig,
     secretbox: &Secretbox,
     host_id: &str,
     local_port: u16,
+    replay: &mut ReplayGuard,
 ) -> anyhow::Result<()> {
     let url = cli_url(&config.relay.server_url, host_id);
     tracing::info!("connecting to relay {url}");
@@ -168,6 +215,20 @@ async fn connect_once(
                     .get("ciphertext")
                     .and_then(|c| c.as_str())
                     .unwrap_or("");
+                // Replays die here: the nonce is remembered for the host
+                // process lifetime (across reconnects) and a duplicate is
+                // refused before the decryption costs anything.
+                let decoded = match BASE64.decode(nonce) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        tracing::warn!("relay frame with undecodable nonce rejected");
+                        continue;
+                    }
+                };
+                if !replay.admit(&decoded) {
+                    tracing::warn!("dropping replayed relay frame (nonce seen before)");
+                    continue;
+                }
                 let plaintext = match secretbox.decrypt_parts(nonce, ciphertext) {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -404,4 +465,33 @@ fn cli_url(server_url: &str, host_id: &str) -> String {
         base.to_string()
     };
     format!("{ws_base}/cli?hostId={host_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A captured frame's nonce is refused on the second delivery.
+    #[test]
+    fn replay_guard_refuses_duplicate_nonce() {
+        let mut guard = ReplayGuard::new(4);
+        assert!(guard.admit(b"nonce-one"));
+        assert!(!guard.admit(b"nonce-one"));
+        assert!(guard.admit(b"nonce-two"));
+        assert!(!guard.admit(b"nonce-two"));
+        assert!(guard.admit(b"nonce-three"));
+    }
+
+    #[test]
+    fn replay_guard_window_evicts_fifo() {
+        let mut guard = ReplayGuard::new(2);
+        assert!(guard.admit(b"a"));
+        assert!(guard.admit(b"b"));
+        assert!(guard.admit(b"c")); // evicts `a`
+                                    // `b` and `c` are still inside the window: duplicates dead.
+        assert!(!guard.admit(b"b"));
+        assert!(!guard.admit(b"c"));
+        // `a` fell out of the window: accepted again (window semantics).
+        assert!(guard.admit(b"a"));
+    }
 }
