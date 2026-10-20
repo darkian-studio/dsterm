@@ -616,10 +616,27 @@ pub fn detect_capabilities(meta: &GGUFMetadata) -> ModelCapabilities {
         arch.as_str(),
         "bert" | "nomic-bert" | "jina-bert" | "jina-embeddings-v2" | "gte" | "gte-small"
     );
+    // FIM training lives in code-specialized checkpoints, but two of the
+    // families the template layer serves (fim_template::for_architecture)
+    // share a GGUF architecture id with a chat-only sibling: Codestral
+    // rides "mistral" and Qwen2.5-Coder rides "qwen2". The checkpoint name
+    // is the only split the metadata carries, so those two families are
+    // admitted on a name match rather than being silently dropped (FIM
+    // requests into them get proper prompts and stop sequences) while
+    // their chat siblings stay out.
+    let name_fim_hit = meta
+        .model_name
+        .as_deref()
+        .map(|n| {
+            let n = n.to_lowercase();
+            n.contains("codestral")
+                || (n.contains("qwen") && (n.contains("coder") || n.contains("codeqwen")))
+        })
+        .unwrap_or(false);
     let fim = matches!(
         arch.as_str(),
         "codellama" | "starcoder" | "starcoder2" | "codegeex4" | "deepseek2"
-    );
+    ) || name_fim_hit;
     let tool_calling = has_chat_template
         && matches!(
             arch.as_str(),
@@ -799,6 +816,61 @@ mod tests {
         assert!(caps.completion);
         assert!(caps.embeddings);
         assert!(!caps.tool_calling);
+    }
+
+    fn meta_with(arch: Option<&str>, name: Option<&str>) -> GGUFMetadata {
+        GGUFMetadata {
+            version: 3,
+            tensor_count: 0,
+            architecture: arch.map(str::to_string),
+            model_name: name.map(str::to_string),
+            file_type: None,
+            context_length: None,
+            embedding_length: None,
+            block_count: None,
+            head_count: None,
+            head_dim: None,
+            feed_forward_length: None,
+            expert_count: None,
+            expert_used_count: None,
+            parameter_count: None,
+            computed_parameter_count: None,
+            file_size: 0,
+            file_path: "".into(),
+            quantisation: None,
+            raw_metadata: HashMap::new(),
+            tokenizer_model: None,
+            chat_template: None,
+            bos_token_id: None,
+            eos_token_id: None,
+            pad_token_id: None,
+        }
+    }
+
+    /// FIM capability must follow the template layer: the Codestral and
+    /// Qwen-Coder checkpoints ride shared GGUF arch ids, so the split
+    /// lives in the checkpoint name.
+    #[test]
+    fn fim_capability_names_shared_arch_checkpoints() {
+        assert!(detect_capabilities(&meta_with(Some("mistral"), Some("Codestral-22B"))).fim);
+        assert!(
+            detect_capabilities(&meta_with(Some("qwen2"), Some("Qwen2.5-Coder-7B-Instruct"))).fim
+        );
+        assert!(detect_capabilities(&meta_with(Some("qwen2"), Some("CodeQwen-7B"))).fim);
+
+        // Chat-only siblings of the same arch ids stay out.
+        assert!(
+            !detect_capabilities(&meta_with(
+                Some("mistral"),
+                Some("Mistral-7B-Instruct-v0.3")
+            ))
+            .fim
+        );
+        assert!(!detect_capabilities(&meta_with(Some("qwen2"), Some("Qwen2.5-7B-Instruct"))).fim);
+
+        // And the arch-only families keep working with no name.
+        assert!(detect_capabilities(&meta_with(Some("starcoder2"), None)).fim);
+        assert!(!detect_capabilities(&meta_with(Some("llama"), None)).fim);
     }
 
     #[test]
