@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub trait FimTemplate: Send + Sync {
     fn build_prompt(&self, prefix: &str, suffix: &str) -> String;
     fn stop_sequences(&self) -> Vec<String>;
@@ -17,6 +15,19 @@ pub fn for_architecture(arch: &str) -> Box<dyn FimTemplate> {
         Box::new(CodestralFimTemplate)
     } else {
         Box::new(ChatFallbackFimTemplate)
+    }
+}
+
+/// The template an `InferenceRequest` prompts through: mirror of the
+/// selection inside `resolved_prompt_fim` so prompt building and stop
+/// extraction can never disagree. An empty architecture defaults to the
+/// Codestral shape rather than falling through to the chat fallback,
+/// because a caller with no architecture still wants plain FIM.
+pub fn fim_template_for_prompt(arch: &str) -> Box<dyn FimTemplate> {
+    if arch.is_empty() {
+        Box::new(CodestralFimTemplate)
+    } else {
+        for_architecture(arch)
     }
 }
 
@@ -122,5 +133,47 @@ mod tests {
             for_architecture("codestral").build_prompt("a", "b"),
             for_architecture("qwen").build_prompt("a", "b"),
         );
+    }
+
+    /// The prompt-path selection treats an empty architecture as plain
+    /// Codestral FIM, not the chat fallback; these two selections take
+    /// different shapes and resolved_prompt_fim / stop extraction must
+    /// agree on this.
+    #[test]
+    fn empty_architecture_defaults_to_codestral() {
+        assert_eq!(
+            fim_template_for_prompt("").build_prompt("a", "b"),
+            "[PREFIX]a[SUFFIX]b[MIDDLE]"
+        );
+    }
+
+    /// Stop extraction must cover the markers its prompt inserts, or the
+    /// model echoes them back unchecked.
+    #[test]
+    fn stops_cover_prompt_markers() {
+        let cases = [
+            "[PREFIX]a[SUFFIX]b[MIDDLE]",
+            "[DS-BEGIN]a[DS-END]b[DS-MIDDLE]",
+            "<|fim_prefix|>a<|fim_suffix|>b<|fim_middle|>",
+        ];
+        for (arch, prompt) in [
+            ("mistral-7b-fim", cases[0]),
+            ("deepseek-coder-v2", cases[1]),
+            ("qwen3-coder-30b", cases[2]),
+        ] {
+            let t = fim_template_for_prompt(arch);
+            assert_eq!(t.build_prompt("a", "b"), prompt, "{arch}");
+            let stops = t.stop_sequences();
+            assert!(!stops.is_empty(), "{arch}: no stop sequences");
+            // Every shape here inserts at least its first two markers into
+            // the prompt, so emitting any of them back from the model must
+            // be caught.
+            for stop in &stops[0..2] {
+                assert!(
+                    prompt.contains(stop.as_str()),
+                    "{arch}: {stop} not in prompt"
+                );
+            }
+        }
     }
 }

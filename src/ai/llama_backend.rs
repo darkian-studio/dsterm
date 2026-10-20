@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use super::fim_template;
 use crate::ai::backend_trait::*;
 use crate::ai::context_config::ContextConfig;
 use crate::ai::context_manager::InferenceContext;
@@ -176,9 +177,22 @@ impl LlamaBackend {
         context_config: &ContextConfig,
     ) -> BackendResult<GenerationPrompt> {
         if !matches!(request.mode, InferenceMode::Chat) {
+            // Every FIM template declares stop_sequences(), but resolve
+            // used to drop them here: the model answered the FIM prompt
+            // and then "[SUFFIX]..." flowed into the decoded text unchecked,
+            // so completions shipped with template markers riding in them.
+            // The template builds the prompt only in Fim mode with no
+            // explicit prompt, and that is exactly whose stops belong in the
+            // list; raw completion mode never sees a template, so it keeps
+            // an empty one, matching resolved_prompt_fim's construction.
+            let stops = if matches!(request.mode, InferenceMode::Fim) && request.prompt.is_empty() {
+                fim_template::fim_template_for_prompt(&request.architecture).stop_sequences()
+            } else {
+                Vec::new()
+            };
             return Ok(GenerationPrompt {
                 text: request.resolved_prompt_fim(None, Some(&request.architecture)),
-                stops: Vec::new(),
+                stops,
                 thinking_start_tag: None,
                 thinking_end_tags: Vec::new(),
             });

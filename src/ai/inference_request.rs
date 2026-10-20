@@ -256,13 +256,8 @@ impl InferenceRequest {
                     self.prompt.clone()
                 } else {
                     let a = arch.unwrap_or(&self.architecture);
-                    let fim_tmpl = if a.is_empty() {
-                        Box::new(super::fim_template::CodestralFimTemplate)
-                            as Box<dyn super::fim_template::FimTemplate>
-                    } else {
-                        super::fim_template::for_architecture(a)
-                    };
-                    fim_tmpl.build_prompt(&self.prefix, &self.suffix)
+                    super::fim_template::fim_template_for_prompt(a)
+                        .build_prompt(&self.prefix, &self.suffix)
                 }
             }
             InferenceMode::Completion => {
