@@ -97,10 +97,15 @@ fn lexical_normalize(path: &StdPath) -> PathBuf {
 }
 
 fn safe_path(requested: &str) -> anyhow::Result<PathBuf> {
-    let root = workspace_root()?;
+    safe_path_at(&workspace_root()?, requested)
+}
+
+/// The root parameter must already be canonical (workspace_root()
+/// canonicalizes); tests pass an equivalent temp workspace root.
+fn safe_path_at(root: &StdPath, requested: &str) -> anyhow::Result<PathBuf> {
     let trimmed = requested.trim();
     if trimmed.is_empty() || trimmed == "." || trimmed == "./" {
-        return Ok(root);
+        return Ok(root.to_path_buf());
     }
     let requested = StdPath::new(requested);
     let joined = if requested.is_absolute() {
@@ -109,10 +114,58 @@ fn safe_path(requested: &str) -> anyhow::Result<PathBuf> {
         root.join(requested)
     };
     let normalized = lexical_normalize(&joined);
-    if normalized.starts_with(&root) {
+    if !normalized.starts_with(root) {
+        anyhow::bail!("Path escapes workspace root");
+    }
+    // The pass above approves paths by their written shape. A symlink
+    // planted inside the workspace - cloned in through the shell, planted
+    // by an extension, renamed over by a client - resolves outward the
+    // moment the OS opens it. Verify the PHYSICAL location of the deepest
+    // existing ancestor before conceding the request, and hand back the
+    // untouched logical path (tail components do not exist yet, so nothing
+    // else can redirect the open).
+    let resolved = resolve_physical(&normalized);
+    if resolved.starts_with(root) {
         Ok(normalized)
     } else {
-        anyhow::bail!("Path escapes workspace root")
+        anyhow::bail!("Path escapes workspace root (resolved through symlink)")
+    }
+}
+
+/// Canonicalize the deepest existing ancestor of `path` and re-append the
+/// non-existing tail. `fs::canonicalize` rejects whole paths whose target
+/// does not exist (write/mkdir legitimately aim at those), so resolve
+/// upward until an existing parent is found. If nothing canonicalizes
+/// below the filesystem root the lexical verdict stands untouched.
+fn resolve_physical(path: &StdPath) -> PathBuf {
+    let mut probe = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        match fs::canonicalize(&probe) {
+            Ok(resolved) => {
+                let mut out = strip_extended_length_prefix(resolved);
+                for segment in tail.iter().rev() {
+                    out.push(segment);
+                }
+                return out;
+            }
+            Err(_) => {
+                match probe.file_name().map(|n| n.to_os_string()) {
+                    Some(last) => {
+                        tail.push(last);
+                    }
+                    None => {
+                        // Nothing left to strip and nothing canonicalized;
+                        // keep the caller's shape rather than guessing.
+                        return path.to_path_buf();
+                    }
+                }
+                match probe.parent() {
+                    Some(parent) => probe = parent.to_path_buf(),
+                    None => return path.to_path_buf(),
+                }
+            }
+        }
     }
 }
 
@@ -561,4 +614,88 @@ pub fn fs_routes() -> axum::Router {
         .route("/fs/root", axum::routing::get(root_info))
         .route("/fs/git/status", axum::routing::get(git_status))
         .route("/project/file-search", axum::routing::get(file_search))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unique per-run temp workspace; torn down on drop. Symlink creation
+    /// needs privileges Windows CI runners are not guaranteed to have, so
+    /// link tests stay cfg(unix) and Windows verifies through the shared
+    /// resolution path.
+    struct TempWorkspace(PathBuf);
+
+    impl TempWorkspace {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("dsterm-fs-test-{}-{tag}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("create temp workspace");
+            TempWorkspace(strip_extended_length_prefix(
+                fs::canonicalize(&dir).expect("canonicalize temp workspace"),
+            ))
+        }
+
+        fn root(&self) -> &StdPath {
+            &self.0
+        }
+    }
+
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn dot_and_empty_return_root() {
+        let ws = TempWorkspace::new("dot");
+        let root = ws.root().to_path_buf();
+        assert_eq!(safe_path_at(&root, ".").unwrap(), root);
+        assert_eq!(safe_path_at(&root, "").unwrap(), root);
+        assert_eq!(safe_path_at(&root, "./").unwrap(), root);
+    }
+
+    #[test]
+    fn traversal_is_lexically_rejected() {
+        let ws = TempWorkspace::new("trav");
+        let root = ws.root().to_path_buf();
+        let err = safe_path_at(&root, "../outside").expect_err("must be rejected");
+        assert!(err.to_string().contains("escapes workspace root"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_outside_workspace_is_rejected_resolved() {
+        use std::os::unix::fs::symlink;
+        let ws = TempWorkspace::new("symlink-escape");
+        let root = ws.root().to_path_buf();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        let secret = std::env::temp_dir().join(format!("dsterm-fs-secret-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&secret);
+        fs::create_dir_all(&secret).unwrap();
+        fs::write(secret.join("secret.txt"), b"x").unwrap();
+        symlink(&secret, root.join("sub/link")).unwrap();
+
+        let err = safe_path_at(&root, "sub/link/secret.txt").expect_err("must be rejected");
+        assert!(err.to_string().contains("resolved through symlink"));
+        assert!(safe_path_at(&root, "sub/link").is_err());
+
+        let _ = fs::remove_dir_all(&secret);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_inside_workspace_still_allowed() {
+        use std::os::unix::fs::symlink;
+        let ws = TempWorkspace::new("symlink-inner");
+        let root = ws.root().to_path_buf();
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::write(root.join("real/file.txt"), b"hello").unwrap();
+        symlink(root.join("real/file.txt"), root.join("alias.txt")).unwrap();
+
+        let got = safe_path_at(&root, "alias.txt").unwrap();
+        assert_eq!(got, root.join("alias.txt"));
+    }
 }
