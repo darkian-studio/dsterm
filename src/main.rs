@@ -547,13 +547,14 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-            let payload = match pairing::PairingPayload::new(host_id, secretbox.key_base64()) {
-                Ok(payload) => payload,
-                Err(e) => {
-                    eprintln!("{} Failed to build pairing payload: {e}", "✗".red().bold());
-                    std::process::exit(1);
-                }
-            };
+            let payload =
+                match pairing::PairingPayload::new(host_id.as_str(), secretbox.key_base64()) {
+                    Ok(payload) => payload,
+                    Err(e) => {
+                        eprintln!("{} Failed to build pairing payload: {e}", "✗".red().bold());
+                        std::process::exit(1);
+                    }
+                };
 
             if no_qr {
                 // --no-qr exists to keep the secret payload off the terminal

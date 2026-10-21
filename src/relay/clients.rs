@@ -104,7 +104,6 @@ impl ClientStore {
                     ClientApproval::Pending => ApprovalDecision::Pending,
                 }
             };
-            self.save()?;
             if platform_changed {
                 tracing::warn!(
                     "client {client_id} was approved as platform {:?} but now claims {:?}; demoted to pending",
@@ -112,6 +111,7 @@ impl ClientStore {
                     record.platform
                 );
             }
+            self.save()?;
             return Ok(decision);
         }
 
