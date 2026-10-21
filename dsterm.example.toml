@@ -38,3 +38,7 @@ enabled = true                  # Master switch for /zim/v1 (requires the `zim` 
 archive_roots = []              # Allowed archive roots, e.g. ["/data/zim"]. Empty disables opening
 max_open_archives = 3           # Concurrently open archives (evicts idle oldest)
 idle_ttl_secs = 600             # Idle seconds before an unused archive is evicted
+
+[ai]
+max_models = 4                  # Distinct resident models before LRU eviction (0 = unlimited)
+max_memory_bytes = 0            # Pool budget in bytes (0 = none; /ai/memory then reports system-available memory)

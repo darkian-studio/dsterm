@@ -156,6 +156,28 @@ pub struct ExecConfig {
     pub allowlist: Option<String>,
 }
 
+/// Model pool / inference tuning (`[ai]`).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct AiConfig {
+    /// Distinct resident models before LRU eviction kicks in.
+    /// 0 = unlimited.
+    pub max_models: usize,
+    /// Pool memory budget in bytes; 0 = no budget. While
+    /// unset, `/ai/memory` reports system-available memory
+    /// in `available_bytes` instead of a permanent 0.
+    pub max_memory_bytes: u64,
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            max_models: 4,
+            max_memory_bytes: 0,
+        }
+    }
+}
+
 /// Top-level dsterm configuration.
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
@@ -173,6 +195,7 @@ pub struct DstermConfig {
     pub ports: PortsConfig,
     pub exec: ExecConfig,
     pub zim: ZimConfig,
+    pub ai: AiConfig,
 }
 
 impl DstermConfig {
@@ -196,5 +219,32 @@ impl DstermConfig {
         let content = std::fs::read_to_string(path)?;
         let config: DstermConfig = toml::from_str(&content)?;
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_section_defaults_when_absent() {
+        let cfg: DstermConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.ai.max_models, 4);
+        assert_eq!(cfg.ai.max_memory_bytes, 0);
+    }
+
+    #[test]
+    fn ai_section_parses_when_present() {
+        let cfg: DstermConfig =
+            toml::from_str("[ai]\nmax_models = 8\nmax_memory_bytes = 4294967296\n").unwrap();
+        assert_eq!(cfg.ai.max_models, 8);
+        assert_eq!(cfg.ai.max_memory_bytes, 4_294_967_296);
+    }
+
+    #[test]
+    fn ai_section_partial_keeps_other_default() {
+        let cfg: DstermConfig = toml::from_str("[ai]\nmax_models = 0\n").unwrap();
+        assert_eq!(cfg.ai.max_models, 0);
+        assert_eq!(cfg.ai.max_memory_bytes, 0);
     }
 }

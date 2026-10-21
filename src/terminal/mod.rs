@@ -255,7 +255,13 @@ pub async fn start_server(
     let mcp_registry: mcp_bridge::McpRegistry = process_bridge::new_registry();
     let agent_registry: agent_bridge::AgentRegistry = process_bridge::new_registry();
     let ast_registry = ast_bridge::new_registry();
-    let ai_state = ai_bridge::AiState::new();
+    let ai_state = {
+        let ai_cfg = &get_config().ai;
+        ai_bridge::AiState::with_pool_config(crate::ai::pool::PoolConfig {
+            max_models: ai_cfg.max_models,
+            max_memory_bytes: ai_cfg.max_memory_bytes,
+        })
+    };
     let web_provider: crate::web_routes::WebState =
         Arc::new(crate::providers::web::WebProvider::new());
 

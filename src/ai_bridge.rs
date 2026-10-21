@@ -186,11 +186,18 @@ pub struct AiState {
 
 impl AiState {
     pub fn new() -> Self {
+        Self::with_pool_config(PoolConfig::default())
+    }
+
+    /// Build with operator-supplied pool limits (`[ai]` config
+    /// section); production wiring reads them from the runtime
+    /// config, tests keep using `new()`.
+    pub fn with_pool_config(pool_config: PoolConfig) -> Self {
         Self {
             registry: Arc::new(RwLock::new(Vec::new())),
             supervisor: Arc::new(RwLock::new(InferenceSupervisor::new())),
             model_registry: Arc::new(RwLock::new(ModelRegistryInner::load())),
-            model_pool: Arc::new(RwLock::new(ModelPoolInner::new(PoolConfig::default()))),
+            model_pool: Arc::new(RwLock::new(ModelPoolInner::new(pool_config))),
             load_locks: Arc::new(LoadLockManager::new()),
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -865,8 +872,15 @@ async fn ai_statistics(State(state): State<AiState>) -> impl IntoResponse {
 
 async fn ai_memory(State(state): State<AiState>) -> impl IntoResponse {
     let guard = state.model_pool.read().await;
-    let stats = guard.stats();
+    let mut stats = guard.stats();
     drop(guard);
+    if stats.max_memory_bytes == 0 {
+        // No pool budget configured: the pool headroom is a hard-coded 0,
+        // which told clients nothing. Report system-available memory so
+        // /ai/memory is meaningful out of the box; with a budget set the
+        // figure stays the pool headroom.
+        stats.available_bytes = system_available_memory();
+    }
     ok_response(
         "inference.memory",
         json!({
@@ -876,6 +890,14 @@ async fn ai_memory(State(state): State<AiState>) -> impl IntoResponse {
             "pool_stats": stats
         }),
     )
+}
+
+/// System-wide memory currently available to this process's OS
+/// (`available_memory`, i.e. free + reclaimable cache).
+fn system_available_memory() -> u64 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.available_memory()
 }
 
 async fn ai_pool_health(State(state): State<AiState>) -> impl IntoResponse {
@@ -2095,6 +2117,44 @@ mod tests {
         assert_eq!(json["data"]["total_allocated_bytes"], 0);
         assert!(json["data"]["pool_stats"].is_object());
         assert_eq!(json["data"]["pool_stats"]["pool_consistent"], true);
+        // Default config has no pool budget, so available_bytes must fall
+        // back to system memory instead of the inert 0 the pool reports.
+        let available = json["data"]["available_bytes"].as_u64().unwrap();
+        assert!(available > 0, "expected system fallback, got {available}");
+        assert_eq!(
+            json["data"]["pool_stats"]["available_bytes"]
+                .as_u64()
+                .unwrap(),
+            available
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ai_memory_reports_pool_headroom_when_budgeted() {
+        let state = AiState::with_pool_config(PoolConfig {
+            max_models: 4,
+            max_memory_bytes: 500,
+        });
+        let app = ai_routes().with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/ai/memory")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        // No models resident: headroom is the full budget, and the
+        // configured figure wins over the system fallback.
+        assert_eq!(json["data"]["available_bytes"], 500);
+        assert_eq!(json["data"]["pool_stats"]["max_memory_bytes"], 500);
     }
 
     #[tokio::test]
