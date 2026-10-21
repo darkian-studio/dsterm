@@ -1,7 +1,9 @@
 //! The receiver resolves every sender-supplied path against its own --dest
 //! anchor and never through a symlink planted mid-transfer. A symlink target
-//! is stored verbatim but never followed while placing later entries —
-//! otherwise one malicious entry redirects all following writes.
+//! is stored verbatim only after `validate_link_target` proves it resolves
+//! lexically inside the transfer root, and it is never followed while
+//! placing later entries — otherwise one malicious entry redirects all
+//! following writes.
 //!
 //! Windows names are rejected rather than transliterated: silently renaming
 //! `CON` or stripping a trailing dot creates a different file than the sender
@@ -151,6 +153,43 @@ pub fn validate_entry_path(path: &str, is_windows: bool) -> Result<()> {
     if parts.is_empty() {
         anyhow::bail!("invalid entry path: '{path}'");
     }
+    for p in &parts {
+        validate_component(p, is_windows)?;
+    }
+    Ok(())
+}
+
+/// A symlink entry's target is the sender's string verbatim; unchecked it
+/// can point at absolute paths, outside the tree (`../../`), or Windows
+/// device names, handing the delivered directory a link to anything on the
+/// receiver. Resolve it lexically from the link's own directory — the way
+/// a relative symlink actually behaves — and require the result to stay
+/// inside the transfer root, the same bar `validate_entry_path` sets for
+/// entry paths. `link_parent` is the link's parent path, '' at the root.
+pub fn validate_link_target(target: &str, link_parent: &str, is_windows: bool) -> Result<()> {
+    if target.is_empty() {
+        anyhow::bail!("empty symlink target");
+    }
+    if target.contains('\0') {
+        anyhow::bail!("symlink target contains NUL byte");
+    }
+    if target.len() > MAX_ENTRY_PATH_LEN {
+        anyhow::bail!("symlink target too long: '{target}'");
+    }
+    let t = target.replace('\\', "/");
+    if t.starts_with('/') {
+        anyhow::bail!("absolute symlink target rejected: '{target}'");
+    }
+    if t.len() >= 2 && t.as_bytes()[1] == b':' {
+        anyhow::bail!("absolute symlink target rejected: '{target}'");
+    }
+    let mut rel = link_parent.replace('\\', "/");
+    if !rel.is_empty() {
+        rel.push('/');
+    }
+    rel.push_str(&t);
+    let parts = lexical_parts(&rel)
+        .ok_or_else(|| anyhow!("symlink target escapes transfer root: '{target}'"))?;
     for p in &parts {
         validate_component(p, is_windows)?;
     }
@@ -402,6 +441,28 @@ mod tests {
         assert!(validate_entry_path("C:/windows", false).is_err());
         assert!(validate_entry_path("ok/sub/file.txt", false).is_ok());
         assert!(validate_entry_path("", false).is_ok());
+    }
+
+    #[test]
+    fn link_target_stays_within_root() {
+        // Relative targets resolving inside the tree are fine...
+        assert!(validate_link_target("b.txt", "", false).is_ok());
+        assert!(validate_link_target("./x", "", false).is_ok());
+        assert!(validate_link_target("../sibling.txt", "sub", false).is_ok());
+        // ...escapes above the root, absolute targets, and empty are not.
+        assert!(validate_link_target("../outside.txt", "", false).is_err());
+        assert!(validate_link_target("../../x", "sub", false).is_err());
+        assert!(validate_link_target("/etc/passwd", "", false).is_err());
+        assert!(validate_link_target("C:\\Windows\\System32", "", false).is_err());
+        assert!(validate_link_target("\\\\server\\share", "", false).is_err());
+        assert!(validate_link_target("", "", false).is_err());
+        assert!(validate_link_target("a\0b", "", false).is_err());
+    }
+
+    #[test]
+    fn link_target_windows_components_checked() {
+        assert!(validate_link_target("CON", "", true).is_err());
+        assert!(validate_link_target("ok.txt", "", true).is_ok());
     }
 
     #[test]

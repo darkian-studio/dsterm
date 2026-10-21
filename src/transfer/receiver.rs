@@ -24,7 +24,7 @@ use crate::transfer::{
     validate::{
         check_case_collision, destination_conflict, ensure_dest_dir, free_space, is_loopback_peer,
         join_within, pretty_bytes, resolve_dest_base, resolve_rename, validate_dest_hint,
-        validate_entry_path, validate_root_name,
+        validate_entry_path, validate_link_target, validate_root_name,
     },
     DEFAULT_CONFIRM_TIMEOUT_SECS, MAX_FILES, MAX_TOTAL_SIZE,
 };
@@ -643,6 +643,12 @@ async fn receive_payload(
             }
             "symlink" => {
                 let target = header.link_target.unwrap_or_default();
+                let parent_rel = match header.path.rfind(['/', '\\']) {
+                    Some(i) => &header.path[..i],
+                    None => "",
+                };
+                validate_link_target(&target, parent_rel, is_windows)
+                    .map_err(|e| anyhow!("link target rejected: {e}"))?;
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| anyhow!("receiver filesystem error: {e}"))?;
