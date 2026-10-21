@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::{BufReader, Read};
 
 #[derive(Debug, Clone)]
 pub enum GGUFValue {
@@ -116,7 +116,53 @@ impl std::fmt::Display for GGUFError {
 
 impl std::error::Error for GGUFError {}
 
-fn read_u32_le(cursor: &mut Cursor<&[u8]>) -> Result<u32, GGUFError> {
+/// Sequential reader over a GGUF file (or an in-memory fixture) that
+/// tracks how many bytes it has consumed, so length sanity checks only
+/// need the file's size, never its contents.
+struct TrackedReader<R> {
+    inner: R,
+    pos: u64,
+    file_len: u64,
+}
+
+impl<R: Read> TrackedReader<R> {
+    fn new(inner: R, file_len: u64) -> Self {
+        Self {
+            inner,
+            pos: 0,
+            file_len,
+        }
+    }
+
+    /// Start part-way into the stream (fixtures that skip the header).
+    #[cfg(test)]
+    fn new_at(inner: R, pos: u64, file_len: u64) -> Self {
+        Self {
+            inner,
+            pos,
+            file_len,
+        }
+    }
+
+    #[cfg(test)]
+    fn position(&self) -> u64 {
+        self.pos
+    }
+
+    fn remaining(&self) -> u64 {
+        self.file_len.saturating_sub(self.pos)
+    }
+}
+
+impl<R: Read> Read for TrackedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+fn read_u32_le<R: Read>(cursor: &mut TrackedReader<R>) -> Result<u32, GGUFError> {
     let mut buf = [0u8; 4];
     cursor
         .read_exact(&mut buf)
@@ -124,7 +170,7 @@ fn read_u32_le(cursor: &mut Cursor<&[u8]>) -> Result<u32, GGUFError> {
     Ok(u32::from_le_bytes(buf))
 }
 
-fn read_u64_le(cursor: &mut Cursor<&[u8]>) -> Result<u64, GGUFError> {
+fn read_u64_le<R: Read>(cursor: &mut TrackedReader<R>) -> Result<u64, GGUFError> {
     let mut buf = [0u8; 8];
     cursor
         .read_exact(&mut buf)
@@ -132,12 +178,9 @@ fn read_u64_le(cursor: &mut Cursor<&[u8]>) -> Result<u64, GGUFError> {
     Ok(u64::from_le_bytes(buf))
 }
 
-fn read_gguf_string(cursor: &mut Cursor<&[u8]>) -> Result<String, GGUFError> {
+fn read_gguf_string<R: Read>(cursor: &mut TrackedReader<R>) -> Result<String, GGUFError> {
     let len = read_u64_le(cursor)? as usize;
-    let remaining = cursor
-        .get_ref()
-        .len()
-        .saturating_sub(cursor.position() as usize);
+    let remaining = cursor.remaining() as usize;
     if len > remaining {
         return Err(GGUFError::InvalidMetadata(format!(
             "GGUF string length {len} exceeds remaining {remaining} bytes"
@@ -151,7 +194,10 @@ fn read_gguf_string(cursor: &mut Cursor<&[u8]>) -> Result<String, GGUFError> {
         .map_err(|_| GGUFError::InvalidMetadata("invalid UTF-8 in GGUF string".into()))
 }
 
-fn read_value(cursor: &mut Cursor<&[u8]>, value_type: u32) -> Result<GGUFValue, GGUFError> {
+fn read_value<R: Read>(
+    cursor: &mut TrackedReader<R>,
+    value_type: u32,
+) -> Result<GGUFValue, GGUFError> {
     match value_type {
         0 => {
             let mut buf = [0u8; 1];
@@ -236,9 +282,16 @@ fn read_value(cursor: &mut Cursor<&[u8]>, value_type: u32) -> Result<GGUFValue, 
 
 pub fn parse_gguf<P: AsRef<std::path::Path>>(path: P) -> Result<GGUFMetadata, GGUFError> {
     let path_str = path.as_ref().display().to_string();
-    let data = std::fs::read(path.as_ref()).map_err(|e| GGUFError::Io(e.to_string()))?;
-    let file_size = data.len() as u64;
-    let mut cursor = Cursor::new(data.as_slice());
+    let file_size = std::fs::metadata(path.as_ref())
+        .map_err(|e| GGUFError::Io(e.to_string()))?
+        .len();
+    let file = std::fs::File::open(path.as_ref()).map_err(|e| GGUFError::Io(e.to_string()))?;
+    // Stream the header, KV pairs and tensor descriptors only; the
+    // multi-gigabyte tensor payload that follows is never read. The
+    // old whole-file read ran on a tokio worker while the model pool
+    // write lock was held, blocking every other /ai request for the
+    // duration of the copy.
+    let mut cursor = TrackedReader::new(BufReader::new(file), file_size);
 
     let mut magic = [0u8; 4];
     cursor
@@ -434,17 +487,16 @@ pub fn parse_gguf<P: AsRef<std::path::Path>>(path: P) -> Result<GGUFMetadata, GG
     })
 }
 
-fn compute_parameter_count(
-    cursor: &mut Cursor<&[u8]>,
+fn compute_parameter_count<R: Read>(
+    cursor: &mut TrackedReader<R>,
     tensor_count: u64,
     _version: u32,
 ) -> Result<Option<f64>, GGUFError> {
     let mut total_params: f64 = 0.0;
-    let file_len = cursor.get_ref().len();
     for _ in 0..tensor_count {
         let _name = read_gguf_string(cursor)?;
         let n_dims = read_u32_le(cursor)?;
-        let remaining = file_len.saturating_sub(cursor.position() as usize);
+        let remaining = cursor.remaining();
         let n_dims = n_dims.min((remaining / 8) as u32);
         let mut dims = Vec::with_capacity(n_dims as usize);
         for _ in 0..n_dims {
@@ -716,6 +768,7 @@ pub fn format_parameter_count(count: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn test_quantisation_from_ftype() {
@@ -1135,9 +1188,10 @@ mod tests {
         // tensor[0]: len(8) + "output.weight"(13) + n_dims(4) + dims(16) + type(4) + offset(8) = 53
         // tensor[1]: len(8) + "output.bias"(11) + n_dims(4) + dims(8) + type(4) + offset(8) = 43
         let expected_boundary = 69 + 53 + 43;
-        let params = compute_parameter_count(&mut cursor, 2, 3).unwrap();
+        let mut reader = TrackedReader::new_at(cursor, 69, buf.len() as u64);
+        let params = compute_parameter_count(&mut reader, 2, 3).unwrap();
         assert_eq!(params, Some(24.0));
-        assert_eq!(cursor.position(), expected_boundary);
+        assert_eq!(reader.position(), expected_boundary);
     }
 
     #[test]
