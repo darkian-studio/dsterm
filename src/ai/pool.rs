@@ -520,6 +520,15 @@ impl ModelPoolInner {
             .unwrap_or_else(|_| path.to_string())
     }
 
+    /// Load-sequence number embedded in a pool id ("pool://12" -> 12).
+    /// Non-conforming ids sort last, keeping list() deterministic.
+    fn pool_id_sort_key(pool_id: &str) -> u64 {
+        pool_id
+            .strip_prefix("pool://")
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(u64::MAX)
+    }
+
     fn check_file_unchanged(&self, path: &str) -> Result<FileInfo, String> {
         let meta = std::fs::metadata(path).map_err(|e| format!("Cannot stat file: {e}"))?;
         let size = meta.len();
@@ -740,7 +749,13 @@ impl ModelPoolInner {
     }
 
     pub fn list(&self) -> Vec<Value> {
-        self.models.values().map(|m| m.to_view()).collect()
+        // HashMap iteration order is arbitrary; resolve_model_id's
+        // "first loaded" fallback and the loaded-models list both read
+        // this, so order by the load-sequence number in the pool id
+        // (numeric: "pool://10" is newer than "pool://9").
+        let mut models: Vec<&LoadedModel> = self.models.values().collect();
+        models.sort_by_key(|m| Self::pool_id_sort_key(&m.metadata.pool_id));
+        models.iter().map(|m| m.to_view()).collect()
     }
 
     pub fn stats(&self) -> PoolStats {
@@ -1302,6 +1317,27 @@ mod tests {
             .insert(pid.clone(), make_model(&pid, "reg://a", 100, 1, 1));
         assert!(pool.get_by_registry_id("reg://a").is_some());
         assert!(pool.get_by_registry_id("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_list_orders_by_load_sequence() {
+        let mut pool = new_pool();
+        // Deliberately insert the higher id first: a lexicographic or
+        // raw-HashMap order would not yield pool://9 first.
+        pool.models.insert(
+            "pool://10".to_string(),
+            make_model("pool://10", "reg://b", 100, 0, 2),
+        );
+        pool.models.insert(
+            "pool://9".to_string(),
+            make_model("pool://9", "reg://a", 100, 0, 1),
+        );
+        let views = pool.list();
+        let order: Vec<&str> = views
+            .iter()
+            .map(|v| v["metadata"]["pool_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(order, ["pool://9", "pool://10"]);
     }
 
     // --- Consistency verification ---
