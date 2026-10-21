@@ -185,6 +185,9 @@ pub struct AiState {
 }
 
 impl AiState {
+    /// Default constructor, used by tests; production builds the
+    /// state from the `[ai]` config via `with_pool_config`.
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::with_pool_config(PoolConfig::default())
     }
