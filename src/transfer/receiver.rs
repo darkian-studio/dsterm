@@ -613,6 +613,11 @@ async fn receive_payload(
         if header.kind != "dir" && header.kind != "file" && header.kind != "symlink" {
             anyhow::bail!("malformed transfer payload: unknown entry kind");
         }
+        // The declared size cleared MAX_TOTAL_SIZE at request time, but
+        // every entry's size is the sender's word; enforce the limit on
+        // the running total of bytes about to be accepted instead of
+        // against the declaration alone.
+        check_actual_within_limit(total_written, header.size, MAX_TOTAL_SIZE)?;
         if !incoming_is_dir {
             if header.kind != "file" || !header.path.is_empty() {
                 anyhow::bail!("malformed transfer payload for single file");
@@ -737,6 +742,22 @@ fn refuse_symlink_parents(root: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Enforced per entry before its bytes are accepted: `total_written` is
+/// what has actually been written so far, `next` the entry's declared
+/// body size, `max` the same MAX_TOTAL_SIZE the request declaration
+/// cleared. Keeps a sender that under-declared the request size from
+/// pushing an unbounded stream through on the strength of that
+/// declaration.
+fn check_actual_within_limit(total_written: u64, next: u64, max: u64) -> anyhow::Result<()> {
+    if total_written.saturating_add(next) > max {
+        anyhow::bail!(
+            "actual transfer exceeds size limit of {}",
+            pretty_bytes(max)
+        );
+    }
+    Ok(())
+}
+
 async fn read_exact_bytes(
     reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
     size: u64,
@@ -822,4 +843,20 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actual_size_capped_as_bytes_arrive() {
+        assert!(check_actual_within_limit(0, 100, 1000).is_ok());
+        // Boundary is inclusive: exactly max passes, one more fails.
+        assert!(check_actual_within_limit(900, 100, 1000).is_ok());
+        assert!(check_actual_within_limit(901, 100, 1000).is_err());
+        // Saturation must not wrap past the limit.
+        assert!(check_actual_within_limit(u64::MAX, 1, 1000).is_err());
+        assert!(check_actual_within_limit(0, u64::MAX, u64::MAX).is_ok());
+    }
 }
