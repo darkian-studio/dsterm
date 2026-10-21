@@ -478,7 +478,7 @@ pub struct ModelPoolInner {
     next_pool_id: u64,
     file_cache: HashMap<String, FileInfo>,
     /// Metadata cache that survives runtime recreation.
-    /// When a model is fully unloaded its metadata is cached here
+    /// When an idle model is evicted its metadata is cached here
     /// so that `ModelMetadata` is still available for reloads or queries.
     metadata_cache: HashMap<String, ModelMetadata>,
 }
@@ -586,25 +586,8 @@ impl ModelPoolInner {
             }
         }
 
-        let current_count = self.models.len();
-        let current_memory: u64 = self
-            .models
-            .values()
-            .map(|m| m.metadata.memory_estimate.total_bytes)
-            .sum();
-
         let estimated = MemoryBreakdown::from_inspect(&meta);
-        if self.config.max_models > 0 && current_count >= self.config.max_models {
-            self.evict(1)?;
-        }
-        if self.config.max_memory_bytes > 0
-            && current_memory.saturating_add(estimated.total_bytes) > self.config.max_memory_bytes
-        {
-            let needed = current_memory
-                .saturating_add(estimated.total_bytes)
-                .saturating_sub(self.config.max_memory_bytes);
-            self.evict_for_memory(needed)?;
-        }
+        self.ensure_capacity(estimated.total_bytes)?;
 
         let rt = {
             #[cfg(feature = "llama")]
@@ -683,15 +666,14 @@ impl ModelPoolInner {
     }
 
     pub fn unload(&mut self, pool_id: &str) -> Result<bool, String> {
-        let (fully_released, new_ref, meta_cached) = {
+        let (fully_released, new_ref) = {
             let model = self
                 .models
                 .get_mut(pool_id)
                 .ok_or_else(|| format!("Model not loaded: {pool_id}"))?;
             let fully_released = model.lifecycle.release()?;
             let new_ref = model.lifecycle.ref_count;
-            let meta_cached = model.metadata.to_model_metadata();
-            (fully_released, new_ref, meta_cached)
+            (fully_released, new_ref)
         };
 
         self.emit(PoolEvent::RefDecremented {
@@ -700,16 +682,13 @@ impl ModelPoolInner {
         });
 
         if fully_released {
-            self.emit(PoolEvent::StateChanged {
-                pool_id: pool_id.to_string(),
-                from: LifecycleState::Loaded,
-                to: LifecycleState::Unloading,
-            });
-            // Metadata must outlive the runtime: reloads and queries read
-            // the cache, never the destroyed backend.
-            self.metadata_cache
-                .insert(meta_cached.registry_id.clone(), meta_cached);
-            self.models.remove(pool_id);
+            // Fully released but still resident: the entry stays Loaded with
+            // ref_count 0. Removing it here is what made eviction unreachable
+            // (evict only picks ref_count == 0, so a present model was always
+            // referenced) and forced a full disk reload on the next use.
+            // The idle entry is the pool's LRU candidate; evict() removes it
+            // under capacity pressure and then caches its metadata so
+            // metadata outlives the runtime.
             self.emit(PoolEvent::ModelUnloaded {
                 pool_id: pool_id.to_string(),
                 registry_id: String::new(),
@@ -894,6 +873,32 @@ impl ModelPoolInner {
     // Eviction
     // -----------------------------------------------------------------------
 
+    /// Frees a slot (and memory headroom) before `load()` inserts a new
+    /// model. This is the path where a 5th load used to fail with
+    /// "No evictable models": removal-at-ref-zero meant every present model
+    /// was referenced, so the evict() filter had no candidates.
+    fn ensure_capacity(&mut self, estimated_bytes: u64) -> Result<(), String> {
+        let current_count = self.models.len();
+        let current_memory: u64 = self
+            .models
+            .values()
+            .map(|m| m.metadata.memory_estimate.total_bytes)
+            .sum();
+
+        if self.config.max_models > 0 && current_count >= self.config.max_models {
+            self.evict(1)?;
+        }
+        if self.config.max_memory_bytes > 0
+            && current_memory.saturating_add(estimated_bytes) > self.config.max_memory_bytes
+        {
+            let needed = current_memory
+                .saturating_add(estimated_bytes)
+                .saturating_sub(self.config.max_memory_bytes);
+            self.evict_for_memory(needed)?;
+        }
+        Ok(())
+    }
+
     fn evict(&mut self, count: usize) -> Result<(), String> {
         let mut evicted = 0;
         for _ in 0..count {
@@ -915,7 +920,14 @@ impl ModelPoolInner {
                         pool_id: id.clone(),
                         reason: reason.clone(),
                     });
-                    self.models.remove(&id);
+                    if let Some(model) = self.models.remove(&id) {
+                        // Removal now happens here (not at ref 0), so the
+                        // metadata cache must be kept on this path:
+                        // reloads and queries read it after the runtime
+                        // is gone.
+                        let meta = model.metadata.to_model_metadata();
+                        self.metadata_cache.insert(meta.registry_id.clone(), meta);
+                    }
                     evicted += 1;
                 }
                 None => {
@@ -952,7 +964,10 @@ impl ModelPoolInner {
 
             match victim {
                 Some((id, bytes)) => {
-                    self.models.remove(&id);
+                    if let Some(model) = self.models.remove(&id) {
+                        let meta = model.metadata.to_model_metadata();
+                        self.metadata_cache.insert(meta.registry_id.clone(), meta);
+                    }
                     freed = freed.saturating_add(bytes);
                     if freed >= needed {
                         break;
@@ -1159,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pool_unload_removes_when_zero() {
+    fn test_pool_unload_keeps_idle_model() {
         let mut pool = new_pool();
         let pid = "pool://1".to_string();
         pool.models
@@ -1167,7 +1182,116 @@ mod tests {
         let result = pool.unload(&pid);
         assert!(result.is_ok());
         assert!(result.unwrap()); // fully released
-        assert!(!pool.models.contains_key(&pid));
+                                  // The entry lingers as an idle Loaded model: that is what makes it
+                                  // reachable for eviction and re-acquirable without a disk reload.
+        let model = pool
+            .models
+            .get_mut(&pid)
+            .expect("idle model stays resident");
+        assert_eq!(model.lifecycle.ref_count, 0);
+        assert_eq!(model.lifecycle.state, LifecycleState::Loaded);
+        // Re-acquire, the same predicate load() uses for its fast path.
+        assert_eq!(model.lifecycle.acquire().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_idle_model_is_evictable_after_full_release() {
+        let mut pool = new_pool();
+        pool.models.insert(
+            "pool://1".to_string(),
+            make_model("pool://1", "reg://a", 100, 1, 1),
+        );
+        pool.models.insert(
+            "pool://2".to_string(),
+            make_model("pool://2", "reg://b", 200, 1, 2),
+        );
+        // Full release of one model: the old code removed it here, so the
+        // ref_count == 0 filter in evict() never matched anything and a
+        // 5th load at capacity failed with "No evictable models".
+        assert!(pool.unload("pool://1").unwrap());
+        assert_eq!(pool.stats().evictable_count, 1);
+        // Capacity pressure now has a victim.
+        pool.evict(1).unwrap();
+        assert!(!pool.models.contains_key("pool://1"));
+        assert!(pool.models.contains_key("pool://2"));
+    }
+
+    #[test]
+    fn test_evict_caches_metadata_of_removed_model() {
+        let mut pool = new_pool();
+        pool.models.insert(
+            "pool://1".to_string(),
+            make_model("pool://1", "reg://a", 100, 0, 1),
+        );
+        pool.evict(1).unwrap();
+        assert!(pool.metadata_cache.contains_key("reg://a"));
+    }
+
+    #[test]
+    fn test_capacity_frees_slot_for_5th_load() {
+        let mut pool = ModelPoolInner::new(PoolConfig {
+            max_models: 4,
+            max_memory_bytes: 0,
+        });
+        // Three actively referenced models plus one idle (fully released).
+        for i in 1..=3u32 {
+            let pid = format!("pool://{i}");
+            pool.models.insert(
+                pid.clone(),
+                make_model(&pid, &format!("reg://{i}"), 100, 1, i as u64),
+            );
+        }
+        pool.models.insert(
+            "pool://4".to_string(),
+            make_model("pool://4", "reg://4", 100, 0, 4),
+        );
+
+        // The 5th load used to die here: every present model had ref >= 1
+        // (unload removed entries at zero), so evict() had no candidates.
+        pool.ensure_capacity(0).unwrap();
+        assert_eq!(pool.models.len(), 3);
+        assert!(!pool.models.contains_key("pool://4"));
+        assert!(pool.models.contains_key("pool://1"));
+    }
+
+    #[test]
+    fn test_capacity_errors_when_every_model_is_referenced() {
+        let mut pool = ModelPoolInner::new(PoolConfig {
+            max_models: 4,
+            max_memory_bytes: 0,
+        });
+        for i in 1..=4u32 {
+            let pid = format!("pool://{i}");
+            pool.models.insert(
+                pid.clone(),
+                make_model(&pid, &format!("reg://{i}"), 100, 1, i as u64),
+            );
+        }
+
+        let err = pool.ensure_capacity(0).unwrap_err();
+        assert!(err.contains("No evictable models"), "got: {err}");
+    }
+
+    #[test]
+    fn test_capacity_memory_pressure_evicts_idle_model() {
+        let mut pool = ModelPoolInner::new(PoolConfig {
+            max_models: 0,
+            max_memory_bytes: 500,
+        });
+        pool.models.insert(
+            "pool://1".to_string(),
+            make_model("pool://1", "reg://a", 400, 1, 1),
+        );
+        pool.models.insert(
+            "pool://2".to_string(),
+            make_model("pool://2", "reg://b", 150, 0, 2),
+        );
+
+        // 550 bytes resident over a 500-byte ceiling: the idle model is the
+        // victim that makes room instead of the old "could not evict" error.
+        pool.ensure_capacity(0).unwrap();
+        assert!(!pool.models.contains_key("pool://2"));
+        assert_eq!(pool.models.len(), 1);
     }
 
     #[test]
