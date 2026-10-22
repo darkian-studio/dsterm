@@ -6,7 +6,13 @@
 //! Everything else is ignored. Missing/unreadable roots yield
 //! an empty list (unknown is not missing).
 
-use axum::{extract::Query, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::{ConnectInfo, Query},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -37,7 +43,21 @@ struct DiscoveredAsset {
     modified_ms: Option<u64>,
 }
 
-async fn discover(Query(query): Query<DiscoverQuery>) -> impl IntoResponse {
+async fn discover(
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
+    Query(query): Query<DiscoverQuery>,
+) -> impl IntoResponse {
+    if !crate::terminal::file_surface_allowed_for(&headers, &addr) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "api": 1,
+                "error": { "code": "forbidden", "message": "filesystem surface is disabled" },
+            })),
+        )
+            .into_response();
+    }
     let root = match query.root {
         Some(root) if !root.trim().is_empty() => root,
         _ => {
@@ -178,8 +198,24 @@ fn modified_ms(path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::ConnectInfo;
     use axum::http::Request;
     use tower::util::ServiceExt;
+
+    /// Bare `Router::oneshot` carries no connect-info layer; the real
+    /// server always does (`into_make_service_with_connect_info`), so
+    /// tests inject the peer address explicitly.
+    fn discover_request(query: &str, peer: [u8; 4]) -> Request<axum::body::Body> {
+        let mut request = Request::builder()
+            .method("GET")
+            .uri(format!("/assets/v1/discover{query}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from((peer, 0))));
+        request
+    }
 
     fn scratch_root(name: &str) -> std::path::PathBuf {
         let root =
@@ -208,16 +244,10 @@ mod tests {
     async fn discover_body(root: &str) -> (StatusCode, serde_json::Value) {
         let app = assets_routes();
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!(
-                        "/assets/v1/discover?root={}",
-                        urlencoding_like(root)
-                    ))
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(discover_request(
+                &format!("?root={}", urlencoding_like(root)),
+                [127, 0, 0, 1],
+            ))
             .await
             .unwrap();
         let status = response.status();
@@ -271,15 +301,41 @@ mod tests {
     async fn missing_root_param_is_rejected() {
         let app = assets_routes();
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/assets/v1/discover")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(discover_request("", [127, 0, 0, 1]))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn remote_discovery_is_forbidden_without_the_token() {
+        let root = scratch_root("remote-forbidden");
+        seed_fixture(&root);
+        let app = assets_routes();
+        let response = app
+            .oneshot(discover_request(
+                &format!("?root={}", urlencoding_like(&root.to_string_lossy())),
+                [192, 0, 2, 1],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "forbidden");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn local_discovery_still_works_when_the_surface_is_disabled() {
+        // Default config: filesystem.enabled = false. Loopback is the door
+        // that keeps the headline local feature alive (#15's constraint).
+        let root = scratch_root("local-allowed");
+        seed_fixture(&root);
+        let (status, _) = discover_body(&root.to_string_lossy()).await;
+        assert_eq!(status, StatusCode::OK);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

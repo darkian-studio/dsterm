@@ -82,6 +82,46 @@ pub fn token_accepted(auth_required: bool, presented: Option<&str>, expected: &s
     }
 }
 
+/// Whether a caller may reach the absolute-path file surfaces
+/// (`GET /assets/v1/discover`, `POST /ai/load`) — the two routes the audit
+/// found probing `root=`/`path=` while ignoring `filesystem.enabled`.
+///
+/// Three doors, one per legitimate caller class:
+///
+///   - `filesystem.enabled` — the operator opened the filesystem surface
+///     (`/fs/*` follows it; `--remote` sets it), so these routes follow.
+///   - Loopback — a local process (the IDE's daemon, a human's shell) is
+///     already inside the perimeter. Requiring a token here would 403
+///     `discover`/`ai/load` on every auth-off instance, i.e. the headline
+///     local feature.
+///   - A valid token — remote callers (the relay) prove themselves. On an
+///     auth-off daemon nobody can, which is the teeth: an `-i`-bound peer
+///     gets 403 instead of arbitrary `root=`/`path=` probes.
+///
+/// Pure for the same reason as [token_accepted]: a `OnceLock` can only be
+/// set once per test process, so every input is a parameter.
+pub fn file_surface_allowed(
+    filesystem_enabled: bool,
+    addr: &std::net::SocketAddr,
+    presented: Option<&str>,
+    expected: &str,
+) -> bool {
+    filesystem_enabled || addr.ip().is_loopback() || token_accepted(true, presented, expected)
+}
+
+/// Handler glue for [file_surface_allowed]: reads the process config and
+/// token so call sites stay one line.
+pub fn file_surface_allowed_for(headers: &HeaderMap, addr: &std::net::SocketAddr) -> bool {
+    file_surface_allowed(
+        get_config().filesystem.enabled,
+        addr,
+        headers
+            .get(AUTH_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        loopback_token(),
+    )
+}
+
 /// Rejects any request that does not present the shared token, when one is
 /// configured.
 ///
@@ -555,5 +595,39 @@ mod auth_tests {
         // has done since the fence shipped - fence config errors must not
         // wedge every exec in the IDE.
         assert!(allowlist_decision(&Some("(".to_string()), "cargo test").is_ok());
+    }
+
+    /// The #15/#16 file-surface gate: filesystem toggle, loopback, token.
+    #[test]
+    fn file_surface_gate_has_three_doors() {
+        let local: std::net::SocketAddr = "127.0.0.1:1234".parse().unwrap();
+        let remote: std::net::SocketAddr = "192.0.2.1:9999".parse().unwrap();
+
+        // Operator opened the filesystem surface: the remote probe the
+        // audit called out is allowed, at the same trust level as /fs/*.
+        assert!(file_surface_allowed(true, &remote, None, "s3cret"));
+
+        // Local callers pass without a token: an auth-off instance must
+        // keep its headline local feature.
+        assert!(file_surface_allowed(false, &local, None, "s3cret"));
+        assert!(file_surface_allowed(false, &local, None, ""));
+
+        // Remote without the token is the gap: shut.
+        assert!(!file_surface_allowed(false, &remote, None, "s3cret"));
+        assert!(!file_surface_allowed(
+            false,
+            &remote,
+            Some("wrong"),
+            "s3cret"
+        ));
+        assert!(!file_surface_allowed(false, &remote, Some("anything"), ""));
+
+        // Remote with the token (relay path) passes.
+        assert!(file_surface_allowed(
+            false,
+            &remote,
+            Some("s3cret"),
+            "s3cret"
+        ));
     }
 }
