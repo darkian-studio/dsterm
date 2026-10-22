@@ -1992,6 +1992,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finished_fetch_ops_are_reaped() {
+        let dir =
+            std::env::temp_dir().join(format!("dsterm-fetch-reap-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = Arc::new(
+            FetchManager::new_with_retention(
+                dir,
+                tokio::runtime::Handle::current(),
+                // Long enough that await_done's cadence always observes
+                // the terminal snapshot before the reaper runs; the reap
+                // wait below is what this test is actually timing.
+                Duration::from_secs(2),
+            )
+            .expect("fetch manager"),
+        );
+        // Connection refused on the first candidate: the op reaches a
+        // terminal phase quickly and without touching the network.
+        let op = manager.start(fetch::FetchRequest {
+            urls: vec!["https://127.0.0.1:1/lit.zim".to_string()],
+            mirrors: vec![],
+            sha256: String::new(),
+            size_bytes: 0,
+            collection_id: "reap-docs".to_string(),
+        });
+        let snapshot = await_done(&manager, &op).await;
+        assert!(
+            matches!(snapshot.phase, fetch::FetchPhase::Failed { .. }),
+            "unexpected: {:?}",
+            snapshot.phase,
+        );
+        // The op must still be readable inside the retention window...
+        assert!(manager.snapshot(&op).await.is_some());
+        // ...and gone once the reaper lapses it.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if manager.snapshot(&op).await.is_none() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "op was never reaped");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
     async fn fetch_verifies_validates_and_reports() {
         let (manager, dir) = test_manager();
         let (files, _) = file_server().await;

@@ -457,10 +457,15 @@ impl LoadLockManager {
         locks.len()
     }
 
-    #[allow(dead_code)]
+    /// Drops entries nobody can reach anymore: nothing outside the map
+    /// holds the Arc AND the permit is free. Checking only the permit -
+    /// as the first version did - raced a caller that already held the
+    /// Arc but had not taken the permit yet: pruning then handed the
+    /// next caller a second semaphore for the same key, and both
+    /// "guards" could be inside the critical section at once.
     pub async fn prune(&self) {
         let mut locks = self.locks.lock().await;
-        locks.retain(|_, sem| sem.available_permits() != 1);
+        locks.retain(|_, sem| Arc::strong_count(sem) > 1 || sem.available_permits() != 1);
     }
 }
 
@@ -1598,5 +1603,33 @@ mod tests {
         // The check is: if cached, verify size/mtime match
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Cannot stat"));
+    }
+
+    #[tokio::test]
+    async fn load_lock_entries_are_pruned_after_use() {
+        let mgr = LoadLockManager::new();
+        {
+            let sem = mgr.acquire("path:/a").await;
+            let _permit = sem.acquire().await.unwrap();
+            assert_eq!(mgr.active_locks().await, 1);
+        }
+        mgr.prune().await;
+        assert_eq!(mgr.active_locks().await, 0);
+    }
+
+    #[tokio::test]
+    async fn prune_keeps_semaphore_someone_still_holds() {
+        let mgr = LoadLockManager::new();
+        let sem = mgr.acquire("path:/a").await;
+        let permit = sem.acquire().await.unwrap();
+        drop(permit);
+        // Permit is free, but the caller outside the map still holds the
+        // Arc: removing the entry would hand the next acquire a second
+        // semaphore for the same key.
+        mgr.prune().await;
+        assert_eq!(mgr.active_locks().await, 1);
+        drop(sem);
+        mgr.prune().await;
+        assert_eq!(mgr.active_locks().await, 0);
     }
 }

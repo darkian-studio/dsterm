@@ -278,24 +278,32 @@ async fn ai_load(
     // Acquire per-model load lock to prevent duplicate loads
     let lock_key = format!("path:{}", model_path);
     let semaphore = state.load_locks.acquire(&lock_key).await;
-    let _permit = semaphore.acquire().await.unwrap();
+    let permit = semaphore.acquire().await.unwrap();
 
     let pool = state.model_pool.clone();
-    let mut guard = pool.write().await;
-    match guard.load(&model_path) {
-        Ok(model) => {
-            let view = model.to_view();
-            let ref_count = model.lifecycle.ref_count;
-            Ok(ok_response(
-                "inference.loadModel",
-                json!({ "loaded": true, "model": view, "ref_count": ref_count }),
-            ))
+    let outcome = {
+        let mut guard = pool.write().await;
+        match guard.load(&model_path) {
+            Ok(model) => {
+                let view = model.to_view();
+                let ref_count = model.lifecycle.ref_count;
+                Ok(ok_response(
+                    "inference.loadModel",
+                    json!({ "loaded": true, "model": view, "ref_count": ref_count }),
+                ))
+            }
+            Err(e) => {
+                guard.record_load_failure(&e);
+                Err(error::internal_error(e))
+            }
         }
-        Err(e) => {
-            guard.record_load_failure(&e);
-            Err(error::internal_error(e))
-        }
-    }
+    };
+    drop(permit);
+    // This attempt's Arc and permit are gone; with no other holder the
+    // per-path entry is prunable, so the lock map cannot grow for the
+    // life of the process.
+    state.load_locks.prune().await;
+    outcome
 }
 
 /// Reads the model identifier from a request body, accepting both

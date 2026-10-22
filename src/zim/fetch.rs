@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
@@ -70,10 +71,25 @@ pub struct FetchManager {
     collections_dir: PathBuf,
     exec: tokio::runtime::Handle,
     ops: DashMap<String, Arc<FetchOp>>,
+    /// How long a finished op stays queryable. The client polls until
+    /// it sees Done/Failed/Cancelled and reads the report from that
+    /// last snapshot, so the entry outlives the phase change by this
+    /// much - and no longer (see the reaper in `run`).
+    terminal_retention: Duration,
 }
 
 impl FetchManager {
     pub fn new(collections_dir: PathBuf, exec: tokio::runtime::Handle) -> anyhow::Result<Self> {
+        Self::new_with_retention(collections_dir, exec, Duration::from_secs(600))
+    }
+
+    /// [retention] is only shrunk by tests; production code uses the
+    /// default in [`FetchManager::new`].
+    pub fn new_with_retention(
+        collections_dir: PathBuf,
+        exec: tokio::runtime::Handle,
+        retention: Duration,
+    ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&collections_dir)?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -89,6 +105,7 @@ impl FetchManager {
             collections_dir,
             exec,
             ops: DashMap::new(),
+            terminal_retention: retention,
         })
     }
 
@@ -195,6 +212,22 @@ impl FetchManager {
     }
 
     async fn run(self: Arc<Self>, op: Arc<FetchOp>, request: FetchRequest) {
+        self.run_inner(&op, request).await;
+        // Every terminal phase lands back here. Keep the finished op
+        // queryable through the retention window - the client's last
+        // poll reads Done/Failed and the report from that snapshot -
+        // then drop it, so `ops` cannot grow for the life of the
+        // process.
+        let this = Arc::clone(&self);
+        let id = op.id.clone();
+        let retention = self.terminal_retention;
+        tokio::spawn(async move {
+            tokio::time::sleep(retention).await;
+            this.ops.remove(&id);
+        });
+    }
+
+    async fn run_inner(&self, op: &Arc<FetchOp>, request: FetchRequest) {
         if op.cancelled.load(Ordering::SeqCst) {
             *op.phase.lock().await = FetchPhase::Cancelled;
             return;
@@ -209,7 +242,7 @@ impl FetchManager {
             if op.cancelled.load(Ordering::SeqCst) {
                 break;
             }
-            let op_ref: &FetchOp = &op;
+            let op_ref: &FetchOp = op.as_ref();
             match self.download_once(op_ref, url, &request, &part_path).await {
                 Ok(()) => {
                     downloaded = true;
