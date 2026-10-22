@@ -396,8 +396,34 @@ pub fn free_space(path: &Path) -> u64 {
 }
 
 #[cfg(windows)]
-pub fn free_space(_path: &Path) -> u64 {
-    u64::MAX
+pub fn free_space(path: &Path) -> u64 {
+    use sysinfo::Disks;
+    // Advisory pre-check only: report free space on the mount that owns
+    // the destination (longest real prefix match, boundary checked so
+    // \data does not claim \database). Unmatched paths (UNC, errors)
+    // keep the old u64::MAX sentinel, which skips the check.
+    let target = path.to_string_lossy().to_lowercase();
+    let mut best_len = 0usize;
+    let mut best_free = u64::MAX;
+    for disk in Disks::new_with_refreshed_list().list() {
+        let mount = disk
+            .mount_point()
+            .to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase();
+        if mount.is_empty() || !target.starts_with(&mount) {
+            continue;
+        }
+        let rest = &target[mount.len()..];
+        if !rest.is_empty() && !rest.starts_with(['\\', '/']) {
+            continue;
+        }
+        if mount.len() > best_len {
+            best_len = mount.len();
+            best_free = disk.available_space();
+        }
+    }
+    best_free
 }
 
 pub fn pretty_bytes(n: u64) -> String {
@@ -501,5 +527,14 @@ mod tests {
         let root = Path::new("/tmp/dest");
         assert!(join_within(root, "a/b").unwrap().starts_with(root));
         assert!(join_within(root, "../x").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn free_space_reports_real_bytes_on_windows() {
+        let here = std::env::current_dir().unwrap();
+        let free = free_space(&here);
+        assert!(free > 0, "expected real free space, got sentinel/zero");
+        assert!(free != u64::MAX, "sentinel means the pre-check is skipped");
     }
 }
