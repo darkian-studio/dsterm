@@ -23,8 +23,8 @@ use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
-    agent_bridge, ai_bridge, ast_bridge, config::DstermConfig, dap_bridge, extension_host_bridge,
-    fs, lsp_bridge, mcp_bridge, ports, process_bridge, proxy, sysmon,
+    agent_bridge, ai_bridge, config::DstermConfig, dap_bridge, extension_host_bridge, fs,
+    lsp_bridge, mcp_bridge, ports, process_bridge, proxy, sysmon,
 };
 pub use handlers::notify_update_ready;
 use handlers::*;
@@ -254,7 +254,6 @@ pub async fn start_server(
         extension_host_bridge::new_registry();
     let mcp_registry: mcp_bridge::McpRegistry = process_bridge::new_registry();
     let agent_registry: agent_bridge::AgentRegistry = process_bridge::new_registry();
-    let ast_registry = ast_bridge::new_registry();
     let ai_state = {
         let ai_cfg = &get_config().ai;
         ai_bridge::AiState::with_pool_config(crate::ai::pool::PoolConfig {
@@ -393,7 +392,6 @@ pub async fn start_server(
                 .with_state(extension_host_registry.clone()),
         )
         .merge(mcp_bridge::mcp_routes().with_state(mcp_registry.clone()))
-        .merge(ast_bridge::ast_routes().with_state(ast_registry))
         .merge(agent_bridge::agent_routes().with_state(agent_registry.clone()))
         .merge(ai_bridge::ai_routes().with_state(ai_state))
         .merge(crate::assets::assets_routes())

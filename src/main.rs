@@ -2,7 +2,6 @@ mod agent_bridge;
 mod ai;
 mod ai_bridge;
 mod assets;
-mod ast_bridge;
 mod config;
 mod dap_bridge;
 mod extension_host_bridge;
