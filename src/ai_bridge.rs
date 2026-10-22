@@ -1,8 +1,8 @@
 use axum::extract::{
     ws::{Message, WebSocket, WebSocketUpgrade},
-    Path, Query, State,
+    ConnectInfo, Path, Query, State,
 };
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -239,8 +239,15 @@ async fn ai_inspect(body: Option<Json<Value>>) -> Result<impl IntoResponse, AiEr
 
 async fn ai_load(
     State(state): State<AiState>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
     body: Option<Json<Value>>,
 ) -> Result<impl IntoResponse, AiError> {
+    // mmap's a caller-named absolute path; same file-surface gate as
+    // /assets/v1/discover (#16).
+    if !crate::terminal::file_surface_allowed_for(&headers, &addr) {
+        return Err(error::forbidden("filesystem surface is disabled"));
+    }
     let body = body.ok_or_else(|| error::bad_request("request body is required"))?;
 
     let path = body
@@ -1617,8 +1624,24 @@ pub fn ai_routes() -> Router<AiState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::ConnectInfo;
     use axum::http::Request;
     use tower::util::ServiceExt;
+
+    /// `/ai/load` runs behind connect-info on the real server; bare
+    /// `Router::oneshot` needs the peer address injected.
+    fn load_request(body: Value, peer: [u8; 4]) -> Request<axum::body::Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/ai/load")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from((peer, 0))));
+        request
+    }
 
     fn test_state() -> AiState {
         AiState::new()
@@ -1965,16 +1988,7 @@ mod tests {
     async fn test_ai_load_requires_id_or_path() {
         let app = ai_routes().with_state(test_state());
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/ai/load")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from(
-                        serde_json::to_vec(&json!({})).unwrap(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(load_request(json!({}), [127, 0, 0, 1]))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -1989,16 +2003,10 @@ mod tests {
     async fn test_ai_load_model_not_found() {
         let app = ai_routes().with_state(test_state());
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/ai/load")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from(
-                        serde_json::to_vec(&json!({"id": "nonexistent-model"})).unwrap(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(load_request(
+                json!({"id": "nonexistent-model"}),
+                [127, 0, 0, 1],
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -2008,19 +2016,31 @@ mod tests {
     async fn test_ai_load_file_not_found() {
         let app = ai_routes().with_state(test_state());
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/ai/load")
-                    .header("content-type", "application/json")
-                    .body(axum::body::Body::from(
-                        serde_json::to_vec(&json!({"path": "/nonexistent/model.gguf"})).unwrap(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(load_request(
+                json!({"path": "/nonexistent/model.gguf"}),
+                [127, 0, 0, 1],
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_ai_load_remote_requires_the_token() {
+        let app = ai_routes().with_state(test_state());
+        let response = app
+            .oneshot(load_request(
+                json!({"path": "/nonexistent/model.gguf"}),
+                [192, 0, 2, 1],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "FORBIDDEN");
     }
 
     #[tokio::test]

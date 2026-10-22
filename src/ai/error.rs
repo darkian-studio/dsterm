@@ -59,6 +59,10 @@ pub fn file_not_found(path: impl Into<String>) -> AiError {
     )
 }
 
+pub fn forbidden(message: impl Into<String>) -> AiError {
+    AiError::new(StatusCode::FORBIDDEN, "FORBIDDEN", message)
+}
+
 pub fn invalid_gguf(detail: impl Into<String>) -> AiError {
     AiError::new(StatusCode::UNPROCESSABLE_ENTITY, "INVALID_GGUF", detail)
 }
