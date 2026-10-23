@@ -63,7 +63,26 @@ Every feature message is wrapped as:
 { "type": "encrypted", "clientId": "…", "nonce": "<base64>", "ciphertext": "<base64>" }
 ```
 
-The inner plaintext is a JSON message. Client→host (`IncomingMsg`) includes
+Since #72 the inner plaintext may itself be wrapped (v2 clients):
+
+```json
+{ "clientId": "…", "msg": { … } }
+```
+
+- The outer `clientId` is a relay-supplied routing label and carries no
+  proof; the v2 wrapper binds the id *inside* the AEAD payload too. A frame
+  whose inner id disagrees with the outer label is dropped (a relay that
+  re-labelled someone else's ciphertext).
+- The host echoes the client's own shape back: a client that first speaks
+  the wrapper gets wrapped replies, everything else stays bare (legacy
+  Shellular parsers read the bare message and would drop a wrapper).
+- The sealing key is resolved per client, in order: the client's pinned
+  `identityKey` from `clients.json` (a frame under any other key —
+  including the shared master — is dropped once pinned); else a matching
+  `pendingPairings` entry (first such frame binds it); else the shared
+  master (legacy pairings from before #72). See `PAIRING.md`.
+
+The inner plaintext (after unwrapping) is a JSON message. Client→host (`IncomingMsg`) includes
 `ping`, `terminal:create|data|resize|close|list|attach`,
 `fs:read|write|mkdir|delete|rename|stat|list`, `project:file-search`,
 `sysmon:get|subscribe|unsubscribe`, `ports:list|kill`, `exec`, `http:request`,

@@ -284,6 +284,18 @@ pub enum Envelope {
     Pong { id: Option<String> },
 }
 
+/// v2 sealed plaintext (`#72`): the outer `clientId` on an `encrypted`
+/// envelope is a relay-supplied routing label and carries no proof. Clients
+/// that also bind their id *inside* the AEAD payload give the host a
+/// ciphertext that says who it is for; the host refuses the frame when the
+/// two ids disagree (a relay that re-labelled someone else's ciphertext).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SealedInbound {
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+    pub msg: IncomingMsg,
+}
+
 pub fn is_plaintext_allowed(msg_type: &str) -> bool {
     matches!(
         msg_type,

@@ -30,11 +30,44 @@ pub struct ClientRecord {
     #[serde(rename = "lastSeen")]
     pub last_seen: u64,
     pub approval: ClientApproval,
+    /// This client's sealing key, bound at first authenticated use (#72).
+    /// Absent = a legacy client that paired when the QR carried the shared
+    /// master; those keep working through the master fallback until
+    /// re-paired (or `dsterm clients unpin`).
+    #[serde(
+        rename = "identityKey",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub identity_key: Option<String>,
+    #[serde(
+        rename = "identityBoundAt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub identity_bound_at: Option<u64>,
 }
+
+/// A key minted by `dsterm pair`, awaiting its holder's first approved
+/// frame: at QR time the device has no relay `clientId` yet, so the pairing
+/// key sits in this pool until decryption binds it to one (#72).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingPairing {
+    #[serde(rename = "keyBase64")]
+    pub key_base64: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+}
+
+/// FIFO cap: `dsterm pair` runs are rare, but the pool must not outlive
+/// unbounded (same rule as every other map here).
+const MAX_PENDING_PAIRINGS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClientsFile {
     pub clients: BTreeMap<String, ClientRecord>,
+    #[serde(rename = "pendingPairings", default)]
+    pub pending_pairings: Vec<PendingPairing>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -135,10 +168,76 @@ impl ClientStore {
                 first_seen: now,
                 last_seen: now,
                 approval,
+                identity_key: None,
+                identity_bound_at: None,
             },
         );
         self.save()?;
         Ok(decision)
+    }
+
+    /// Remember a pairing key until its holder's first frame binds it.
+    pub fn add_pairing(&mut self, key_base64: String) -> anyhow::Result<()> {
+        self.file.pending_pairings.push(PendingPairing {
+            key_base64,
+            created_at: unix_secs(),
+        });
+        while self.file.pending_pairings.len() > MAX_PENDING_PAIRINGS {
+            self.file.pending_pairings.remove(0);
+        }
+        self.save()
+    }
+
+    /// Base64 pairing keys awaiting first use, oldest first.
+    pub fn pending_keys(&self) -> Vec<String> {
+        self.file
+            .pending_pairings
+            .iter()
+            .map(|pairing| pairing.key_base64.clone())
+            .collect()
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.file.pending_pairings.len()
+    }
+
+    /// The key this client is pinned to, if any.
+    pub fn identity_key(&self, client_id: &str) -> Option<String> {
+        self.file
+            .clients
+            .get(client_id)
+            .and_then(|record| record.identity_key.clone())
+    }
+
+    /// Bind the pairing key that decrypted this client's first frame.
+    /// Returns whether the binding happened: a pinned client keeps its key
+    /// until [`ClientStore::unpin`], so a later pairing race cannot steal
+    /// the identity of an already-bound client.
+    pub fn pin_identity(&mut self, client_id: &str, key_base64: &str) -> anyhow::Result<bool> {
+        let Some(record) = self.file.clients.get_mut(client_id) else {
+            anyhow::bail!("Unknown client: {client_id}");
+        };
+        if record.identity_key.is_some() {
+            return Ok(false);
+        }
+        record.identity_key = Some(key_base64.to_string());
+        record.identity_bound_at = Some(unix_secs());
+        self.file
+            .pending_pairings
+            .retain(|pairing| pairing.key_base64 != key_base64);
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Drop the pinned key so the next pairing can bind (rotation path:
+    /// unpin, re-pair, first frame pins the new key).
+    pub fn unpin(&mut self, client_id: &str) -> anyhow::Result<()> {
+        let Some(record) = self.file.clients.get_mut(client_id) else {
+            anyhow::bail!("Unknown client: {client_id}");
+        };
+        record.identity_key = None;
+        record.identity_bound_at = None;
+        self.save()
     }
 
     pub fn approve(&mut self, client_id: &str) -> anyhow::Result<()> {
@@ -168,6 +267,15 @@ impl ClientStore {
         }
         let content = serde_json::to_string_pretty(&self.file)?;
         fs::write(&self.path, content)?;
+        // Pairing keys now live in this file, so it becomes owner-only on
+        // unix. Windows keeps the default ACL: key-file protection there
+        // lives in crypto.rs's `write_key_file` (#35) and covering this
+        // file the same way is a parity gap, not silent exposure.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 }
@@ -312,6 +420,86 @@ mod tests {
             ApprovalDecision::Allow
         );
 
+        let _ = fs::remove_file(path);
+    }
+
+    fn pairing_key(seed: u8) -> String {
+        crate::relay::crypto::Secretbox::from_key_bytes([seed; 32]).key_base64()
+    }
+
+    /// #72 pairing lifecycle: mint -> first bind takes -> the key leaves the
+    /// pool -> a second pin cannot steal the identity -> unpin frees it.
+    #[test]
+    fn pairing_binds_once_then_unpin_frees() {
+        let path = temp_path();
+        let mut store = ClientStore::load_or_default(Some(path.to_str().unwrap())).unwrap();
+        let unknown = UnknownClientPolicy::RequiresApproval;
+        let key = pairing_key(3);
+        let other = pairing_key(4);
+
+        store.add_pairing(key.clone()).unwrap();
+        assert_eq!(store.pending_count(), 1);
+        assert_eq!(store.pending_keys(), vec![key.clone()]);
+
+        // Binding needs an existing record; approval comes first in prod.
+        store
+            .decide("client-a", ClientInfo::default(), &unknown)
+            .unwrap();
+        assert!(store.pin_identity("client-a", &key).unwrap());
+        assert_eq!(
+            store.identity_key("client-a").as_deref(),
+            Some(key.as_str())
+        );
+        assert_eq!(store.pending_count(), 0);
+
+        // Re-pairing must not rebind an already-pinned client.
+        assert!(!store.pin_identity("client-a", &other).unwrap());
+        assert_eq!(
+            store.identity_key("client-a").as_deref(),
+            Some(key.as_str())
+        );
+
+        store.unpin("client-a").unwrap();
+        assert!(store.identity_key("client-a").is_none());
+
+        // Unknown client is an error, not a silent write.
+        assert!(store.pin_identity("ghost", &other).is_err());
+        assert!(store.unpin("ghost").is_err());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn pairing_pool_is_capped_fifo() {
+        let path = temp_path();
+        let mut store = ClientStore::load_or_default(Some(path.to_str().unwrap())).unwrap();
+        for seed in 0..10u8 {
+            store.add_pairing(pairing_key(seed)).unwrap();
+        }
+        let keys = store.pending_keys();
+        assert_eq!(store.pending_count(), 8);
+        // Oldest pairings evicted first, newest survive.
+        assert_eq!(keys.first().unwrap(), &pairing_key(2));
+        assert_eq!(keys.last().unwrap(), &pairing_key(9));
+        let _ = fs::remove_file(path);
+    }
+
+    /// A pre-#72 clients.json (no identity fields, no pairing pool) parses
+    /// unchanged and defaults the new state.
+    #[test]
+    fn legacy_clients_file_parses_without_identity_fields() {
+        let path = temp_path();
+        fs::write(
+            &path,
+            r#"{"clients":{"old":{"clientId":"old","platform":null,"appVersion":null,"device":null,"firstSeen":1,"lastSeen":2,"approval":"approved"}}}"#,
+        )
+        .unwrap();
+        let store = ClientStore::load_or_default(Some(path.to_str().unwrap())).unwrap();
+        assert_eq!(store.pending_count(), 0);
+        let record = &store.list()[0];
+        assert_eq!(record.client_id, "old");
+        assert!(record.identity_key.is_none());
+        assert_eq!(record.approval, ClientApproval::Approved);
         let _ = fs::remove_file(path);
     }
 }

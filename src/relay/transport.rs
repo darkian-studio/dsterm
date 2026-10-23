@@ -13,7 +13,7 @@ use crate::relay::wire::ClientCtx;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -103,6 +103,79 @@ impl ReplayGuard {
     }
 }
 
+/// Which key decrypted an inbound frame — also the key host→client replies
+/// for that client must be sealed under (#72).
+#[derive(Clone)]
+pub(crate) enum ResolvedKey {
+    /// Pinned per-client identity key. No fallback to the master: a frame
+    /// sealed with anything else is dropped, which is what makes the pin a
+    /// boundary instead of a hint.
+    Pinned(Secretbox),
+    /// Pending pairing key bound to this client on this very frame.
+    Pairing(Secretbox),
+    /// Legacy shared master (a pairing from before #72).
+    Shared(Secretbox),
+}
+
+impl ResolvedKey {
+    fn secretbox(&self) -> &Secretbox {
+        match self {
+            ResolvedKey::Pinned(key) | ResolvedKey::Pairing(key) | ResolvedKey::Shared(key) => key,
+        }
+    }
+}
+
+/// Parse a decrypted frame: the v2 wrapper (`{clientId, msg}`) first, the
+/// legacy bare message second. The `Option<String>` is the bound inner id.
+pub(crate) fn parse_sealed(
+    plaintext: &[u8],
+) -> Option<(crate::protocol::IncomingMsg, Option<String>)> {
+    if let Ok(sealed) = serde_json::from_slice::<crate::protocol::SealedInbound>(plaintext) {
+        return Some((sealed.msg, Some(sealed.client_id)));
+    }
+    serde_json::from_slice::<crate::protocol::IncomingMsg>(plaintext)
+        .ok()
+        .map(|msg| (msg, None))
+}
+
+/// Resolve the sealing key for one inbound frame, in priority order: pinned
+/// identity (closed to everything else), pending pairings (first-use
+/// binding), shared master (legacy). Only approved clients reach this —
+/// the approval gate runs first — so a pairing key only ever binds to a
+/// client the operator admitted.
+pub(crate) fn resolve_inbound(
+    client_id: &str,
+    nonce: &str,
+    ciphertext: &str,
+    master: &Secretbox,
+    store: &mut ClientStore,
+) -> Option<(ResolvedKey, Vec<u8>)> {
+    if let Some(key_base64) = store.identity_key(client_id) {
+        // Fail closed on a corrupt stored key: a pinned client must never
+        // silently fall back to the shared master it was pinned away from.
+        let key = Secretbox::from_base64_key(&key_base64).ok()?;
+        let plaintext = key.decrypt_parts(nonce, ciphertext).ok()?;
+        return Some((ResolvedKey::Pinned(key), plaintext));
+    }
+    for key_base64 in store.pending_keys() {
+        let Ok(key) = Secretbox::from_base64_key(&key_base64) else {
+            continue;
+        };
+        if let Ok(plaintext) = key.decrypt_parts(nonce, ciphertext) {
+            match store.pin_identity(client_id, &key_base64) {
+                Ok(true) => tracing::info!("client {client_id} bound to its pairing key (#72)"),
+                Ok(false) => tracing::warn!(
+                    "pairing key matched a frame for {client_id}, but it is already pinned; binding not taken"
+                ),
+                Err(e) => tracing::warn!("identity binding for {client_id} failed to persist: {e}"),
+            }
+            return Some((ResolvedKey::Pairing(key), plaintext));
+        }
+    }
+    let plaintext = master.decrypt_parts(nonce, ciphertext).ok()?;
+    Some((ResolvedKey::Shared(master.clone()), plaintext))
+}
+
 async fn connect_once(
     config: &DstermConfig,
     secretbox: &Secretbox,
@@ -169,6 +242,14 @@ async fn connect_once(
     let proxy_ws = RelayProxyWs::new();
     let sysmon = RelaySysmon::new();
     let mut approved: HashSet<String> = HashSet::new();
+    // Per-connection identity cache (#72): the key each approved client's
+    // frames actually decrypt under, resolved lazily and reused so replies
+    // seal under the same key. Cleared on join/left so unpin and
+    // re-pairing take effect on the next event instead of forever.
+    let mut resolved: HashMap<String, ResolvedKey> = HashMap::new();
+    // Clients that sent a v2 frame with the clientId bound inside the AEAD
+    // payload; their replies are wrapped the same way (#72).
+    let mut v2_speakers: HashSet<String> = HashSet::new();
 
     let loop_result: anyhow::Result<()> = async {
         while let Some(msg) = read.next().await {
@@ -200,6 +281,7 @@ async fn connect_once(
                     config,
                     &out_tx,
                     &mut approved,
+                    &mut resolved,
                     &last_pong,
                 )
                 .await?;
@@ -238,21 +320,71 @@ async fn connect_once(
                     tracing::warn!("dropping replayed relay frame (nonce seen before)");
                     continue;
                 }
-                let plaintext = match secretbox.decrypt_parts(nonce, ciphertext) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        tracing::warn!("decrypt failed: {e}");
+                // Key resolution is per-client (#72): try the connection
+                // cache first, and on a miss or a stale key fall back to
+                // the full priority walk (pinned -> pairing -> master).
+                let cached_hit = resolved
+                    .get(&client_id)
+                    .cloned()
+                    .and_then(|key| {
+                        key.secretbox()
+                            .decrypt_parts(nonce, ciphertext)
+                            .ok()
+                            .map(|plaintext| (key, plaintext))
+                    });
+                let (key, plaintext) = match cached_hit {
+                    Some(hit) => hit,
+                    None => {
+                        let mut store = match ClientStore::load_or_default(
+                            config.security.clients_file.as_deref(),
+                        ) {
+                            Ok(store) => store,
+                            Err(e) => {
+                                tracing::warn!("clients store unavailable, dropping frame: {e}");
+                                continue;
+                            }
+                        };
+                        match resolve_inbound(
+                            &client_id,
+                            nonce,
+                            ciphertext,
+                            secretbox,
+                            &mut store,
+                        ) {
+                            Some(hit) => {
+                                resolved.insert(client_id.clone(), hit.0.clone());
+                                hit
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "dropping relay frame for {client_id}: not sealed with any key it holds"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                };
+                let (incoming, inner_id) = match parse_sealed(&plaintext) {
+                    Some(parsed) => parsed,
+                    None => {
+                        tracing::warn!("invalid inner message");
                         continue;
                     }
                 };
-                let incoming: IncomingMsg = match serde_json::from_slice(&plaintext) {
-                    Ok(msg) => msg,
-                    Err(e) => {
-                        tracing::warn!("invalid inner message: {e}");
+                if let Some(inner) = inner_id {
+                    if !crate::terminal::constant_time_eq(inner.as_bytes(), client_id.as_bytes())
+                    {
+                        tracing::warn!(
+                            "dropping relay frame for {client_id}: inner clientId differs from the outer routing label (relay tampering?)"
+                        );
                         continue;
                     }
-                };
-                let ctx = ClientCtx::new(client_id, secretbox.clone(), out_tx.clone());
+                    // This client speaks v2; keep its replies wrapped the
+                    // same way, since a legacy parser would drop the wrapper.
+                    v2_speakers.insert(client_id.clone());
+                }
+                let wrap_inner = v2_speakers.contains(&client_id);
+                let ctx = ClientCtx::new(client_id, key.secretbox().clone(), out_tx.clone(), wrap_inner);
                 route(
                     incoming, &ctx, &http, local_port, &terminals, &agents, &proxy_ws, &sysmon,
                 )
@@ -278,6 +410,7 @@ async fn handle_control(
     config: &DstermConfig,
     out_tx: &mpsc::Sender<String>,
     approved: &mut HashSet<String>,
+    resolved: &mut HashMap<String, ResolvedKey>,
     last_pong: &std::sync::Arc<tokio::sync::Mutex<std::time::Instant>>,
 ) -> anyhow::Result<()> {
     match msg_type {
@@ -319,6 +452,9 @@ async fn handle_control(
                 approved.remove(&client_id);
                 tracing::info!("client {client_id} not approved (decision: {decision:?})");
             }
+            // A join is a fresh identity event: drop any cached key so
+            // unpin/re-pair is picked up by this client's next frame.
+            resolved.remove(&client_id);
             let reply = json!({
                 "type": "session:client-approve",
                 "clientId": client_id,
@@ -329,6 +465,7 @@ async fn handle_control(
         "session:client-left" => {
             if let Some(client_id) = value.get("clientId").and_then(|c| c.as_str()) {
                 approved.remove(client_id);
+                resolved.remove(client_id);
             }
         }
         _ => {}
@@ -502,5 +639,80 @@ mod tests {
         assert!(!guard.admit(b"c"));
         // `a` fell out of the window: accepted again (window semantics).
         assert!(guard.admit(b"a"));
+    }
+
+    #[test]
+    fn parse_sealed_accepts_v2_wrapper_and_legacy_bare() {
+        let bare = br#"{"type":"ping","id":"1"}"#;
+        let (msg, inner) = parse_sealed(bare).unwrap();
+        assert!(matches!(msg, crate::protocol::IncomingMsg::Ping { .. }));
+        assert_eq!(inner, None);
+
+        let wrapped = br#"{"clientId":"client-a","msg":{"type":"ping","id":"1"}}"#;
+        let (msg, inner) = parse_sealed(wrapped).unwrap();
+        assert!(matches!(msg, crate::protocol::IncomingMsg::Ping { .. }));
+        assert_eq!(inner.as_deref(), Some("client-a"));
+    }
+
+    /// The full priority walk: pairing binds on first use, the pin then
+    /// closes the master fallback for that client, and unpin reopens it.
+    #[test]
+    fn resolve_inbound_walks_pairing_then_pinned_then_master() {
+        let path =
+            std::env::temp_dir().join(format!("dsterm-resolve-{}.json", uuid::Uuid::new_v4()));
+        let mut store = ClientStore::load_or_default(Some(path.to_str().unwrap())).unwrap();
+        store
+            .decide(
+                "client-a",
+                ClientInfo::default(),
+                &crate::config::UnknownClientPolicy::RequiresApproval,
+            )
+            .unwrap();
+
+        let master = Secretbox::from_key_bytes([7; 32]);
+        let pairing = Secretbox::from_key_bytes([5; 32]);
+        let stranger = Secretbox::from_key_bytes([9; 32]);
+        store.add_pairing(pairing.key_base64()).unwrap();
+
+        let frame_for = |key: &Secretbox| {
+            let payload = key.encrypt(b"secret").unwrap();
+            (payload.nonce, payload.ciphertext)
+        };
+
+        // A frame under the pending pairing key: accepted AND bound now.
+        let (nonce, ciphertext) = frame_for(&pairing);
+        let (key, plaintext) =
+            resolve_inbound("client-a", &nonce, &ciphertext, &master, &mut store).unwrap();
+        assert!(matches!(key, ResolvedKey::Pairing(_)));
+        assert_eq!(plaintext, b"secret");
+        assert_eq!(
+            store.identity_key("client-a").as_deref(),
+            Some(pairing.key_base64().as_str())
+        );
+        assert_eq!(store.pending_count(), 0);
+
+        // Pinned client, correct key: still accepted, now as Pinned.
+        let (nonce, ciphertext) = frame_for(&pairing);
+        let (key, _) =
+            resolve_inbound("client-a", &nonce, &ciphertext, &master, &mut store).unwrap();
+        assert!(matches!(key, ResolvedKey::Pinned(_)));
+
+        // Pinned client sealed with the shared master: rejected. The pin
+        // must close the fallback, or it is not a boundary.
+        let (nonce, ciphertext) = frame_for(&master);
+        assert!(resolve_inbound("client-a", &nonce, &ciphertext, &master, &mut store).is_none());
+
+        // A key nobody handed out: rejected outright.
+        let (nonce, ciphertext) = frame_for(&stranger);
+        assert!(resolve_inbound("client-a", &nonce, &ciphertext, &master, &mut store).is_none());
+
+        // Unpin reopens the legacy path.
+        store.unpin("client-a").unwrap();
+        let (nonce, ciphertext) = frame_for(&master);
+        let (key, _) =
+            resolve_inbound("client-a", &nonce, &ciphertext, &master, &mut store).unwrap();
+        assert!(matches!(key, ResolvedKey::Shared(_)));
+
+        let _ = std::fs::remove_file(path);
     }
 }

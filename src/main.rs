@@ -130,8 +130,16 @@ enum UpdateAction {
 #[derive(Subcommand)]
 enum ClientsAction {
     List,
-    Approve { client_id: String },
-    Reject { client_id: String },
+    Approve {
+        client_id: String,
+    },
+    Reject {
+        client_id: String,
+    },
+    /// Drop the pinned per-client key so the next pairing can bind a new one
+    Unpin {
+        client_id: String,
+    },
 }
 
 fn print_update_available(current_version: &str, new_version: &str) {
@@ -529,13 +537,14 @@ async fn main() {
         }
         Some(Commands::Pair { host_id, no_qr }) => {
             let cfg = load_config_or_default(config_path.as_deref(), false);
-            let secretbox = match Secretbox::load_or_create(cfg.security.key_file.as_deref()) {
-                Ok(secretbox) => secretbox,
-                Err(e) => {
-                    eprintln!("{} Failed to load/create E2E key: {e}", "✗".red().bold());
-                    std::process::exit(1);
-                }
-            };
+            // Load (and create if missing) the shared master: legacy
+            // clients that paired before #72 still decrypt with it until
+            // they re-pair, so it must exist even though the QR no longer
+            // carries it.
+            if let Err(e) = Secretbox::load_or_create(cfg.security.key_file.as_deref()) {
+                eprintln!("{} Failed to load/create E2E key: {e}", "✗".red().bold());
+                std::process::exit(1);
+            }
             let host_id = match pairing::resolve_host_id(
                 host_id.as_deref(),
                 cfg.relay.host_id_file.as_deref(),
@@ -546,8 +555,27 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
+            // #72: every pairing mints a fresh device key instead of
+            // reusing the shared master. It waits in the clients store
+            // until the scanner's first approved frame binds it to a
+            // relay clientId.
+            let pairing_key = Secretbox::from_key_bytes(Secretbox::random_key());
+            let mut store = match ClientStore::load_or_default(cfg.security.clients_file.as_deref())
+            {
+                Ok(store) => store,
+                Err(e) => {
+                    eprintln!("{} Failed to load clients store: {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
+            };
+            // Persist before printing: a QR whose key never landed in the
+            // store could never be redeemed.
+            if let Err(e) = store.add_pairing(pairing_key.key_base64()) {
+                eprintln!("{} Failed to record pairing key: {e}", "✗".red().bold());
+                std::process::exit(1);
+            }
             let payload =
-                match pairing::PairingPayload::new(host_id.as_str(), secretbox.key_base64()) {
+                match pairing::PairingPayload::new(host_id.as_str(), pairing_key.key_base64()) {
                     Ok(payload) => payload,
                     Err(e) => {
                         eprintln!("{} Failed to build pairing payload: {e}", "✗".red().bold());
@@ -590,13 +618,24 @@ async fn main() {
                     } else {
                         for record in clients {
                             println!(
-                                "{}  {:?}  platform={}  app={}",
+                                "{}  {:?}  platform={}  app={}  key={}",
                                 record.client_id,
                                 record.approval,
                                 record.platform.as_deref().unwrap_or("-"),
                                 record.app_version.as_deref().unwrap_or("-"),
+                                if record.identity_key.is_some() {
+                                    "per-client"
+                                } else {
+                                    "shared"
+                                },
                             );
                         }
+                    }
+                    let pending = store.pending_count();
+                    if pending > 0 {
+                        println!(
+                            "{pending} pairing key(s) awaiting first use (pool FIFO-capped at 8)."
+                        );
                     }
                 }
                 ClientsAction::Approve { client_id } => match store.approve(&client_id) {
@@ -608,6 +647,16 @@ async fn main() {
                 },
                 ClientsAction::Reject { client_id } => match store.reject(&client_id) {
                     Ok(()) => println!("{} Rejected {client_id}", "✓".bright_green().bold()),
+                    Err(e) => {
+                        eprintln!("{} {e}", "✗".red().bold());
+                        std::process::exit(1);
+                    }
+                },
+                ClientsAction::Unpin { client_id } => match store.unpin(&client_id) {
+                    Ok(()) => println!(
+                        "{} Unpinned {client_id}; pair again to bind a fresh key",
+                        "✓".bright_green().bold()
+                    ),
                     Err(e) => {
                         eprintln!("{} {e}", "✗".red().bold());
                         std::process::exit(1);

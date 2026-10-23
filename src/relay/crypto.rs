@@ -91,6 +91,32 @@ impl Secretbox {
         BASE64.encode(self.key)
     }
 
+    /// Wrap key material held elsewhere: a per-client identity key out of
+    /// `clients.json`, or a freshly minted pairing key (#72).
+    pub fn from_key_bytes(key: [u8; KEY_BYTES]) -> Self {
+        Self { key }
+    }
+
+    /// Decode a standard-base64 32-byte key as stored in the `identityKey`
+    /// and `pendingPairings` fields of `clients.json`.
+    pub fn from_base64_key(key_base64: &str) -> anyhow::Result<Self> {
+        let bytes = BASE64.decode(key_base64.trim())?;
+        let key: [u8; KEY_BYTES] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid secretbox key length"))?;
+        Ok(Self { key })
+    }
+
+    /// A fresh random key. `dsterm pair` mints one of these per pairing so
+    /// a QR carries that device's key alone, never the shared master.
+    pub fn random_key() -> [u8; KEY_BYTES] {
+        let key = XSalsa20Poly1305::generate_key(&mut OsRng);
+        key.as_slice()
+            .try_into()
+            .expect("generate_key always yields KEY_BYTES")
+    }
+
     pub fn encrypt(&self, plaintext: impl AsRef<[u8]>) -> anyhow::Result<EncryptedPayload> {
         let cipher = self.cipher();
         let nonce = XSalsa20Poly1305::generate_nonce(&mut OsRng);
@@ -430,5 +456,38 @@ mod tests {
         let loaded = Secretbox::load(&path).unwrap();
         assert_eq!(created.key_base64(), loaded.key_base64());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn base64_key_roundtrip() {
+        let secretbox = Secretbox {
+            key: [9; KEY_BYTES],
+        };
+        let decoded = Secretbox::from_base64_key(&secretbox.key_base64()).unwrap();
+        assert_eq!(decoded.key, secretbox.key);
+    }
+
+    #[test]
+    fn base64_key_rejects_wrong_length_and_garbage() {
+        let short = BASE64.encode([0u8; 16]);
+        assert!(Secretbox::from_base64_key(&short).is_err());
+        assert!(Secretbox::from_base64_key("not base64 !").is_err());
+    }
+
+    #[test]
+    fn random_keys_are_fresh_and_roundtrip() {
+        let a = Secretbox::random_key();
+        let b = Secretbox::random_key();
+        assert_eq!(a.len(), KEY_BYTES);
+        assert_ne!(a, b);
+        // The minted key must survive the clients.json encoding it is
+        // stored through (#72).
+        let sealed = Secretbox::from_key_bytes(a);
+        assert_eq!(
+            Secretbox::from_base64_key(&sealed.key_base64())
+                .unwrap()
+                .key,
+            a
+        );
     }
 }
