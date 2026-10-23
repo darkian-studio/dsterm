@@ -59,9 +59,10 @@ jobs:
           sha256sum ${{ matrix.platform.binary_name }} > ${{ matrix.platform.binary_name }}.sha256
 
       - name: Upload artifacts
-        uses: softprops/action-gh-release@v1
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: bin-${{ matrix.platform.binary_name }}
+          path: |
             target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
             target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}.sha256
 
@@ -97,9 +98,10 @@ jobs:
           shasum -a 256 ${{ matrix.platform.binary_name }} > ${{ matrix.platform.binary_name }}.sha256
 
       - name: Upload artifacts
-        uses: softprops/action-gh-release@v1
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: bin-${{ matrix.platform.binary_name }}
+          path: |
             target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}
             target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary_name }}.sha256
 
@@ -126,8 +128,72 @@ jobs:
           "$hash  dsterm-windows-x86_64.exe" | Out-File -Encoding ascii "$file.sha256"
 
       - name: Upload artifacts
-        uses: softprops/action-gh-release@v1
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: bin-dsterm-windows-x86_64
+          path: |
             target/x86_64-pc-windows-msvc/release/dsterm-windows-x86_64.exe
             target/x86_64-pc-windows-msvc/release/dsterm-windows-x86_64.exe.sha256
+
+  # #73: one trusted place signs everything. Build jobs never see the key,
+  # and the release only exists if every platform built AND signed
+  # (`needs` skips this job when any build fails: no partial releases).
+  release:
+    name: Sign and publish release
+    needs: [build, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: release
+          merge-multiple: true
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          command -v minisign
+
+      - name: Write signing key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "MINISIGN_SECRET_KEY secret is not set (fail closed)" >&2
+            exit 1
+          fi
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          chmod 600 "$RUNNER_TEMP/minisign.key"
+
+      - name: Sign every release binary
+        run: |
+          set -euo pipefail
+          signed=0
+          for f in release/*; do
+            case "$f" in
+              *.sha256|*.minisig) continue ;;
+            esac
+            minisign -Sm -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.minisig"
+            signed=$((signed + 1))
+          done
+          if [ "$signed" -eq 0 ]; then
+            echo "no binaries found to sign (fail closed)" >&2
+            exit 1
+          fi
+          for f in release/*; do
+            case "$f" in
+              *.sha256|*.minisig) continue ;;
+            esac
+            if [ ! -f "$f.minisig" ]; then
+              echo "missing signature for $f (fail closed)" >&2
+              exit 1
+            fi
+          done
+          rm -f "$RUNNER_TEMP/minisign.key"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*

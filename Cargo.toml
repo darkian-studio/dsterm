@@ -46,8 +46,10 @@ url = "2"
 thiserror = "2"
 urlencoding = "2"
 zim-reader = { package = "zim", version = "=0.5.0", optional = true }
+minisign-verify = "0.3.0"
 
 [dev-dependencies]
+minisign = "0.10.0"
 tower = "0.5"
 
 [features]

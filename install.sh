@@ -60,6 +60,41 @@ install_dir() {
     fi
 }
 
+# Verify a downloaded release asset against the published `.sha256` asset.
+# #73 fail closed: a missing, malformed, or mismatching checksum aborts the
+# whole install (no cargo fallback for a download that failed verification).
+verify_checksum() {
+    local file_name="$1" file="$2"
+    local sumfile expected actual url
+    sumfile=$(mktemp)
+    url="$BASE_URL/$file_name.sha256"
+    if ! curl --fail -L "$url" -o "$sumfile"; then
+        echo "ERROR: release publishes no checksum for $file_name (fail closed)." >&2
+        rm -f "$sumfile"
+        exit 1
+    fi
+    expected=$(awk '{ print tolower($1); exit }' "$sumfile")
+    rm -f "$sumfile"
+    if ! printf '%s\n' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+        echo "ERROR: malformed checksum asset for $file_name (fail closed)." >&2
+        exit 1
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | awk '{ print tolower($1) }')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | awk '{ print tolower($1) }')
+    else
+        echo "ERROR: neither sha256sum nor shasum found; cannot verify (fail closed)." >&2
+        exit 1
+    fi
+    if [ "$actual" != "$expected" ]; then
+        echo "ERROR: checksum mismatch for $file_name (fail closed):" >&2
+        echo "  expected $expected" >&2
+        echo "  got      $actual" >&2
+        exit 1
+    fi
+}
+
 # Download and install a prebuilt binary. Returns 1 when no prebuilt binary is
 # available for this platform or the download fails.
 install_prebuilt() {
@@ -74,6 +109,9 @@ install_prebuilt() {
         rm -f "$tmp"
         return 1
     fi
+
+    # Verify before it goes anywhere near the install directory.
+    verify_checksum "$file_name" "$tmp"
 
     dir=$(install_dir)
     mkdir -p "$dir"

@@ -154,10 +154,13 @@ The HTTP and WebSocket proxy (`/proxy/*`) is **disabled by default**. When enabl
 The `dsterm update` command performs multiple verification steps before replacing the running binary:
 
 1. **Size check**: downloaded bytes must match the asset's `size` field.
-2. **SHA-256 checksum**: if a `.sha256` asset exists, the downloaded binary must match.
-3. **Platform validation** (Windows): the PE header (`MZ`) is verified to prevent ELF binaries from being installed on Windows.
+2. **SHA-256 checksum**: the release must publish a `<binary>.sha256` asset and the downloaded binary must match it.
+3. **Minisign signature**: the release must publish a `<binary>.minisig` asset signed with the key committed as `minisign.pub` and embedded in the binary; a missing or invalid signature is rejected.
+4. **Platform validation** (Windows): the PE header (`MZ`) is verified to prevent ELF binaries from being installed on Windows.
 
-If any check fails, the update is aborted and the installed binary is **not** touched.
+Every check **fails closed**: a release missing any required asset aborts the update and the installed binary is **not** touched (older, unsigned releases fail self-update by design). `install.sh` and `install.ps1` verify the published SHA-256 the same fail-closed way — a failed verification never falls back to a source build.
+
+The signing secret exists only as the `MINISIGN_SECRET_KEY` GitHub Actions secret; `release.yml` signs every asset in one job that runs only after all platform builds succeed. Rotate by running the `generate_release_keypair` test (`cargo test generate_release_keypair -- --ignored --nocapture`), committing the new `minisign.pub`, and replacing the secret.
 
 ---
 
@@ -177,7 +180,7 @@ On Unix, the E2E key file is created with mode `0600` (owner-read-write only). O
 | Command injection via exec | Commands run via `sh -c`; CWD validated before spawn |
 | PTY file descriptor leak | `FD_CLOEXEC` on all cloned fds; `close_range` in `pre_exec` |
 | Open proxy to external hosts | Proxy restricted to localhost targets only |
-| Binary replacement via update | Size + SHA-256 + PE header verification |
+| Binary replacement via update | Fail-closed size + SHA-256 + minisign signature + PE header verification |
 | Key theft | 0600 permissions; key only exposed during pairing QR scan |
 | Scrollback data leak | Per-session temp files, deleted on session end |
 | Idle session abuse | Automatic eviction after configurable inactivity timeout |
