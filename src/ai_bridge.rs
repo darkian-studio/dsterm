@@ -2292,4 +2292,294 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
+
+    // ------------------------------------------------------------------
+    // Cross-repo contract harness (FIXLIST #74).
+    //
+    // contracts/ai_contract.json is the consumer-driven schema of the
+    // /ai/* surface the dds DstermAiClient parses in its own CI. Every
+    // entry is driven against the real handler here: status must match,
+    // and the body must match after volatile keys are nulled and
+    // __CONTRACT_GGUF__ is substituted with the fixture path. `setup`
+    // steps replay first against the same state.
+    //
+    // Refresh goldens after an intentional surface change with:
+    //     DSTERM_CONTRACT_DUMP=1 cargo test contract_parity -- --nocapture
+    // and paste each ===CONTRACT block into the JSON file.
+
+    const AI_CONTRACT: &str = include_str!("../contracts/ai_contract.json");
+
+    #[derive(Deserialize)]
+    struct ContractRoute {
+        id: String,
+        #[allow(dead_code)]
+        dds: Option<String>,
+        method: String,
+        path: String,
+        #[serde(default)]
+        transport: String,
+        #[serde(default)]
+        request: Option<Value>,
+        #[serde(default)]
+        setup: Vec<String>,
+        expect: Value,
+        #[serde(default)]
+        volatile: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct Contract {
+        #[allow(dead_code)]
+        version: u32,
+        routes: Vec<ContractRoute>,
+    }
+
+    fn gguf_push_string(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&(s.len() as u64).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    fn gguf_push_kv_str(out: &mut Vec<u8>, key: &str, value: &str) {
+        gguf_push_string(out, key);
+        out.extend_from_slice(&8u32.to_le_bytes());
+        gguf_push_string(out, value);
+    }
+
+    fn gguf_push_kv_u32(out: &mut Vec<u8>, key: &str, value: u32) {
+        gguf_push_string(out, key);
+        out.extend_from_slice(&4u32.to_le_bytes());
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Minimal GGUF v3 fixture: header plus three KV pairs, no tensors.
+    /// Default builds parse and pool it; llama builds cannot initialize a
+    /// backend from it, which the contract's `llama` expect variants pin.
+    fn contract_gguf() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join("dsterm-ai-contract-fixture.gguf");
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&3u64.to_le_bytes());
+        gguf_push_kv_str(&mut bytes, "general.architecture", "llama");
+        gguf_push_kv_str(&mut bytes, "general.name", "dsterm contract fixture");
+        gguf_push_kv_u32(&mut bytes, "llama.context_length", 2048);
+        let _ = std::fs::write(&path, &bytes);
+        path
+    }
+
+    fn contract_subst(value: &Value, gguf: &str) -> Value {
+        match value {
+            Value::String(s) => Value::String(s.replace("__CONTRACT_GGUF__", gguf)),
+            Value::Array(items) => {
+                Value::Array(items.iter().map(|v| contract_subst(v, gguf)).collect())
+            }
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), contract_subst(v, gguf)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    fn contract_null_segs(value: &mut Value, segs: &[&str]) {
+        if segs.is_empty() {
+            *value = Value::Null;
+            return;
+        }
+        let head = segs[0];
+        let rest = &segs[1..];
+        if let Some(name) = head.strip_suffix("[]") {
+            if let Some(Value::Array(items)) =
+                value.as_object_mut().and_then(|obj| obj.get_mut(name))
+            {
+                for item in items {
+                    contract_null_segs(item, rest);
+                }
+            }
+        } else if let Some(obj) = value.as_object_mut() {
+            if let Some(child) = obj.get_mut(head) {
+                contract_null_segs(child, rest);
+            }
+        }
+    }
+
+    fn contract_normalize(value: &Value, volatile: &[String], gguf: &str) -> Value {
+        let mut out = contract_subst(value, gguf);
+        for path in volatile {
+            let segs: Vec<&str> = path.split('.').collect();
+            contract_null_segs(&mut out, &segs);
+        }
+        out
+    }
+
+    fn contract_request(route: &ContractRoute, gguf: &str) -> Request<axum::body::Body> {
+        let mut builder = Request::builder()
+            .method(route.method.as_str())
+            .uri(route.path.as_str())
+            .header("content-type", "application/json");
+        if route.transport == "ws" {
+            builder = builder
+                .header("connection", "upgrade")
+                .header("upgrade", "websocket")
+                .header("sec-websocket-version", "13")
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
+        }
+        let body = match &route.request {
+            Some(req) => {
+                axum::body::Body::from(serde_json::to_vec(&contract_subst(req, gguf)).unwrap())
+            }
+            None => axum::body::Body::empty(),
+        };
+        let mut request = builder.body(body).unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))));
+        request
+    }
+
+    #[tokio::test]
+    async fn contract_parity_matches_dds_client_surface() {
+        let contract: Contract =
+            serde_json::from_str(AI_CONTRACT).expect("contracts/ai_contract.json parses");
+        let gguf = contract_gguf();
+        let gguf_str = gguf.to_string_lossy().into_owned();
+        let dump = std::env::var("DSTERM_CONTRACT_DUMP").is_ok();
+        let mut problems: Vec<String> = Vec::new();
+        let mut dumped: Vec<String> = Vec::new();
+
+        for route in &contract.routes {
+            let state = test_state();
+
+            for step in &route.setup {
+                match step.as_str() {
+                    "register" => {
+                        state
+                            .model_registry
+                            .write()
+                            .await
+                            .register(ModelRegistration {
+                            id: "local://contract/contract-fixture.gguf".into(),
+                            provider: "local".into(),
+                            repository: "contract".into(),
+                            filename: "contract-fixture.gguf".into(),
+                            revision: "latest".into(),
+                            local_path: gguf_str.clone(),
+                            size: 160,
+                            sha256:
+                                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                                    .into(),
+                            quantisation: "Q4_K_M".into(),
+                            parameter_count: "0.6B".into(),
+                            download_url: String::new(),
+                            installed_at: "2026-01-01T00:00:00Z".into(),
+                            status: ModelStatus::Registered,
+                        });
+                    }
+                    "load" => {
+                        let setup_app = ai_routes().with_state(state.clone());
+                        let _ = setup_app
+                            .oneshot(load_request(
+                                json!({ "path": gguf_str, "args": [] }),
+                                [127, 0, 0, 1],
+                            ))
+                            .await;
+                    }
+                    other => {
+                        problems.push(format!("[{}] unknown setup step {}", route.id, other));
+                    }
+                }
+            }
+
+            let app = ai_routes().with_state(state);
+            let response = app
+                .oneshot(contract_request(route, &gguf_str))
+                .await
+                .expect("router accepted the contract request");
+            let status = response.status().as_u16();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let actual: Value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes)
+                    .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+            };
+
+            let variant = if cfg!(feature = "llama") {
+                "llama"
+            } else {
+                "default"
+            };
+            let expected = route
+                .expect
+                .get(variant)
+                .or_else(|| route.expect.get("default"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let expected_status = expected
+                .get("status")
+                .and_then(Value::as_u64)
+                .unwrap_or(u64::MAX) as u16;
+            let status_only = expected
+                .get("status_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let expected_body = expected.get("body").cloned().unwrap_or(Value::Null);
+
+            if dump {
+                dumped.push(format!(
+                    "===CONTRACT id={} status={} variant={}\n{}",
+                    route.id,
+                    status,
+                    variant,
+                    serde_json::to_string_pretty(&actual).unwrap()
+                ));
+                continue;
+            }
+
+            let mut route_problems: Vec<String> = Vec::new();
+            if status != expected_status {
+                route_problems.push(format!(
+                    "status: expected {expected_status}, got {status}\nactual body: {}",
+                    serde_json::to_string_pretty(&actual).unwrap()
+                ));
+            }
+            if !status_only {
+                if expected_body.is_null() {
+                    route_problems.push(format!(
+                        "golden body missing; actual:\n{}",
+                        serde_json::to_string_pretty(&actual).unwrap()
+                    ));
+                } else {
+                    let want = contract_normalize(&expected_body, &route.volatile, &gguf_str);
+                    let have = contract_normalize(&actual, &route.volatile, &gguf_str);
+                    if want != have {
+                        route_problems.push(format!(
+                            "body mismatch:\nexpected:\n{}\ngot:\n{}",
+                            serde_json::to_string_pretty(&want).unwrap(),
+                            serde_json::to_string_pretty(&have).unwrap()
+                        ));
+                    }
+                }
+            }
+            if !route_problems.is_empty() {
+                problems.push(format!("[{}] {}", route.id, route_problems.join("\n")));
+            }
+        }
+
+        if dump {
+            panic!(
+                "CONTRACT DUMP (paste bodies into contracts/ai_contract.json):\n{}",
+                dumped.join("\n")
+            );
+        }
+        assert!(
+            problems.is_empty(),
+            "contract drift vs contracts/ai_contract.json:\n\n{}",
+            problems.join("\n\n")
+        );
+    }
 }

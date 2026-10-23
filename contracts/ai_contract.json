@@ -1,0 +1,707 @@
+{
+  "version": 1,
+  "description": "Consumer-driven contract for the dsterm /ai/* surface consumed by the Darkian Studio dds DstermAiClient (dds lib/services/dsterm_ai_client.dart). dsterm's contract_parity test drives the real handlers against every entry; dds's test/services/ai_contract_parity_test.dart parses the same goldens through the real client. Entries cover the HTTP routes the Dart client calls, plus the generate-stream WebSocket route it opens.",
+  "tokens": {
+    "__CONTRACT_GGUF__": "Absolute path of a minimal GGUF v3 fixture the harness writes to the temp dir. Token appears in requests and golden bodies; the dsterm harness substitutes the real path, dds passes the literal token."
+  },
+  "routes": [
+    {
+      "id": "health",
+      "dds": "health",
+      "method": "GET",
+      "path": "/ai/health",
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "status": "healthy",
+            "service": "ai",
+            "version": "0.0.0"
+          }
+        }
+      },
+      "volatile": ["version"],
+      "notes": "Raw body, no ok/data envelope: AiHealth.fromJson reads the top level. version tracks CARGO_PKG_VERSION, so it is volatile."
+    },
+    {
+      "id": "capabilities",
+      "dds": "capabilities",
+      "method": "GET",
+      "path": "/ai/capabilities",
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.capabilities",
+            "data": {
+              "chat": false,
+              "completion": false,
+              "fim": false,
+              "fim_streaming": false,
+              "embeddings": false,
+              "tool_calling": false,
+              "streaming": false,
+              "model_inspection": true,
+              "gguf_parsing": true,
+              "metadata_extraction": true,
+              "architecture_detection": true,
+              "memory_estimation": true,
+              "capability_detection": true,
+              "llama_backend": false,
+              "per_token_streaming": false,
+              "thinking": false
+            },
+            "message": "ok"
+          }
+        }
+      },
+      "volatile": [
+        "data.chat",
+        "data.completion",
+        "data.fim",
+        "data.fim_streaming",
+        "data.embeddings",
+        "data.tool_calling",
+        "data.streaming",
+        "data.llama_backend",
+        "data.per_token_streaming",
+        "data.thinking"
+      ],
+      "notes": "The volatile keys are cfg!(feature = \"llama\") flags: keys and types are pinned, values differ per build feature set."
+    },
+    {
+      "id": "statistics",
+      "dds": "statistics",
+      "method": "GET",
+      "path": "/ai/statistics",
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.statistics",
+            "data": {
+              "sessions_created_total": 0,
+              "models_loaded": 0,
+              "active_references": 0,
+              "pool_consistent": true,
+              "requests_processed": 0,
+              "tokens_generated": 0
+            },
+            "message": "ok"
+          }
+        }
+      },
+      "volatile": ["data.sessions_created_total"],
+      "notes": "sessions_created_total is a process-global counter other tests increment, so only its presence and type are pinned."
+    },
+    {
+      "id": "diagnostics",
+      "dds": "diagnostics",
+      "method": "GET",
+      "path": "/ai/diagnostics",
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "service": "ai",
+            "status": "healthy",
+            "data": {
+              "sessions_created_total": 0,
+              "active_sessions": 0,
+              "registered_models": [],
+              "loaded_models": [],
+              "resident_memory_bytes": 0,
+              "pool_consistent": true,
+              "pool": {
+                "enabled": true,
+                "capacity": 4,
+                "loaded": 0
+              },
+              "gguf_support": {
+                "enabled": true,
+                "metadata_version": 3,
+                "supported_formats": ["GGUF"],
+                "max_context_length": 0,
+                "quantisations_supported": [
+                  "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L",
+                  "Q4_0", "Q4_1", "Q4_K_S", "Q4_K_M",
+                  "Q5_0", "Q5_1", "Q5_K_S", "Q5_K_M",
+                  "Q6_K", "Q8_0", "Q8_1",
+                  "F16", "BF16",
+                  "IQ1_S", "IQ1_M",
+                  "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ2_M",
+                  "IQ3_XXS", "IQ3_XS", "IQ3_S", "IQ3_M",
+                  "IQ4_NL", "IQ4_XS"
+                ]
+              },
+              "model_count": 0,
+              "uptime_secs": 0
+            }
+          }
+        }
+      },
+      "volatile": ["data.sessions_created_total", "data.uptime_secs"],
+      "notes": "Hand-built envelope (success/service/status/data, no method/message). Fresh state: registries and pool empty."
+    },
+    {
+      "id": "memory",
+      "dds": "memory",
+      "method": "GET",
+      "path": "/ai/memory",
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.memory",
+            "data": {
+              "resident_models": 0,
+              "total_allocated_bytes": 0,
+              "available_bytes": 0,
+              "pool_stats": {
+                "loaded_count": 0,
+                "total_ref_count": 0,
+                "memory": {
+                  "weights_bytes": 0,
+                  "kv_cache_bytes": 0,
+                  "runtime_buffers_bytes": 0,
+                  "overhead_bytes": 0,
+                  "total_bytes": 0,
+                  "context_length": 0
+                },
+                "available_bytes": 0,
+                "max_models": 4,
+                "max_memory_bytes": 0,
+                "eviction_strategy": "lru",
+                "pool_consistent": true,
+                "load_failures": 0,
+                "evictable_count": 0,
+                "oldest_model_id": null,
+                "oldest_model_age_secs": null,
+                "most_referenced_id": null,
+                "most_referenced_count": null
+              }
+            },
+            "message": "ok"
+          }
+        }
+      },
+      "volatile": [
+        "data.available_bytes",
+        "data.pool_stats.available_bytes"
+      ],
+      "notes": "With no pool budget the handler reports system-available memory, so the two available_bytes figures are volatile."
+    },
+    {
+      "id": "models",
+      "dds": "listModels",
+      "method": "GET",
+      "path": "/ai/models",
+      "setup": ["register"],
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.listModels",
+            "data": {
+              "models": [
+                {
+                  "id": "local://contract/contract-fixture.gguf",
+                  "provider": "local",
+                  "repository": "contract",
+                  "filename": "contract-fixture.gguf",
+                  "revision": "latest",
+                  "local_path": "__CONTRACT_GGUF__",
+                  "size": 160,
+                  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  "quantisation": "Q4_K_M",
+                  "parameter_count": "0.6B",
+                  "download_url": "",
+                  "installed_at": "2026-01-01T00:00:00Z",
+                  "status": "registered"
+                }
+              ]
+            },
+            "message": "ok"
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "The harness registers one fixed ModelRegistration straight into the registry (installed_at pinned), so the registry-item shape the Dart AiModelInfo parses is exact."
+    },
+    {
+      "id": "models_loaded",
+      "dds": "loadedModels",
+      "method": "GET",
+      "path": "/ai/models/loaded",
+      "setup": ["load"],
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.loadedModels",
+            "data": {
+              "models": [
+                {
+                  "metadata": {
+                    "registry_id": "local://llama/dsterm contract fixture/unknown",
+                    "pool_id": "pool://1",
+                    "model_hash": "llama|2048|unknown",
+                    "path": "__CONTRACT_GGUF__",
+                    "architecture": "llama",
+                    "quantisation": "unknown",
+                    "parameter_count": null,
+                    "file_size": 160,
+                    "file_mtime": 0,
+                    "memory_estimate": {
+                      "weights_bytes": 176,
+                      "kv_cache_bytes": 1073741824,
+                      "runtime_buffers_bytes": 0,
+                      "overhead_bytes": 50000000,
+                      "total_bytes": 1123742000,
+                      "context_length": 2048
+                    },
+                    "capabilities": {
+                      "chat": false,
+                      "completion": true,
+                      "fim": false,
+                      "embeddings": false,
+                      "tool_calling": false,
+                      "reasoning": false,
+                      "vision": false
+                    }
+                  },
+                  "lifecycle": {
+                    "state": "Loaded",
+                    "error_message": null,
+                    "ref_count": 1,
+                    "loaded_at": 0,
+                    "last_accessed_at": 0
+                  }
+                }
+              ]
+            },
+            "message": "ok"
+          }
+        },
+        "llama": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.loadedModels",
+            "data": { "models": [] },
+            "message": "ok"
+          }
+        }
+      },
+      "volatile": [
+        "data.models[].metadata.file_mtime",
+        "data.models[].lifecycle.loaded_at",
+        "data.models[].lifecycle.last_accessed_at"
+      ],
+      "notes": "Under the llama feature the fixture cannot initialize a backend, so the load setup fails and the pool stays empty: the llama variant pins that empty shape."
+    },
+    {
+      "id": "inspect",
+      "dds": "inspectModel",
+      "method": "POST",
+      "path": "/ai/inspect",
+      "request": { "path": "__CONTRACT_GGUF__" },
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.inspectModel",
+            "message": "ok",
+            "data": {
+              "architecture": {
+                "architecture": "llama",
+                "block_count": 0,
+                "context_length": 2048,
+                "embedding_length": 0,
+                "expert_count": null,
+                "expert_used_count": null,
+                "feed_forward_length": 0,
+                "head_count": 0,
+                "head_dimension": 0
+              },
+              "capabilities": {
+                "chat": false,
+                "completion": true,
+                "fim": false,
+                "embeddings": false,
+                "reasoning": false,
+                "tool_calling": false,
+                "vision": false
+              },
+              "memory": {
+                "kv_cache_bytes": 1073741824,
+                "kv_cache_formatted": "1.00 GB",
+                "kv_cache_params": {
+                  "context_length": 2048,
+                  "head_count": 32,
+                  "head_dimension": 128,
+                  "layer_count": 32
+                },
+                "model_weights_bytes": 176,
+                "model_weights_formatted": "176 B",
+                "overhead_bytes": 50000000,
+                "recommended_min_ram_bytes": 1123742000,
+                "recommended_min_ram_formatted": "1.05 GB",
+                "recommended_ram_bytes": 1404677500,
+                "recommended_ram_formatted": "1.31 GB",
+                "total_bytes": 1123742000,
+                "total_formatted": "1.05 GB"
+              },
+              "metadata": {
+                "general.architecture": "llama",
+                "general.name": "dsterm contract fixture",
+                "llama.context_length": 2048
+              },
+              "model": {
+                "file_size": 160,
+                "file_size_formatted": "160 B",
+                "file_type": null,
+                "format_version": 3,
+                "id": "local://llama/dsterm contract fixture/unknown",
+                "name": "dsterm contract fixture",
+                "parameter_count": "unknown",
+                "parameter_count_raw": null,
+                "path": "__CONTRACT_GGUF__",
+                "quantisation": "unknown",
+                "tensor_count": 0
+              },
+              "tokenizer": {
+                "bos_token": null,
+                "chat_template": "",
+                "eos_token": null,
+                "pad_token": null,
+                "tokenizer_model": "unknown"
+              }
+            }
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "Pins the metadata_to_json shape the marketplace model detail parses; model.path is the fixture token, substituted with the real temp path by the dsterm harness."
+    },
+    {
+      "id": "load",
+      "dds": "loadModel",
+      "method": "POST",
+      "path": "/ai/load",
+      "request": { "path": "__CONTRACT_GGUF__", "args": [] },
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.loadModel",
+            "message": "ok",
+            "data": {
+              "loaded": true,
+              "ref_count": 1,
+              "model": {
+                "metadata": {
+                  "registry_id": "local://llama/dsterm contract fixture/unknown",
+                  "pool_id": "pool://1",
+                  "model_hash": "llama|2048|unknown",
+                  "path": "__CONTRACT_GGUF__",
+                  "architecture": "llama",
+                  "quantisation": "unknown",
+                  "parameter_count": null,
+                  "file_size": 160,
+                  "file_mtime": 0,
+                  "memory_estimate": {
+                    "weights_bytes": 176,
+                    "kv_cache_bytes": 1073741824,
+                    "runtime_buffers_bytes": 0,
+                    "overhead_bytes": 50000000,
+                    "total_bytes": 1123742000,
+                    "context_length": 2048
+                  },
+                  "capabilities": {
+                    "chat": false,
+                    "completion": true,
+                    "fim": false,
+                    "embeddings": false,
+                    "tool_calling": false,
+                    "reasoning": false,
+                    "vision": false
+                  }
+                },
+                "lifecycle": {
+                  "state": "Loaded",
+                  "error_message": null,
+                  "ref_count": 1,
+                  "loaded_at": 0,
+                  "last_accessed_at": 0
+                }
+              }
+            }
+          }
+        },
+        "llama": {
+          "status": 500,
+          "body": {
+            "success": false,
+            "error": {
+              "code": "INTERNAL_ERROR",
+              "message": "__volatile__"
+            }
+          }
+        }
+      },
+      "volatile": [
+        "data.model.metadata.file_mtime",
+        "data.model.lifecycle.loaded_at",
+        "data.model.lifecycle.last_accessed_at",
+        "error.message"
+      ],
+      "notes": "Default builds parse and pool the fixture without a backend; llama builds fail backend init (message includes the llama.cpp error text, hence volatile)."
+    },
+    {
+      "id": "unload",
+      "dds": "unloadModel",
+      "method": "POST",
+      "path": "/ai/unload",
+      "request": {
+        "model_id": "local://llama/dsterm contract fixture/unknown"
+      },
+      "setup": ["load"],
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.unloadModel",
+            "data": { "unloaded": true, "ref_count": 0 },
+            "message": "ok"
+          }
+        },
+        "llama": {
+          "status": 404,
+          "body": {
+            "success": false,
+            "error": {
+              "code": "MODEL_NOT_FOUND",
+              "message": "model not found: local://llama/dsterm contract fixture/unknown"
+            }
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "Under llama the setup load failed, so the registry id resolves to model_not_found."
+    },
+    {
+      "id": "create_session",
+      "dds": "createSession",
+      "method": "POST",
+      "path": "/ai/sessions",
+      "request": {},
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.createSession",
+            "data": { "session_id": "00000000-0000-4000-8000-000000000000" },
+            "message": "ok"
+          }
+        }
+      },
+      "volatile": ["data.session_id"],
+      "notes": "Fresh uuid per call: presence and type are pinned, the value is volatile. The golden carries a sample uuid so the Dart side can assert a non-empty id."
+    },
+    {
+      "id": "release_session",
+      "dds": "releaseSession",
+      "method": "POST",
+      "path": "/ai/sessions/release",
+      "request": { "session_id": "contract-session" },
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.releaseSession",
+            "data": { "released": true },
+            "message": "ok"
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "Idempotent: releasing an unknown id still succeeds."
+    },
+    {
+      "id": "cancel_session",
+      "dds": "cancelSession",
+      "method": "POST",
+      "path": "/ai/sessions/cancel",
+      "request": { "session_id": "contract-session" },
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.cancelSession",
+            "data": { "cancelled": true },
+            "message": "ok"
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "Idempotent: cancelling an unknown id still succeeds."
+    },
+    {
+      "id": "generate",
+      "dds": "generate",
+      "method": "POST",
+      "path": "/ai/generate",
+      "request": { "prompt": "contract-parity" },
+      "setup": ["load"],
+      "expect": {
+        "default": {
+          "status": 500,
+          "body": {
+            "success": false,
+            "error": {
+              "code": "INTERNAL_ERROR",
+              "message": "Inference backend not compiled. Rebuild dsterm with the `llama` feature enabled."
+            }
+          }
+        },
+        "llama": {
+          "status": 400,
+          "body": {
+            "success": false,
+            "error": {
+              "code": "INVALID_REQUEST",
+              "message": "no model loaded and no model_id provided"
+            }
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "Prompt-only request, no model_id: llama CI's setup load failed so resolve_model_id 400s before the backend; default builds resolve then hit the not-compiled backend. The 200 shape is pinned via the complete entries (same data.text/usage keys as ai_generate_shared)."
+    },
+    {
+      "id": "complete",
+      "dds": "complete",
+      "method": "POST",
+      "path": "/ai/complete",
+      "request": { "prompt": "contract-parity" },
+      "setup": ["load"],
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.complete",
+            "data": {
+              "text": "",
+              "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
+            },
+            "message": "ok"
+          }
+        },
+        "llama": {
+          "status": 400,
+          "body": {
+            "success": false,
+            "error": {
+              "code": "INVALID_REQUEST",
+              "message": "no model loaded and no model_id provided"
+            }
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "Default builds short-circuit to an empty completion; llama CI's empty pool 400s in resolve_model_id. With a real model both builds answer the same data.text/usage keys."
+    },
+    {
+      "id": "complete_fim",
+      "dds": "completeFim",
+      "method": "POST",
+      "path": "/ai/complete",
+      "request": { "prefix": "contract", "suffix": "parity" },
+      "setup": ["load"],
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.complete",
+            "data": {
+              "text": "",
+              "usage": { "prompt_tokens": 0, "completion_tokens": 0 }
+            },
+            "message": "ok"
+          }
+        },
+        "llama": {
+          "status": 400,
+          "body": {
+            "success": false,
+            "error": {
+              "code": "INVALID_REQUEST",
+              "message": "no model loaded and no model_id provided"
+            }
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "FIM reuses /ai/complete with prefix/suffix instead of prompt."
+    },
+    {
+      "id": "embed",
+      "dds": "embed",
+      "method": "POST",
+      "path": "/ai/embed",
+      "request": { "texts": ["contract-parity"] },
+      "setup": ["load"],
+      "expect": {
+        "default": {
+          "status": 200,
+          "body": {
+            "success": true,
+            "method": "inference.embed",
+            "data": { "embeddings": [] },
+            "message": "ok"
+          }
+        },
+        "llama": {
+          "status": 400,
+          "body": {
+            "success": false,
+            "error": {
+              "code": "INVALID_REQUEST",
+              "message": "no model loaded and no model_id provided"
+            }
+          }
+        }
+      },
+      "volatile": [],
+      "notes": "No model_id in the Dart request: llama CI's empty pool 400s in resolve_model_id; default builds answer embeddings: [] without a backend."
+    },
+    {
+      "id": "generate_stream",
+      "dds": null,
+      "method": "GET",
+      "path": "/ai/generate-stream",
+      "transport": "ws",
+      "expect": {
+        "default": { "status": 426, "status_only": true }
+      },
+      "volatile": [],
+      "notes": "WebSocket route the Dart generateStream opens. Router::oneshot carries no connection upgrade state, so axum answers 426 Upgrade Required from the WebSocketUpgrade extractor: that still proves the route exists and reaches the WS handler (an unknown route would 404). The message protocol itself is out of scope here."
+    }
+  ]
+}
