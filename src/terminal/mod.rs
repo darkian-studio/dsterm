@@ -66,6 +66,14 @@ fn init_loopback_token(configured: Option<String>) {
 /// Header every authenticated client must present.
 pub const AUTH_HEADER: &str = "X-Dsterm-Loopback";
 
+/// Wire protocol level of the dds<->dsterm HTTP control plane (the
+/// `GET /status` handshake, FIXLIST #79). Bump only when a paired dds
+/// must change behaviour: additive `/status` fields do NOT bump it —
+/// old clients ignore unknown keys, new clients read a missing
+/// `protocol_version` as "pre-handshake dsterm" and fall back
+/// gracefully instead of failing the liveness probe.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// The whole authentication decision, as a pure function of its inputs.
 ///
 /// Split out from the middleware so every branch is unit-testable without
@@ -375,12 +383,16 @@ pub async fn start_server(
             .allow_headers(Any)
     };
 
-    /// `GET /status`: liveness is public, the absolute home path is not.
-    /// Every dds flow that needs `home` (workspaceRoot for the sidecars,
-    /// VM/PRoot guest discovery) originates from a loopback connection or
-    /// a remote caller presenting the shared token. An unauthenticated LAN
-    /// peer running against an `-i` binding gets the boolean only - it must
-    /// not learn the host's user layout from a tokenless probe.
+    /// `GET /status`: liveness + the dds handshake; the absolute home path
+    /// stays private. Every dds flow that needs `home` (workspaceRoot for
+    /// the sidecars, VM/PRoot guest discovery) originates from a loopback
+    /// connection or a remote caller presenting the shared token. An
+    /// unauthenticated LAN peer running against an `-i` binding gets the
+    /// boolean and the handshake only — it must not learn the host's user
+    /// layout from a tokenless probe. Handshake fields (FIXLIST #79) are
+    /// deliberately public: "dsterm 1.13.1 speaks protocol 1" reveals no
+    /// user layout, and a paired client must know it before trusting the
+    /// rest of the surface.
     async fn get_status(
         ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
         headers: HeaderMap,
@@ -389,11 +401,32 @@ pub async fn start_server(
             .get(AUTH_HEADER)
             .and_then(|value| value.to_str().ok());
         let authenticated = token_accepted(true, presented, loopback_token());
-        let mut body = serde_json::json!({ "status": "OK" });
-        if addr.ip().is_loopback() || authenticated {
-            body["home"] = serde_json::Value::String(get_config().home.clone());
+        // Handshake (FIXLIST #79): dds announces its version and protocol
+        // so server logs show who paired with this build. Unknown or
+        // future values are logged, never rejected — the same fail-open
+        // posture every unknown field here already has.
+        if let Some(client_version) = headers
+            .get("x-ds-version")
+            .and_then(|value| value.to_str().ok())
+        {
+            tracing::info!(client_version, "dds handshake");
         }
-        Json(body)
+        if let Some(client_protocol) = headers
+            .get("x-ds-protocol")
+            .and_then(|value| value.to_str().ok())
+        {
+            match client_protocol.parse::<u32>() {
+                Ok(spoken) if spoken > PROTOCOL_VERSION => tracing::warn!(
+                    client_protocol = spoken,
+                    server_protocol = PROTOCOL_VERSION,
+                    "dds speaks a newer protocol than this dsterm; update dsterm"
+                ),
+                Ok(spoken) => tracing::debug!(client_protocol = spoken, "dds protocol"),
+                Err(_) => tracing::debug!(client_protocol, "unparseable dds protocol"),
+            }
+        }
+        let home = (addr.ip().is_loopback() || authenticated).then(|| get_config().home.as_str());
+        Json(status_body(home))
     }
 
     let terminal_router = Router::new()
@@ -525,6 +558,54 @@ pub async fn start_server(
     }
 }
 
+/// Subsystems this build actually serves — the coarse capability
+/// directory `GET /status` advertises (FIXLIST #79). Each subsystem
+/// keeps its own fine-grained discovery endpoint (`/ai/capabilities`,
+/// `/zim/v1/capabilities`); this list only answers "does this binary
+/// have X at all".
+pub fn status_capabilities() -> Vec<&'static str> {
+    #[cfg_attr(not(feature = "zim"), allow(unused_mut))]
+    let mut caps = vec![
+        "terminal",
+        "silent-exec",
+        "execute-command",
+        "lsp",
+        "dap",
+        "mcp",
+        "extension-host",
+        "agents",
+        "ai",
+        "assets",
+        "fs",
+        "sysmon",
+        "ports",
+        "proxy",
+        "web",
+    ];
+    #[cfg(feature = "zim")]
+    caps.push("zim");
+    caps
+}
+
+/// The `GET /status` body (FIXLIST #79 handshake). `home` stays behind
+/// the loopback/token gate — a LAN peer may learn the handshake without
+/// learning the user's home path. `protocol_version` is a STRING on the
+/// wire: shipped dds builds read it with `as String?` and a numeric
+/// value would throw there. Shape is pinned by
+/// `contracts/status_contract.json`.
+pub fn status_body(home: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "status": "OK",
+        "version": env!("CARGO_PKG_VERSION"),
+        "protocol_version": PROTOCOL_VERSION.to_string(),
+        "capabilities": status_capabilities(),
+    });
+    if let Some(home) = home {
+        body["home"] = serde_json::Value::String(home.to_string());
+    }
+    body
+}
+
 #[cfg(test)]
 mod auth_tests {
     use super::*;
@@ -629,5 +710,99 @@ mod auth_tests {
             Some("s3cret"),
             "s3cret"
         ));
+    }
+}
+
+/// The shared `/status` handshake shape (FIXLIST #79), pinned against
+/// `contracts/status_contract.json` — the same golden dds feeds through
+/// `DstermDiscoveryInfo.fromJson` in its own suite. If a field here
+/// drifts, one side or the other fails before a release ships.
+#[cfg(test)]
+mod status_contract_tests {
+    use super::*;
+
+    fn contract() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../contracts/status_contract.json"))
+            .expect("status_contract.json must parse")
+    }
+
+    fn type_matches(value: &serde_json::Value, ty: &str) -> bool {
+        match ty {
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "string[]" => value
+                .as_array()
+                .map(|items| items.iter().all(serde_json::Value::is_string))
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn status_body_matches_the_shared_contract() {
+        let contract = contract();
+        let body = status_body(Some("/root"));
+
+        let required = contract["required"]
+            .as_object()
+            .expect("required must be an object");
+        for (key, ty) in required {
+            let field = body
+                .get(key)
+                .unwrap_or_else(|| panic!("status_body is missing required field {key}"));
+            let ty = ty.as_str().expect("type tag must be a string");
+            assert!(
+                type_matches(field, ty),
+                "field {key} should be {ty}, got {field}"
+            );
+        }
+
+        let optional = contract["optional"]
+            .as_object()
+            .expect("optional must be an object");
+        for (key, ty) in optional {
+            if let Some(field) = body.get(key) {
+                let ty = ty.as_str().expect("type tag must be a string");
+                assert!(
+                    type_matches(field, ty),
+                    "optional field {key} should be {ty}, got {field}"
+                );
+            }
+        }
+
+        for wanted in contract["contains"]["capabilities"]
+            .as_array()
+            .expect("contains.capabilities must be an array")
+        {
+            let wanted = wanted.as_str().expect("capability must be a string");
+            assert!(
+                body["capabilities"]
+                    .as_array()
+                    .expect("capabilities must be an array")
+                    .iter()
+                    .any(|cap| cap == wanted),
+                "capabilities must contain {wanted}"
+            );
+        }
+
+        assert_eq!(body["status"], "OK");
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+        // Wire value, const and contract must all agree — one string.
+        assert_eq!(
+            body["protocol_version"].as_str(),
+            contract["protocol_version"].as_str()
+        );
+        assert_eq!(PROTOCOL_VERSION.to_string(), contract["protocol_version"]);
+    }
+
+    #[test]
+    fn status_body_withholds_home_but_never_the_handshake() {
+        let body = status_body(None);
+        assert!(body.get("home").is_none());
+        // Liveness and the handshake stay public for tokenless peers.
+        assert_eq!(body["status"], "OK");
+        assert!(body.get("protocol_version").is_some());
+        assert!(body.get("version").is_some());
+        assert!(body.get("capabilities").is_some());
     }
 }

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "endpoint": "GET /status",
+  "description": "dds<->dsterm version/capability handshake (FIXLIST #79). Pinned by BOTH repos: dsterm's status_contract_tests drives status_body() against this file, dds's dsterm_status_contract_test drives DstermDiscoveryInfo.fromJson against it. protocol_version is a STRING on the wire: shipped dds builds parse it with `as String?` and a numeric value would throw a TypeError there.",
+  "required": {
+    "status": "string",
+    "version": "string",
+    "protocol_version": "string",
+    "capabilities": "string[]"
+  },
+  "optional": {
+    "home": "string"
+  },
+  "contains": {
+    "capabilities": ["terminal"]
+  },
+  "protocol_version": "1"
+}
