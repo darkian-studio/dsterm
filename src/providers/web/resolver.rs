@@ -60,7 +60,7 @@ async fn resolve_checked(
         return Ok(vec![SocketAddr::new(ip, 0)]);
     }
 
-    let mut addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
         .await
         .map_err(|e| io::Error::other(format!("DNS resolution of {host} failed: {e}")))?
         .collect();
