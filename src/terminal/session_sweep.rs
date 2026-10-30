@@ -75,10 +75,12 @@ fn sweep_session_unix(sid: u32) {
 
 /// Extracts the session id from a `/proc/<pid>/stat` dump.
 ///
-/// Layout after the parenthesised comm (which may itself contain
+/// Layout after the parenthesised comm (which itself may contain
 /// spaces and `)`): `state ppid pgrp session ...` — so parse everything
-/// after the **last** `)`.
-#[cfg(unix)]
+/// after the **last** `)`. Pure byte parsing, so it stays compiled
+/// under `cfg(test)` on every platform: that is how it gets exercised
+/// locally on Windows, where the sweep itself cannot run.
+#[cfg(any(unix, test))]
 fn parse_session_id(stat: &[u8]) -> Option<i32> {
     let close = stat.iter().rposition(|b| *b == b')')?;
     let after = &stat[close + 1..];
@@ -87,11 +89,10 @@ fn parse_session_id(stat: &[u8]) -> Option<i32> {
         .split(|b| b.is_ascii_whitespace())
         .filter(|f| !f.is_empty())
         .nth(3)
-        .and_then(|f| std::str::from_utf8(f).ok()?)
+        .and_then(|f| std::str::from_utf8(f).ok())
         .and_then(|s| s.parse::<i32>().ok())
 }
 
-#[cfg(unix)]
 #[cfg(test)]
 mod tests {
     use super::parse_session_id;
