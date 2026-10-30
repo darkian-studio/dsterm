@@ -95,13 +95,12 @@ pub struct SpawnConfig {
 }
 
 pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, (u16, String)> {
-    let mut command = Command::new(&config.command);
+    let mut command = std::process::Command::new(&config.command);
     command
         .args(&config.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
 
     if config.isolate_env {
         command.env_clear();
@@ -118,6 +117,20 @@ pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, 
     if let Some(cwd) = &config.cwd {
         command.current_dir(cwd);
     }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Own process group with pgid == the child's pid, so every
+        // descendant (extension-host language servers, LSP/DAP helpers)
+        // shares one group the kill paths can sweep with a single
+        // negative-pid signal. Without this, killing a crashed or
+        // restarted host leaves its children running forever.
+        command.process_group(0);
+    }
+
+    let mut command = Command::from(command);
+    command.kill_on_drop(true);
 
     let mut child = command
         .spawn()
@@ -152,6 +165,47 @@ pub async fn spawn_process(config: &SpawnConfig) -> Result<Arc<ProcessSession>, 
 // Kill helpers
 // ------------------------------------------------------------
 
+/// Signals the whole process tree rooted at a bridge child.
+///
+/// On Unix every bridge child is spawned as its own process group
+/// leader (see [`spawn_process`]), so the group id equals the child pid
+/// and descendants — extension-host language servers, LSP/DAP helpers —
+/// share it. Signalling the group is what keeps grandchildren from
+/// outliving a killed or crashed host; signalling the direct child
+/// alone leaves them running.
+///
+/// Windows has no matching group semantics here: fall back to a
+/// `taskkill /T` tree walk (`/F` for the force phase).
+async fn signal_process_tree(pid: u32, force: bool) {
+    if pid == 0 {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let sig = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // Negative pid targets the group. ESRCH (group already gone, or
+        // the child predates the group-spawn contract) is harmless: the
+        // direct child is signalled separately regardless.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), sig);
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut args = vec!["/PID".to_string(), pid.to_string(), "/T".to_string()];
+        if force {
+            args.push("/F".to_string());
+        }
+        let _ = tokio::process::Command::new("taskkill")
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+    }
+}
+
 pub async fn kill_session(session: &ProcessSession, timeout_secs: u64) {
     let mut child = match session.child.try_lock() {
         Ok(g) => g,
@@ -162,6 +216,12 @@ pub async fn kill_session(session: &ProcessSession, timeout_secs: u64) {
             session.child.lock().await
         }
     };
+    // Group/tree TERM first: descendants get the same graceful window
+    // as the direct child (the host's own signal handler stops its
+    // language servers), then the direct child for hosts that predate
+    // group spawning and for Windows, where start_kill is the reliable
+    // signal.
+    signal_process_tree(session.pid, false).await;
     if child.start_kill().is_ok() {
         match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
             Ok(Ok(_)) => {}
@@ -170,6 +230,11 @@ pub async fn kill_session(session: &ProcessSession, timeout_secs: u64) {
             }
         }
     }
+    // Group/tree KILL: the group outlives its leader while any member
+    // remains, so grandchildren that ignored TERM — or were orphaned by
+    // a host crash before any explicit kill — are swept here. ESRCH
+    // when nothing is left is the success case.
+    signal_process_tree(session.pid, true).await;
 }
 
 pub async fn kill_all(registry: &ProcessRegistry, timeout_secs: u64) -> Vec<String> {
@@ -422,10 +487,15 @@ async fn content_length_pump(
     }
 
     registry.write().await.remove(&id);
-    if let Ok(mut child) = session.child.try_lock() {
-        let _ = child.start_kill();
-    }
     let _ = ws_send.send(Message::Close(None)).await;
+    // Client is gone: take the whole tree down (group TERM + KILL via
+    // kill_session), not just the direct child — otherwise its
+    // descendants outlive the websocket that owned them.
+    kill_session(
+        &session,
+        crate::terminal::get_config().bridges.kill_timeout_secs,
+    )
+    .await;
 }
 
 async fn ndjson_pump(
@@ -493,8 +563,13 @@ pub async fn ndjson_pump_with_hook<F, Fut>(
     }
 
     registry.write().await.remove(&id);
-    if let Ok(mut child) = session.child.try_lock() {
-        let _ = child.start_kill();
-    }
     let _ = ws_send.send(Message::Close(None)).await;
+    // Client is gone: take the whole tree down (group TERM + KILL via
+    // kill_session), not just the direct child — otherwise its
+    // descendants outlive the websocket that owned them.
+    kill_session(
+        &session,
+        crate::terminal::get_config().bridges.kill_timeout_secs,
+    )
+    .await;
 }

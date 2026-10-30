@@ -2,6 +2,7 @@ use super::get_default_command;
 #[cfg(unix)]
 use super::pty_fallback::fallback_open_and_spawn;
 use super::scrollback::Scrollback;
+use super::session_sweep::sweep_session;
 use super::types::*;
 use crate::utils::parse_u16;
 use axum::{
@@ -935,6 +936,10 @@ pub async fn terminate_terminal(
 
     if let Some((_, session)) = sessions.remove(&pid) {
         let result = session.child_killer.lock().await.kill();
+        // The shell kill only reaches its own process group: background
+        // jobs (own pgids, same session) survive it. Sweep the rest of
+        // the session so closing a terminal leaves nothing running.
+        sweep_session(pid);
 
         drop(session.writer.lock().await);
         session.scrollback.cleanup();

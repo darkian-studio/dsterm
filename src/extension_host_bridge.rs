@@ -223,10 +223,15 @@ async fn extension_host_pump(
     }
 
     registry.write().await.remove(&id);
-    if let Ok(mut child) = session.inner.child.try_lock() {
-        let _ = child.start_kill();
-    }
     let _ = ws_send.send(Message::Close(None)).await;
+    // Same teardown contract as the generic pumps: the host's language
+    // servers share its process group, so killing only the host would
+    // orphan them until the next /extension-host/kill-all.
+    process_bridge::kill_session(
+        &session.inner,
+        crate::terminal::get_config().bridges.kill_timeout_secs,
+    )
+    .await;
 }
 
 async fn handle_node_line(session: &ExtensionHostSession, value: &serde_json::Value) {

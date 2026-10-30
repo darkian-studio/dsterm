@@ -2,6 +2,7 @@ mod handlers;
 #[cfg(unix)]
 mod pty_fallback;
 mod scrollback;
+mod session_sweep;
 #[cfg(not(windows))]
 mod shell_integration;
 mod types;
@@ -349,6 +350,9 @@ pub async fn start_server(
                 for pid in to_evict {
                     if let Some((_, session)) = sessions.remove(&pid) {
                         let _ = session.child_killer.lock().await.kill();
+                        // Same contract as terminate_terminal: the shell
+                        // kill misses its session's background jobs.
+                        session_sweep::sweep_session(pid);
                         session.scrollback.cleanup();
                         tracing::info!("Evicted idle terminal session PID {}", pid);
                     }
