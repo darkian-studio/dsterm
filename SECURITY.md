@@ -46,6 +46,15 @@ The `/fs/*` endpoints are **disabled by default**. Enable via:
 - Config: `[filesystem] enabled = true`
 - CLI flag: `--remote` (sets `enabled = true` and uses CWD as workspace root)
 
+`dsterm startup` can also persist `--remote` into its autostart entry, so
+the API comes up at every sign-in/boot. Because that entry runs unattended,
+the install prompts for consent first (`[y/N]`, fail-closed: EOF or a
+decline installs the entry without `--remote`), and `--with-filesystem` is
+the explicit non-interactive opt-in. `dsterm host --remote` prints a
+banner naming the enabled surface at startup. Relay reachability still
+requires client approval and end-to-end encryption; the loopback server
+itself stays on `127.0.0.1`.
+
 ### Path Traversal Protection
 
 All filesystem operations resolve the requested path through `safe_path()`, which:

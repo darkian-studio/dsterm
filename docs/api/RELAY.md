@@ -24,10 +24,13 @@ unknown_clients = "requires-approval"   # always-allow | always-reject | require
 - `dsterm host` — loads/creates the E2E key, resolves the `hostId` (registering
   if needed), serves the local API on `127.0.0.1:<port>`, and runs the relay
   client. Exits on Ctrl-C.
-- `dsterm startup` — installs an autostart entry that runs `dsterm host --remote`
-  (relay host plus the zero-config `/fs/*` API). Uses a Termux:Boot script on
-  Android, a systemd user unit on Linux, a launchd LaunchAgent on macOS, and a
-  per-user Startup-folder script on Windows.
+- `dsterm startup` — installs an autostart entry that runs `dsterm host`
+  (relay host). It prompts before adding `--remote` (the zero-config
+  `/fs/*` API) to the entry — declining, or piping stdin non-interactively,
+  installs without it — and `--with-filesystem` opts in without the prompt.
+  Uses a Termux:Boot script on Android, a systemd user unit on Linux, a
+  launchd LaunchAgent on macOS, and a per-user Startup-folder script on
+  Windows.
 - `dsterm pair` / `dsterm clients` — see `docs/api/PAIRING.md`.
 
 ## Handshake & lifecycle

@@ -26,14 +26,17 @@ fn exe_path() -> String {
         .unwrap_or_else(|| "dsterm".to_string())
 }
 
-pub fn systemd_unit(exe: &str) -> String {
+pub fn systemd_unit(exe: &str, with_filesystem: bool) -> String {
     let mut unit = String::new();
     unit.push_str("[Unit]\n");
     unit.push_str("Description=DSTerm relay host\n");
     unit.push_str("After=network-online.target\n");
     unit.push_str("Wants=network-online.target\n\n");
     unit.push_str("[Service]\n");
-    unit.push_str(&format!("ExecStart={exe} host --remote\n"));
+    unit.push_str(&format!(
+        "ExecStart={exe} host{}\n",
+        remote_args(with_filesystem)
+    ));
     unit.push_str("Restart=on-failure\n");
     unit.push_str("RestartSec=5\n\n");
     unit.push_str("[Install]\n");
@@ -41,11 +44,19 @@ pub fn systemd_unit(exe: &str) -> String {
     unit
 }
 
-pub fn termux_boot_script(exe: &str) -> String {
-    format!("#!/data/data/com.termux/files/usr/bin/sh\n{exe} host --remote &\n")
+pub fn termux_boot_script(exe: &str, with_filesystem: bool) -> String {
+    format!(
+        "#!/data/data/com.termux/files/usr/bin/sh\n{exe} host{} &\n",
+        remote_args(with_filesystem)
+    )
 }
 
-pub fn launchd_plist(exe: &str) -> String {
+pub fn launchd_plist(exe: &str, with_filesystem: bool) -> String {
+    let remote_arg = if with_filesystem {
+        "        <string>--remote</string>\n    "
+    } else {
+        "    "
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -57,8 +68,7 @@ pub fn launchd_plist(exe: &str) -> String {
     <array>\n\
         <string>{exe}</string>\n\
         <string>host</string>\n\
-        <string>--remote</string>\n\
-    </array>\n\
+{remote_arg}</array>\n\
     <key>RunAtLoad</key>\n\
     <true/>\n\
     <key>KeepAlive</key>\n\
@@ -68,11 +78,52 @@ pub fn launchd_plist(exe: &str) -> String {
     )
 }
 
-pub fn windows_startup_script(exe: &str) -> String {
-    format!("@echo off\r\nstart \"\" \"{exe}\" host --remote\r\n")
+pub fn windows_startup_script(exe: &str, with_filesystem: bool) -> String {
+    format!(
+        "@echo off\r\nstart \"\" \"{exe}\" host{}\r\n",
+        remote_args(with_filesystem)
+    )
 }
 
-pub fn install() -> anyhow::Result<String> {
+/// The `--remote` half of the boot command: present only when the
+/// user consented to enabling the filesystem API at every sign-in.
+fn remote_args(with_filesystem: bool) -> &'static str {
+    if with_filesystem {
+        " --remote"
+    } else {
+        ""
+    }
+}
+
+/// Interactive consent for putting `--remote` in the boot entry.
+///
+/// The entry runs unattended forever after install, so consent has to
+/// happen here, once, with the consequences spelled out. Fail-closed:
+/// EOF or anything that is not an explicit yes installs the relay host
+/// without the filesystem API (`--with-filesystem` opts in without a
+/// prompt).
+pub fn confirm_filesystem_at_boot() -> bool {
+    println!(
+        "The autostart entry runs `dsterm host` at every sign-in/boot. It can also pass\n\
+         --remote, which enables the filesystem API (/fs/*: read, write, delete, list, ...\n\
+         over 127.0.0.1 and to approved relay clients) with the boot directory as the\n\
+         workspace root, every time it starts."
+    );
+    print!("Enable the filesystem API in the autostart entry? [y/N] ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let mut buf = String::new();
+    match std::io::stdin().read_line(&mut buf) {
+        Ok(_) => consent_allows(&buf),
+        Err(_) => false,
+    }
+}
+
+fn consent_allows(reply: &str) -> bool {
+    let t = reply.trim().to_ascii_lowercase();
+    t == "y" || t == "yes"
+}
+
+pub fn install(with_filesystem: bool) -> anyhow::Result<String> {
     let home = home_dir()?;
     let exe = exe_path();
 
@@ -80,7 +131,7 @@ pub fn install() -> anyhow::Result<String> {
         let dir = home.join(".termux").join("boot");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("dsterm-host");
-        std::fs::write(&path, termux_boot_script(&exe))?;
+        std::fs::write(&path, termux_boot_script(&exe, with_filesystem))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -99,7 +150,7 @@ pub fn install() -> anyhow::Result<String> {
             let dir = home.join("Library").join("LaunchAgents");
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("io.darkian.dsterm.plist");
-            std::fs::write(&path, launchd_plist(&exe))?;
+            std::fs::write(&path, launchd_plist(&exe, with_filesystem))?;
             Ok(format!(
                 "Installed launchd agent at {}. Enable it with: launchctl load {}",
                 path.display(),
@@ -117,7 +168,7 @@ pub fn install() -> anyhow::Result<String> {
                 .join("Startup");
             std::fs::create_dir_all(&startup)?;
             let path = startup.join("dsterm-host.bat");
-            std::fs::write(&path, windows_startup_script(&exe))?;
+            std::fs::write(&path, windows_startup_script(&exe, with_filesystem))?;
             Ok(format!(
                 "Installed Startup script at {}. It runs automatically on your next sign-in.",
                 path.display()
@@ -127,7 +178,7 @@ pub fn install() -> anyhow::Result<String> {
             let dir = home.join(".config").join("systemd").join("user");
             std::fs::create_dir_all(&dir)?;
             let path = dir.join("dsterm.service");
-            std::fs::write(&path, systemd_unit(&exe))?;
+            std::fs::write(&path, systemd_unit(&exe, with_filesystem))?;
             Ok(format!(
                 "Installed systemd user unit at {}. Enable it with: systemctl --user enable --now dsterm.service",
                 path.display()
@@ -142,19 +193,33 @@ mod tests {
 
     #[test]
     fn systemd_unit_runs_host_remote() {
-        let unit = systemd_unit("/usr/bin/dsterm");
+        let unit = systemd_unit("/usr/bin/dsterm", true);
         assert!(unit.contains("ExecStart=/usr/bin/dsterm host --remote\n"));
     }
 
     #[test]
+    fn systemd_unit_without_filesystem_runs_plain_host() {
+        let unit = systemd_unit("/usr/bin/dsterm", false);
+        assert!(unit.contains("ExecStart=/usr/bin/dsterm host\n"));
+        assert!(!unit.contains("--remote"));
+    }
+
+    #[test]
     fn termux_boot_script_runs_host_remote() {
-        let script = termux_boot_script("/usr/bin/dsterm");
+        let script = termux_boot_script("/usr/bin/dsterm", true);
         assert!(script.contains("/usr/bin/dsterm host --remote &"));
     }
 
     #[test]
+    fn termux_boot_script_without_filesystem_runs_plain_host() {
+        let script = termux_boot_script("/usr/bin/dsterm", false);
+        assert!(script.contains("/usr/bin/dsterm host &"));
+        assert!(!script.contains("--remote"));
+    }
+
+    #[test]
     fn launchd_plist_runs_host_remote() {
-        let plist = launchd_plist("/opt/dsterm");
+        let plist = launchd_plist("/opt/dsterm", true);
         assert!(plist.contains("<string>/opt/dsterm</string>"));
         assert!(plist.contains("<string>host</string>"));
         assert!(plist.contains("<string>--remote</string>"));
@@ -162,9 +227,36 @@ mod tests {
     }
 
     #[test]
+    fn launchd_plist_without_filesystem_runs_plain_host() {
+        let plist = launchd_plist("/opt/dsterm", false);
+        assert!(plist.contains("<string>host</string>"));
+        assert!(!plist.contains("--remote"));
+        assert!(plist.contains("<string>host</string>\n    </array>"));
+    }
+
+    #[test]
     fn windows_startup_script_runs_host_remote() {
-        let script = windows_startup_script("C:\\dsterm.exe");
+        let script = windows_startup_script("C:\\dsterm.exe", true);
         assert!(script.contains("start \"\" \"C:\\dsterm.exe\" host --remote"));
         assert!(script.contains("\r\n"));
+    }
+
+    #[test]
+    fn windows_startup_script_without_filesystem_runs_plain_host() {
+        let script = windows_startup_script("C:\\dsterm.exe", false);
+        assert!(script.contains("start \"\" \"C:\\dsterm.exe\" host\r\n"));
+        assert!(!script.contains("--remote"));
+    }
+
+    #[test]
+    fn consent_requires_explicit_yes() {
+        assert!(consent_allows("y\n"));
+        assert!(consent_allows(" Y \n"));
+        assert!(consent_allows("yes"));
+        assert!(consent_allows("Yes\r\n"));
+        assert!(!consent_allows("n\n"));
+        assert!(!consent_allows("\n"));
+        assert!(!consent_allows(""));
+        assert!(!consent_allows("yep"));
     }
 }

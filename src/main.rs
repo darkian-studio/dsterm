@@ -109,7 +109,12 @@ enum Commands {
     },
     Register,
     Host,
-    Startup,
+    Startup {
+        /// Put `--remote` in the boot entry without prompting: enables
+        /// the filesystem API (/fs/*) at every sign-in/boot.
+        #[arg(long)]
+        with_filesystem: bool,
+    },
     Transfer {
         path: String,
         endpoint: String,
@@ -757,6 +762,19 @@ async fn main() {
                 "⟳".blue().bold()
             );
 
+            if cfg.filesystem.enabled {
+                // host mode previously printed nothing about /fs/* even
+                // though --remote turns it on — disclose the surface.
+                let folder = std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| ".".to_string());
+                println!(
+                    "{} Filesystem API (/fs/*) enabled — workspace root {folder}",
+                    "⚠".yellow().bold()
+                );
+                println!("Reachable by local processes and approved relay clients.");
+            }
+
             let server = tokio::spawn(async move {
                 start_server(LOCAL_IP, port, allow_any_origin, token).await;
             });
@@ -776,13 +794,33 @@ async fn main() {
                 _ = async { let _ = relay_task.await; } => {}
             }
         }
-        Some(Commands::Startup) => match startup::install() {
-            Ok(message) => println!("{} {message}", "✓".bright_green().bold()),
-            Err(e) => {
-                eprintln!("{} Startup install failed: {e}", "✗".red().bold());
-                std::process::exit(1);
+        Some(Commands::Startup { with_filesystem }) => {
+            // The boot entry runs unattended forever, so enabling the
+            // filesystem API there needs consent once, at install time.
+            // Declining still installs the relay host — just without
+            // /fs/*; --with-filesystem (or the global --remote) is the
+            // non-interactive opt-in.
+            let with_filesystem =
+                with_filesystem || remote || startup::confirm_filesystem_at_boot();
+            match startup::install(with_filesystem) {
+                Ok(message) => {
+                    println!("{} {message}", "✓".bright_green().bold());
+                    if with_filesystem {
+                        println!(
+                            "  Boot command: dsterm host --remote (filesystem API /fs/* enabled)"
+                        );
+                    } else {
+                        println!(
+                            "  Boot command: dsterm host (filesystem API disabled; re-run with --with-filesystem to enable)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{} Startup install failed: {e}", "✗".red().bold());
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         None => {
             if listen_transfer {
                 let transfer_port = port_opt.unwrap_or(crate::transfer::DEFAULT_TRANSFER_PORT);

@@ -45,9 +45,9 @@ dsterm --remote -i
 Then connect to that machine's IP on port `8767`. LAN mode is **unauthenticated**
 **and cleartext** — use it only on networks you trust; for untrusted networks use
 `dsterm host` (encrypted relay). To make it persistent, run `dsterm startup` —
-its boot entry runs `dsterm host --remote` (relay host plus the `/fs/*` API) on
-Android (Termux:Boot), Linux (systemd), macOS (launchd), and Windows (Startup
-folder).
+its boot entry runs `dsterm host` on Android (Termux:Boot), Linux (systemd),
+macOS (launchd), and Windows (Startup folder), and **asks before** adding
+`--remote` (see below).
 
 ### `dsterm update`
 
@@ -121,6 +121,23 @@ Starts a **standalone LSP WebSocket proxy**. See [BRIDGES.md](./BRIDGES.md#stand
 | `-s, --session <ID>` | Session identifier for port discovery file |
 | `<server>` | LSP server binary (e.g. `rust-analyzer`) |
 | `[args...]` | Additional arguments forwarded to the server |
+
+### `dsterm startup`
+
+Installs an OS-native autostart entry (Termux:Boot script, systemd user
+unit, launchd LaunchAgent, or Windows Startup-folder script) that starts
+`dsterm host` at sign-in/boot.
+
+Because the entry runs unattended forever, enabling the filesystem API in
+it needs consent once, at install time: the command explains what
+`--remote` would expose (`/fs/*` over `127.0.0.1` and to approved relay
+clients, boot directory as workspace root) and asks `[y/N]`. Declining —
+including when stdin is not interactive (fail-closed) — installs the entry
+without `--remote`.
+
+| Flag | Description |
+| ------ | ------------- |
+| `--with-filesystem` | Put `--remote` in the entry without prompting (explicit opt-in for scripts; the global `--remote` has the same effect) |
 
 ## Health Endpoints
 
