@@ -957,6 +957,21 @@ pub async fn terminate_terminal(
                 );
                 Json(serde_json::json!({"success": true})).into_response()
             }
+            // portable-pty's Windows ChildKiller inverts TerminateProcess's
+            // success contract: a kill that succeeded returns a stale OS
+            // error (observed as ERROR_INVALID_HANDLE, os error 6) while a
+            // failed kill returns Ok. Treat kill as best-effort on Windows —
+            // the session is already removed, the writer closed, and the
+            // process-group sweep has run either way.
+            Err(e) if cfg!(windows) => {
+                tracing::warn!(
+                    "Terminal {} kill reported {} after sweep; \
+                     treating as terminated on Windows",
+                    pid,
+                    e
+                );
+                Json(serde_json::json!({"success": true})).into_response()
+            }
             Err(e) => {
                 tracing::error!("Failed to terminate terminal {}: {}", pid, e);
                 Json(ErrorResponse {
