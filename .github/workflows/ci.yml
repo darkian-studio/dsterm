@@ -36,8 +36,21 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run tests
-        run: cargo test
+      # Coverage instrumentation (FIXLIST #85): cargo-llvm-cov runs the
+      # same suite as a plain cargo test, compiled with llvm source-based
+      # coverage, and emits an lcov report kept as a run artifact.
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run tests with coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
 
   test-zim:
     name: Test with zim feature
