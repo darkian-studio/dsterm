@@ -50,6 +50,15 @@ struct Cli {
     command_override: Option<String>,
     #[arg(long = "allow-any-origin", global = true)]
     allow_any_origin: bool,
+    /// Permit `-i` (a LAN bind) without `--token`.
+    ///
+    /// The LAN bind exposes the entire surface -- arbitrary shell execution,
+    /// file writes, LSP/DAP/extension-host spawn -- to every host that can
+    /// reach the port, and the token itself travels unencrypted. Refusing by
+    /// default makes that a deliberate choice instead of an accident; the
+    /// encrypted remote path is `dsterm host --remote` (relay, E2E secretbox).
+    #[arg(long = "allow-insecure-lan", global = true)]
+    allow_insecure_lan: bool,
     /// Shared secret every request must present as `X-Dsterm-Loopback`.
     ///
     /// Supply this whenever a client other than a human at a shell is talking
@@ -324,6 +333,7 @@ async fn main() {
         allow_remote,
         confirm_timeout,
         command,
+        allow_insecure_lan,
     } = cli;
 
     if auto_receive && !listen_transfer {
@@ -903,6 +913,26 @@ async fn main() {
                 LOCAL_IP
             };
 
+            if let Some(reason) =
+                lan_bind_refusal(lan_requested, token.as_deref(), allow_insecure_lan)
+            {
+                eprintln!("{} {}", "✗".red().bold(), reason.red());
+                std::process::exit(2);
+            }
+            if lan_requested {
+                if token.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+                    eprintln!(
+                        "{} LAN mode is authenticated but NOT encrypted: the token and every request/response travel in cleartext. Use `dsterm host --remote` (relay, end-to-end encrypted) or a TLS terminator / SSH tunnel when the network is not trusted.",
+                        "⚠".yellow()
+                    );
+                } else {
+                    eprintln!(
+                        "{} LAN mode has NO authentication (--allow-insecure-lan): any host that can reach this port gets shell execution and the filesystem surface.",
+                        "⚠".yellow()
+                    );
+                }
+            }
+
             if remote {
                 let folder = std::env::current_dir()
                     .map(|p| p.display().to_string())
@@ -921,5 +951,51 @@ async fn main() {
 
             start_server(ip, port, allow_any_origin, token).await;
         }
+    }
+}
+
+/// Whether a LAN bind must be refused, and why.
+///
+/// `-i` binds the whole daemon to a routable address. That surface is
+/// arbitrary shell execution over cleartext HTTP, so it must be a deliberate
+/// choice: a `--token` authenticates callers, `--allow-insecure-lan` opts into
+/// the unauthenticated mode for a network the operator already trusts. A
+/// loopback bind (the default) is never refused. Pure so the matrix is
+/// testable without starting a server or touching the process-global token.
+fn lan_bind_refusal(
+    lan_requested: bool,
+    token: Option<&str>,
+    allow_insecure: bool,
+) -> Option<&'static str> {
+    if !lan_requested {
+        return None;
+    }
+    let has_token = token.is_some_and(|value| !value.trim().is_empty());
+    if has_token || allow_insecure {
+        return None;
+    }
+    Some(
+        "refusing to bind a LAN address without --token. `-i` exposes shell execution, \
+         file writes and process spawning to every host that can reach the port. Pass \
+         --token <secret> (authenticated, still cleartext), --allow-insecure-lan (no \
+         authentication), or use `dsterm host --remote` for the encrypted relay path.",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lan_bind_refusal;
+
+    #[test]
+    fn loopback_bind_is_never_refused() {
+        assert!(lan_bind_refusal(false, None, false).is_none());
+    }
+
+    #[test]
+    fn lan_bind_requires_a_token_or_an_explicit_opt_in() {
+        assert!(lan_bind_refusal(true, None, false).is_some());
+        assert!(lan_bind_refusal(true, Some("   "), false).is_some());
+        assert!(lan_bind_refusal(true, Some("secret"), false).is_none());
+        assert!(lan_bind_refusal(true, None, true).is_none());
     }
 }

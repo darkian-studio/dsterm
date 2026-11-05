@@ -11,9 +11,11 @@ dsterm [OPTIONS] [COMMAND]
 | Flag | Default | Description |
 | ------ | --------- | ------------- |
 | `-p, --port <PORT>` | `8767` | Port to start the server (range: 1–65535) |
-| `-i, --ip` | — | Bind to the first non-loopback IPv4 address instead of `127.0.0.1` |
+| `-i, --ip` | — | Bind to the first non-loopback IPv4 address instead of `127.0.0.1` (refused without `--token` unless `--allow-insecure-lan`) |
 | `-c, --command <COMMAND>` | `login` | Custom program/shell for interactive PTY sessions (e.g. `/usr/bin/bash`) |
+| `--token <SECRET>` | — | Require `X-Dsterm-Loopback: <SECRET>` on every request; compared in constant time |
 | `--allow-any-origin` | — | Allow all CORS origins (dangerous — disables origin checks). Default restricts to `https://localhost` |
+| `--allow-insecure-lan` | — | Permit `-i` without a token: LAN mode stays unauthenticated and cleartext (dangerous) |
 | `--remote` | — | Enable the filesystem API (`/fs/*`) with the current directory as the workspace root, no config file needed (sets `filesystem.enabled = true`) |
 | `-h, --help` | — | Print help information |
 | `-V, --version` | — | Print version information |
@@ -36,18 +38,23 @@ This enables `/fs/*` using the current directory as the workspace root — no TO
 no `--config`. In Darkian Studio choose **Open remote folder → Connect to local**
 **dsterm** (or add a `dsterm` connection to `127.0.0.1:8767`).
 
-For another machine on your LAN, bind a reachable address:
+For another machine on your LAN, bind a reachable address. LAN mode now refuses
+to start without a shared token, because `-i` exposes shell execution, file
+writes and process spawning to every host that can reach the port:
 
 ```bash
-dsterm --remote -i
+dsterm --remote -i --token "$(openssl rand -hex 16)"
 ```
 
-Then connect to that machine's IP on port `8767`. LAN mode is **unauthenticated**
-**and cleartext** — use it only on networks you trust; for untrusted networks use
-`dsterm host` (encrypted relay). To make it persistent, run `dsterm startup` —
-its boot entry runs `dsterm host` on Android (Termux:Boot), Linux (systemd),
-macOS (launchd), and Windows (Startup folder), and **asks before** adding
-`--remote` (see below).
+Then connect to that machine's IP on port `8767` with the same token in the
+`X-Dsterm-Loopback` header. LAN mode is **authenticated but cleartext** — the
+token and every request/response are readable on the wire. Use it only on
+networks you trust; for untrusted networks use `dsterm host` (encrypted relay)
+or put the daemon behind a TLS terminator / SSH tunnel. `--allow-insecure-lan`
+opts into the old unauthenticated behaviour explicitly. To make it persistent,
+run `dsterm startup` — its boot entry runs `dsterm host` on Android
+(Termux:Boot), Linux (systemd), macOS (launchd), and Windows (Startup folder),
+and **asks before** adding `--remote` (see below).
 
 ### `dsterm update`
 
@@ -176,8 +183,8 @@ dsterm
 # Start on a custom port with a custom shell
 dsterm -p 9090 -c /usr/bin/zsh
 
-# Start on LAN IP
-dsterm -i
+# Start on LAN IP (requires --token; refuses otherwise)
+dsterm -i --token "$(openssl rand -hex 16)"
 
 # Zero-config remote filesystem for Darkian Studio (serves the current dir)
 dsterm --remote
@@ -186,7 +193,7 @@ dsterm --remote
 dsterm --allow-any-origin
 
 # Full combo
-dsterm -p 8080 -i -c /usr/bin/bash --allow-any-origin
+dsterm -p 8080 -i --token "$(openssl rand -hex 16)" -c /usr/bin/bash --allow-any-origin
 
 # Check for updates
 dsterm update

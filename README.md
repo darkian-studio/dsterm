@@ -77,7 +77,9 @@ Options:
   -i, --ip                     Bind to LAN IP instead of 127.0.0.1
   -c, --command <CMD>          Custom shell / program for PTY sessions
       --config <PATH>          TOML configuration file
+      --token <SECRET>         Require X-Dsterm-Loopback on every request
       --allow-any-origin       Disable CORS origin restriction (dangerous)
+      --allow-insecure-lan     Permit -i without --token (dangerous)
   -h, --help                   Print help
   -V, --version                Print version
 ```
@@ -91,8 +93,8 @@ dsterm
 # Start with a custom shell
 dsterm -c /usr/bin/zsh
 
-# Start on LAN IP with a config file
-dsterm -i --config /etc/dsterm.toml
+# Start on LAN IP (requires a token; authenticated but cleartext)
+dsterm -i --token "$(openssl rand -hex 16)" --config /etc/dsterm.toml
 
 # Standalone LSP proxy for rust-analyzer
 dsterm lsp rust-analyzer
