@@ -75,6 +75,14 @@ pub const AUTH_HEADER: &str = "X-Dsterm-Loopback";
 /// gracefully instead of failing the liveness probe.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Oldest dds protocol this build still serves.
+///
+/// Equal to [PROTOCOL_VERSION] while every supported client is up to date.
+/// When a breaking change lands, bump [PROTOCOL_VERSION], raise this to the
+/// first protocol that still works, and older apps learn from `GET /status`
+/// that they are too old for the daemon they are talking to (FIXLIST #100).
+pub const MIN_CLIENT_PROTOCOL: u32 = 1;
+
 /// The whole authentication decision, as a pure function of its inputs.
 ///
 /// Split out from the middleware so every branch is unit-testable without
@@ -425,6 +433,11 @@ pub async fn start_server(
                     server_protocol = PROTOCOL_VERSION,
                     "dds speaks a newer protocol than this dsterm; update dsterm"
                 ),
+                Ok(spoken) if spoken < MIN_CLIENT_PROTOCOL => tracing::warn!(
+                    client_protocol = spoken,
+                    min_client_protocol = MIN_CLIENT_PROTOCOL,
+                    "dds is older than this dsterm supports; update the app"
+                ),
                 Ok(spoken) => tracing::debug!(client_protocol = spoken, "dds protocol"),
                 Err(_) => tracing::debug!(client_protocol, "unparseable dds protocol"),
             }
@@ -591,17 +604,18 @@ pub fn status_capabilities() -> Vec<&'static str> {
     caps
 }
 
-/// The `GET /status` body (FIXLIST #79 handshake). `home` stays behind
-/// the loopback/token gate — a LAN peer may learn the handshake without
-/// learning the user's home path. `protocol_version` is a STRING on the
-/// wire: shipped dds builds read it with `as String?` and a numeric
-/// value would throw there. Shape is pinned by
-/// `contracts/status_contract.json`.
+/// The `GET /status` body (FIXLIST #79 handshake, formalised by #100).
+/// `home` stays behind the loopback/token gate — a LAN peer may learn the
+/// handshake without learning the user's home path. `protocol_version` and
+/// `min_client_protocol` are STRINGS on the wire: shipped dds builds read
+/// them with `as String?` and a numeric value would throw there. Shape is
+/// pinned by `contracts/status_contract.json`.
 pub fn status_body(home: Option<&str>) -> serde_json::Value {
     let mut body = serde_json::json!({
         "status": "OK",
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": PROTOCOL_VERSION.to_string(),
+        "min_client_protocol": MIN_CLIENT_PROTOCOL.to_string(),
         "capabilities": status_capabilities(),
     });
     if let Some(home) = home {
@@ -797,6 +811,18 @@ mod status_contract_tests {
             contract["protocol_version"].as_str()
         );
         assert_eq!(PROTOCOL_VERSION.to_string(), contract["protocol_version"]);
+        assert_eq!(
+            body["min_client_protocol"].as_str(),
+            contract["min_client_protocol"].as_str()
+        );
+        assert_eq!(
+            MIN_CLIENT_PROTOCOL.to_string(),
+            contract["min_client_protocol"]
+        );
+        assert!(
+            MIN_CLIENT_PROTOCOL <= PROTOCOL_VERSION,
+            "a server cannot require a client protocol newer than the one it speaks"
+        );
     }
 
     #[test]

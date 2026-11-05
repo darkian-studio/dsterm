@@ -1,11 +1,12 @@
 {
   "version": 1,
   "endpoint": "GET /status",
-  "description": "dds<->dsterm version/capability handshake (FIXLIST #79). Pinned by BOTH repos: dsterm's status_contract_tests drives status_body() against this file, dds's dsterm_status_contract_test drives DstermDiscoveryInfo.fromJson against it. protocol_version is a STRING on the wire: shipped dds builds parse it with `as String?` and a numeric value would throw a TypeError there.",
+  "description": "dds<->dsterm version/capability handshake (FIXLIST #79), formalised as a versioned contract in #100. Pinned by BOTH repos: dsterm's status_body_matches_the_shared_contract drives status_body() against this file, dds's dsterm_status_contract_test drives DstermDiscoveryInfo.fromJson against it. protocol_version and min_client_protocol are STRINGS on the wire: shipped dds builds parse them with `as String?` and a numeric value would throw a TypeError there. Versioning rules live in contracts/CONTRACT.md.",
   "required": {
     "status": "string",
     "version": "string",
     "protocol_version": "string",
+    "min_client_protocol": "string",
     "capabilities": "string[]"
   },
   "optional": {
@@ -14,5 +15,6 @@
   "contains": {
     "capabilities": ["terminal"]
   },
-  "protocol_version": "1"
+  "protocol_version": "1",
+  "min_client_protocol": "1"
 }
