@@ -83,3 +83,39 @@ jobs:
 
       - name: Test with llama feature
         run: cargo test --features llama
+
+  # FIXLIST #95: the suite had no Windows job, so `pty_fallback`,
+  # `shell_integration`'s OSC 633 path, the ConPTY handlers and the
+  # platform-gated transfer asserts were never compiled or run. Windows is a
+  # supported release target (release.yml builds x86_64-pc-windows-msvc), so
+  # its code paths need a test run of their own. `llama` is excluded: it
+  # compiles a vendored C++ tree and needs CMake + a C++17 toolchain, which is
+  # the build-cost reason dsterm's own AGENTS.md forbids it on Windows hosts.
+  test-windows:
+    name: Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test
+
+  # The zim reader is pure Rust, so the same feature-gated suite the Linux job
+  # runs also covers the Windows build of the archive surface.
+  test-zim-windows:
+    name: Test with zim feature (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests with zim feature
+        run: cargo test --features zim
+
